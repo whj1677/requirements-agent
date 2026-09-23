@@ -15,7 +15,7 @@ from app.store import Store
 from tests.helpers import EXAMPLES, prepared
 
 def client(tmp_path):
-    app=create_app(tmp_path,access_token='test-token')
+    app=create_app(tmp_path,access_token='test-token',env_path=tmp_path/'.env')
     c=TestClient(app)
     login=c.post('/api/session/login',json={'key':'test-token'})
     c.headers.update({'Origin':'http://testserver','X-CSRF-Token':login.json()['csrf']})

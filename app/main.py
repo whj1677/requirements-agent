@@ -92,9 +92,17 @@ class Grant(Revision):
     source_ids: list[str]
 
 
-def create_app(folder=DATA, access_token=None, provider=None):
+def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
     store = Store(folder)
-    provider = provider or Provider()
+    provider = provider or Provider(env_path=env_path)
+    for slot in ('model','vision'):
+        saved = store.setting(slot)
+        if saved:
+            endpoint = origin(saved)
+            name = saved['key_env']
+            bound = provider.env_origins.get(name)
+            require(bound is None or bound == endpoint, 'KEY_ORIGIN_CONFLICT', '已保存的模型密钥变量绑定到不同接收端，请修正模型配置')
+            provider.env_origins[name] = endpoint
     workflow = Workflow(store, provider)
     token = access_token or os.environ.get('RA_ACCESS_TOKEN') or secrets.token_urlsafe(32)
     sessions = {}
@@ -295,7 +303,7 @@ def create_app(folder=DATA, access_token=None, provider=None):
         result={}
         for slot in ('model','vision'):
             c=store.setting(slot) or dict(DEFAULT)
-            result[slot]=dict(c,key_configured=bool(provider.key(c)),proxy='已配置' if c.get('proxy') else '')
+            result[slot]=dict(c,**provider.key_status(c),proxy='已配置' if c.get('proxy') else '')
         return result
 
     @app.put('/api/models/{slot}')
@@ -313,8 +321,11 @@ def create_app(folder=DATA, access_token=None, provider=None):
     async def set_key(slot:str,body:KeyInput):
         require(slot in ('model','vision'),'CONFIG_INVALID','未知配置槽')
         config=store.setting(slot) or dict(DEFAULT)
-        provider.keys[origin(config)]=body.key
-        return {'key_configured':bool(body.key),'storage':'server_process_memory'}
+        if body.key:
+            provider.keys[origin(config)]=body.key
+        else:
+            provider.keys.pop(origin(config),None)
+        return dict(provider.key_status(config),storage='server_process_memory' if body.key else 'environment_fallback')
 
     @app.post('/api/models/{slot}/test')
     async def test_model(slot:str):

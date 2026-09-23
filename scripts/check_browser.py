@@ -16,7 +16,7 @@ from tests.helpers import prepared
 async def main():
     run_dir=ROOT/'evidence/runtime/browser'
     run_dir.mkdir(parents=True,exist_ok=True)
-    app=create_app(run_dir/'db',access_token='offline-browser-engineering-token')
+    app=create_app(run_dir/'db',access_token='offline-browser-engineering-token',env_path=run_dir/'.env')
     p=prepared(app.state.store)
     server=uvicorn.Server(uvicorn.Config(app,host='127.0.0.1',port=8876,log_level='error',access_log=False))
     thread=threading.Thread(target=server.run,daemon=True);thread.start()

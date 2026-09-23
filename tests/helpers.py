@@ -37,5 +37,7 @@ def complete_document(p,kind):
     doc['reference_mapping']=[]
     for d in profile(kind)['sections']:
         if not d['mapping_required']:continue
-        doc['reference_mapping'].append(dict(profile_section_id=d['id'],scope_ref='REQ-0001' if d['repeat_per_function'] else None,disposition='pending',output_section_ids=[sid],reason='合成工程测试仅验证内容映射机制；此维度缺少完整业务材料，保留待确认。'))
+        picture_dimension = 'PRD-4.F.1' if kind == 'prd' else 'MRD-5.1.F.3'
+        has_picture = d['id'] == picture_dimension
+        doc['reference_mapping'].append(dict(profile_section_id=d['id'],scope_ref='REQ-0001' if d['repeat_per_function'] else None,disposition='merged' if has_picture else 'pending',output_section_ids=[sid],reason='合成页面已关联此功能，布局维度合并表达。' if has_picture else '合成工程测试仅验证内容映射机制；此维度缺少完整业务材料，保留待确认。'))
     return doc

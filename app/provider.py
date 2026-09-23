@@ -1,12 +1,12 @@
 import asyncio
 import base64
 import json
-import os
 import time
 from urllib.parse import urlsplit
 import httpx
 from .core import KIT, Problem, dumps, now, read_json, require
 from .contracts import SCHEMA, profile
+from .config import ProjectEnvironment, usable_key
 
 DEFAULT = dict(name='DeepSeek 官方', base_url='https://api.deepseek.com', model='deepseek-flash',
                key_env='RA_DEEPSEEK_API_KEY', vision='documented', json_mode=True, timeout=120,
@@ -23,16 +23,25 @@ def origin(config):
 
 
 class Provider:
-    def __init__(self):
+    def __init__(self, env_path=None):
         self.keys = {}
+        self.environment = ProjectEnvironment(env_path)
         self.env_origins = {'RA_DEEPSEEK_API_KEY':'https://api.deepseek.com'}
 
-    def key(self, config):
+    def resolve_key(self, config):
         endpoint=origin(config)
         if endpoint in self.keys:
-            return self.keys[endpoint]
+            value=self.keys[endpoint]
+            return (value,'session') if usable_key(value) else ('','none')
         env=config.get('key_env','')
-        return os.environ.get(env,'') if self.env_origins.get(env)==endpoint else ''
+        return self.environment.credential(env) if self.env_origins.get(env)==endpoint else ('','none')
+
+    def key(self, config):
+        return self.resolve_key(config)[0]
+
+    def key_status(self, config):
+        value,source=self.resolve_key(config)
+        return dict(key_configured=bool(value),key_env=config.get('key_env',''),key_source=source,bound_origin=origin(config))
 
     async def request(self, config, messages):
         key = self.key(config)

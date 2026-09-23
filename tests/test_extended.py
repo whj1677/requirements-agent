@@ -30,13 +30,15 @@ def test_protocol_errors_do_not_parse_fragments(monkeypatch,payload,expected):
     with pytest.raises(Problem) as error:asyncio.run(provider.request(DEFAULT,[]))
     assert error.value.code==expected
 
-def test_key_bound_to_origin(monkeypatch):
+def test_key_bound_to_origin(monkeypatch,tmp_path):
     monkeypatch.setenv('RA_DEEPSEEK_API_KEY','test-secret')
-    provider=Provider()
+    provider=Provider(env_path=tmp_path/'.env')
     assert provider.key(DEFAULT)=='test-secret'
     assert provider.key(dict(DEFAULT,base_url='https://other.example'))==''
-    provider.keys['https://api.deepseek.com']=''
-    assert provider.key(DEFAULT)==''
+    provider.keys['https://api.deepseek.com']='session-only'
+    assert provider.key(DEFAULT)=='session-only'
+    provider.keys.pop('https://api.deepseek.com')
+    assert provider.key(DEFAULT)=='test-secret'
 
 def test_explicit_fallback_reference(tmp_path,monkeypatch):
     p=prepared(Store(tmp_path));p['reference_mode']='builtin'

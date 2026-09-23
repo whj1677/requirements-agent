@@ -48,7 +48,7 @@ def test_real_http_adapter_to_confirmation_and_export(tmp_path):
             self.send_response(200);self.send_header('Content-Type','application/json');self.send_header('Content-Length',str(len(payload)));self.end_headers();self.wfile.write(payload)
     server=ThreadingHTTPServer(('127.0.0.1',0),Handler)
     thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
-    app=create_app(tmp_path,access_token='test-login')
+    app=create_app(tmp_path,access_token='test-login',env_path=tmp_path/'.env')
     try:
         with TestClient(app) as c:
             csrf=c.post('/api/session/login',json={'key':'test-login'}).json()['csrf']

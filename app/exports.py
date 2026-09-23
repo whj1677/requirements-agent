@@ -63,25 +63,34 @@ async def document_files(p, kind, status='草稿／待产品经理内容确认')
     doc.add_paragraph(content['title'], 'Title')
     doc.add_paragraph(meta)
     doc.add_paragraph(md[2])
-    images = await capture(p['ui']['spec']) if p.get('ui') and p['ui']['brief_hash'] == brief_hash(p) else []
+    ui_current = bool(p.get('ui') and p['ui']['brief_hash'] == brief_hash(p))
+    images = await capture(p['ui']['spec']) if ui_current else []
     image_map = dict(images)
     files, bindings = {}, []
+    if not ui_current:
+        notice = '未提供当前底稿可用的页面方案；本文未插入原型图片。' if not p.get('ui') else '页面方案对应旧底稿；本文未插入过期原型图片。'
+        md.append(notice)
+        doc.add_paragraph(notice)
     for s, texts in rendered:
         md.append('#'*(s['level']+1) + ' ' + s['title'])
         doc.add_heading(s['title'], s['level'])
         for text in texts:
             md.append(text)
             doc.add_paragraph(text)
-        maps = [m for m in content['reference_mapping'] if s['section_id'] in m['output_section_ids'] and m['profile_section_id'] in ('PRD-4.F.1','MRD-5.1.F.4')]
+        picture_dimension = 'PRD-4.F.1' if kind == 'prd' else 'MRD-5.1.F.3'
+        maps = [m for m in content['reference_mapping'] if s['section_id'] in m['output_section_ids'] and m['profile_section_id'] == picture_dimension and m['disposition'] in ('included','merged')]
         if maps and images:
             allowed_refs = {m['scope_ref'] for m in maps if m['scope_ref']}
+            if not allowed_refs:
+                continue
             for page in p['ui']['spec']['pages']:
-                if allowed_refs and not allowed_refs.intersection(page['requirement_refs']):
+                if not allowed_refs.intersection(page['requirement_refs']):
                     continue
                 image = image_map[page['page_id']]
                 filename = 'assets/' + hashlib.sha256(page['page_id'].encode()).hexdigest()[:16] + '.png'
                 caption = f'低保真模拟 {page["title"]} · UI 版本 {p["ui"]["spec"]["draft_revision"]} · 待确认'
-                doc.add_picture(io.BytesIO(image), width=Inches(6.7))
+                doc.add_picture(io.BytesIO(image), width=Inches(6.4))
+                doc.paragraphs[-1].paragraph_format.keep_with_next = True
                 doc.add_paragraph(caption)
                 md.append(f'![{caption}]({filename})')
                 files[filename] = image

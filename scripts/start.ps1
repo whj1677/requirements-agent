@@ -28,4 +28,4 @@ Start-Sleep -Seconds 2
 if ($process.HasExited) { throw '服务启动失败，请查看 data\server.stderr.log' }
 Write-Host "入口：http://127.0.0.1:$Port"
 Write-Host "本机访问令牌：$accessToken"
-Write-Host '请复制访问令牌登录。API Key 在界面的模型设置中单独填写。'
+Write-Host '请复制访问令牌登录。模型 API Key 可从项目根目录 .env 自动读取；在模型设置查看来源与接收端。修改 .env 后重启。'
