@@ -1,0 +1,189 @@
+{
+  "package": "requirements-agent-codex-kit",
+  "version": "1.1",
+  "created_date": "2026-09-23",
+  "supersedes": "1.0",
+  "change_scope": "PRD/MRD Word chapter-content references, not fixed layout",
+  "type": "development_specification_and_prompt_pack",
+  "application_implemented": false,
+  "live_api_tested": false,
+  "business_docx_export_tested": false,
+  "reference_originals_included": true,
+  "files": [
+    {
+      "path": "00_README.md",
+      "bytes": 3399,
+      "sha256": "bf89435d563b6a72b06eb5850dae855aad9ada921414381b9787834b3a111d4c"
+    },
+    {
+      "path": "01_CODEX_TASKBOOK.md",
+      "bytes": 27022,
+      "sha256": "b713357ea2ff263a2a059b7ef18c71f6c3a6170cecf2004841fd37570c068473"
+    },
+    {
+      "path": "02_CODEX_START_PROMPT.md",
+      "bytes": 3355,
+      "sha256": "a17c8ef2311f3a758835a3961805c45f8263b34cd3667e60a5b6d1a819376b8d"
+    },
+    {
+      "path": "03_ACCEPTANCE.md",
+      "bytes": 12397,
+      "sha256": "abada4c4dee7947f5225bba40bf494c236e634f68fedeae31062b870419a83e4"
+    },
+    {
+      "path": "04_CONTRACTS.md",
+      "bytes": 17192,
+      "sha256": "2fad371df2f92f90df38d1fe12238c8f8e0558662923079ca1c9057835e7cb5c"
+    },
+    {
+      "path": "05_SOURCES.md",
+      "bytes": 5382,
+      "sha256": "2884a74ac09030d295b13e0a301a124d7b720a1dab0595445cd418cb9d10ebb5"
+    },
+    {
+      "path": "06_RUNTIME_PROMPTS_ALL.md",
+      "bytes": 23003,
+      "sha256": "e1dec52f2bed32b0e2a70090d667adf0385d5416d2c19af9e17d82c66fa2e42b"
+    },
+    {
+      "path": "07_PM_QUICKSTART.md",
+      "bytes": 2714,
+      "sha256": "135b00290d46514639c9bfdf06b2fa172d172b2ac3fadf9781015df1848a05cb"
+    },
+    {
+      "path": "08_PACKAGE_CHECK.md",
+      "bytes": 2654,
+      "sha256": "71ab6c146ede262ec5b9a3553240ad6a0c211ae4bb6435b17a565a868c650b32"
+    },
+    {
+      "path": "09_WORD_REFERENCE_RULES.md",
+      "bytes": 13179,
+      "sha256": "717f98ca44394e79f213e6df074f66f8ae12f4dbb0833fde13b21be972b7d57c"
+    },
+    {
+      "path": "10_CODEX_UPDATE_PROMPT.md",
+      "bytes": 2852,
+      "sha256": "f129e349d4c1a2e2a7f3b501b149b9e4141d87c8a154145e2e6ac405464b2fca"
+    },
+    {
+      "path": "examples/README.md",
+      "bytes": 2344,
+      "sha256": "91973cd3db1fb01cd9f12869b688e658def56c368bd4095c17c0434b28b82aa9"
+    },
+    {
+      "path": "examples/evaluation_cases.json",
+      "bytes": 11253,
+      "sha256": "1e84a717b04bac89e5a9d30e92c44aa6542a323cefab4d878f0db05aed240aba"
+    },
+    {
+      "path": "examples/model_profiles.example.json",
+      "bytes": 2526,
+      "sha256": "2d779cf9cb7def963850ac582eb93655a01bf92b638b16217a250ba7955835ce"
+    },
+    {
+      "path": "examples/response_examples.json",
+      "bytes": 14646,
+      "sha256": "a46352605e22c58d74b25f3d96db52954a59b3064fbbda63a34d32b6c7692d6c"
+    },
+    {
+      "path": "examples/runtime_response.schema.json",
+      "bytes": 56492,
+      "sha256": "aaa56142cabb7fd8d6220e3866aad772c4077e4a5eb66a1f5d8b4c9ff16e67a0"
+    },
+    {
+      "path": "examples/wireframe.example.json",
+      "bytes": 1996,
+      "sha256": "a5c2beea91a5c2fc1ff12e8cd06acca0bd0f02beaaf5ad788c4a396b9e56f6d7"
+    },
+    {
+      "path": "examples/wireframe.schema.json",
+      "bytes": 14431,
+      "sha256": "688eeed84c3cf3cbb4bc5fcb5c4fdcc727ad227ae7d21b100a587ea2eb691863"
+    },
+    {
+      "path": "prompts/00_system.md",
+      "bytes": 4682,
+      "sha256": "f7abf25bcf7d58e1563fdfb66d19514324b8a415ef3d143fb366788ec25d2af1"
+    },
+    {
+      "path": "prompts/01_ingest.md",
+      "bytes": 1387,
+      "sha256": "824d0c8971a091db2bf85b952f87a678b1f3c161ae2b9f31f05a14c0be2b993c"
+    },
+    {
+      "path": "prompts/02_brainstorm.md",
+      "bytes": 1392,
+      "sha256": "35059a4796fd757fd21b0f330210e3f05276544ed65289d7f77512ea1c636074"
+    },
+    {
+      "path": "prompts/03_clarify.md",
+      "bytes": 1421,
+      "sha256": "67e10c9c4264a75c94a72e499706e1c583bc85852f43492bc312387885d1d34c"
+    },
+    {
+      "path": "prompts/04_review.md",
+      "bytes": 1879,
+      "sha256": "64a407deb1957811f19bedc95db77d0170f4bbb2a9a3a46f61adea9053c414f5"
+    },
+    {
+      "path": "prompts/05_ui.md",
+      "bytes": 1606,
+      "sha256": "8a607e9f425f9c4c5231b0d131a42a50bc384dca8396dabb49d2f4a21eee5317"
+    },
+    {
+      "path": "prompts/06_prd.md",
+      "bytes": 4645,
+      "sha256": "b8226467082d985761ada54b52f6bf653ceea01070c5370a6a7ca959f46b18b9"
+    },
+    {
+      "path": "prompts/07_handoff.md",
+      "bytes": 1819,
+      "sha256": "eda59d429a43dffa8380ab2780aeba1876e2f206c6409af29e2d8bdce7e5c96b"
+    },
+    {
+      "path": "prompts/08_change.md",
+      "bytes": 1310,
+      "sha256": "d734805230a0c129e9d07073edc74f522f800c08c0bac4b7fc670cf699279056"
+    },
+    {
+      "path": "prompts/09_vision.md",
+      "bytes": 1280,
+      "sha256": "f31d4f86348320cda018a298c703c08ec252d318f885ddbd088e550c88f5941b"
+    },
+    {
+      "path": "prompts/10_repair.md",
+      "bytes": 993,
+      "sha256": "2aad24a3eca522714c4cbdcb700166d4520cb83ebfa763532af8ee148a32b925"
+    },
+    {
+      "path": "prompts/README.md",
+      "bytes": 1609,
+      "sha256": "53ecd3c5a7dcea72e1e71cba2cf2e4245ef920ef7e675d98243383de81d042c7"
+    },
+    {
+      "path": "prompts/registry.json",
+      "bytes": 619,
+      "sha256": "2ec2164d22146a1789bf74aff6aee8cad1820a72fb840124efcf1e869390b5b3"
+    },
+    {
+      "path": "references/README.md",
+      "bytes": 727,
+      "sha256": "826948879ae43e64716bd7206a7f37d77e588c63af34b1569053bf4823b16321"
+    },
+    {
+      "path": "references/content_profiles.json",
+      "bytes": 19782,
+      "sha256": "72063aa400dbbd6d1c5222b111829c31df46a41368679277ecf3836c96e86c85"
+    },
+    {
+      "path": "references/产品需求文档PRD模板(1).docx",
+      "bytes": 108733,
+      "sha256": "77cecafe388aa87c6a053007e49c31b1a3e402a0259b6e9718e93cb21b840bb7"
+    },
+    {
+      "path": "references/百度产品需求管理文档（MRD）模板(1).docx",
+      "bytes": 9262,
+      "sha256": "c14ee3d56d2889d5fc153f0b6e062164df2eefa735c8a151de2777d58a813bc2"
+    }
+  ]
+}

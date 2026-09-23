@@ -1,0 +1,456 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Requirements Agent Wireframe v1.0",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": "1.0"
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "draft_revision": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "design_intent": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2000
+    },
+    "demo_data_label": {
+      "const": "模拟数据，仅用于原型演示"
+    },
+    "pages": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "page_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "requirement_refs": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 120
+            },
+            "minItems": 0,
+            "maxItems": 100
+          },
+          "regions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "enum": [
+                    "header",
+                    "navigation",
+                    "filters",
+                    "main",
+                    "side",
+                    "footer",
+                    "overlay"
+                  ]
+                },
+                "components": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "component_id": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 120
+                      },
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "text",
+                          "navigation",
+                          "filters",
+                          "table",
+                          "list",
+                          "form",
+                          "button",
+                          "notice",
+                          "panel",
+                          "dialog",
+                          "status"
+                        ]
+                      },
+                      "label": {
+                        "type": "string",
+                        "minLength": 0,
+                        "maxLength": 200
+                      },
+                      "description": {
+                        "type": "string",
+                        "minLength": 0,
+                        "maxLength": 2000
+                      },
+                      "ref_ids": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 120
+                        },
+                        "minItems": 0,
+                        "maxItems": 100
+                      },
+                      "fields": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "name": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 120
+                            },
+                            "label": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 200
+                            },
+                            "type": {
+                              "type": "string",
+                              "enum": [
+                                "text",
+                                "number",
+                                "select",
+                                "date",
+                                "date_range",
+                                "read_only"
+                              ]
+                            },
+                            "required_state": {
+                              "type": "string",
+                              "enum": [
+                                "required",
+                                "optional",
+                                "unknown"
+                              ]
+                            },
+                            "options": {
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "minLength": 0,
+                                "maxLength": 200
+                              },
+                              "minItems": 0,
+                              "maxItems": 100
+                            },
+                            "ref_ids": {
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 120
+                              },
+                              "minItems": 0,
+                              "maxItems": 100
+                            }
+                          },
+                          "required": [
+                            "name",
+                            "label",
+                            "type",
+                            "required_state",
+                            "options",
+                            "ref_ids"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "minItems": 0,
+                        "maxItems": 100
+                      },
+                      "columns": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "key": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 120
+                            },
+                            "label": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 200
+                            },
+                            "ref_ids": {
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 120
+                              },
+                              "minItems": 0,
+                              "maxItems": 100
+                            }
+                          },
+                          "required": [
+                            "key",
+                            "label",
+                            "ref_ids"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "minItems": 0,
+                        "maxItems": 50
+                      },
+                      "rows": {
+                        "type": "array",
+                        "items": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 0,
+                            "maxLength": 500
+                          },
+                          "minItems": 0,
+                          "maxItems": 50
+                        },
+                        "minItems": 0,
+                        "maxItems": 100
+                      },
+                      "interaction": {
+                        "type": "object",
+                        "properties": {
+                          "action": {
+                            "type": "string",
+                            "enum": [
+                              "none",
+                              "open_panel",
+                              "close_panel",
+                              "switch_state"
+                            ]
+                          },
+                          "target_id": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 120
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "target_state": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "enum": [
+                                  "normal",
+                                  "loading",
+                                  "empty",
+                                  "error",
+                                  "forbidden"
+                                ]
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "action",
+                          "target_id",
+                          "target_state"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "provisional": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "component_id",
+                      "type",
+                      "label",
+                      "description",
+                      "ref_ids",
+                      "fields",
+                      "columns",
+                      "rows",
+                      "interaction",
+                      "provisional"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "minItems": 0,
+                  "maxItems": 100
+                }
+              },
+              "required": [
+                "name",
+                "components"
+              ],
+              "additionalProperties": false
+            },
+            "minItems": 1,
+            "maxItems": 12
+          },
+          "states": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "normal",
+                "loading",
+                "empty",
+                "error",
+                "forbidden"
+              ]
+            },
+            "minItems": 1,
+            "maxItems": 5
+          },
+          "state_messages": {
+            "type": "object",
+            "properties": {
+              "normal": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 0,
+                    "maxLength": 1000
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "loading": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 0,
+                    "maxLength": 1000
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "empty": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 0,
+                    "maxLength": 1000
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "error": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 0,
+                    "maxLength": 1000
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "forbidden": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 0,
+                    "maxLength": 1000
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "normal",
+              "loading",
+              "empty",
+              "error",
+              "forbidden"
+            ],
+            "additionalProperties": false
+          },
+          "not_applicable_states": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "state": {
+                  "type": "string",
+                  "enum": [
+                    "normal",
+                    "loading",
+                    "empty",
+                    "error",
+                    "forbidden"
+                  ]
+                },
+                "reason": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1000
+                }
+              },
+              "required": [
+                "state",
+                "reason"
+              ],
+              "additionalProperties": false
+            },
+            "minItems": 0,
+            "maxItems": 5
+          }
+        },
+        "required": [
+          "page_id",
+          "title",
+          "requirement_refs",
+          "regions",
+          "states",
+          "state_messages",
+          "not_applicable_states"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 1,
+      "maxItems": 20
+    }
+  },
+  "required": [
+    "schema_version",
+    "title",
+    "draft_revision",
+    "design_intent",
+    "demo_data_label",
+    "pages"
+  ],
+  "additionalProperties": false
+}

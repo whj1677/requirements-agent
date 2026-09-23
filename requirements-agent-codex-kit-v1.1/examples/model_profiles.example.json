@@ -1,0 +1,87 @@
+{
+  "schema_version": "1.0",
+  "documented_at": "2026-09-23",
+  "notice": "示例配置，不含 Key；documented 不表示已在本机实测。",
+  "active_analysis_profile": "deepseek-official-flash",
+  "active_vision_profile": "deepseek-official-flash",
+  "profiles": [
+    {
+      "id": "deepseek-official-flash",
+      "provider": "DeepSeek official",
+      "protocol": "chat_completions",
+      "base_url": "https://api.deepseek.com",
+      "model": "deepseek-flash",
+      "secret_ref": {
+        "type": "environment",
+        "name": "DEEPSEEK_API_KEY"
+      },
+      "capabilities": {
+        "text": "documented",
+        "vision": "documented",
+        "json_object": "documented",
+        "tool_calls": "documented"
+      },
+      "request_options": {
+        "thinking": {
+          "type": "disabled"
+        }
+      },
+      "verify_tls": true,
+      "allow_redirect_with_credentials": false,
+      "last_successful_probe": null
+    },
+    {
+      "id": "deepseek-official-pro",
+      "provider": "DeepSeek official",
+      "protocol": "chat_completions",
+      "base_url": "https://api.deepseek.com",
+      "model": "deepseek-v4-pro",
+      "secret_ref": {
+        "type": "environment",
+        "name": "DEEPSEEK_API_KEY"
+      },
+      "capabilities": {
+        "text": "documented",
+        "vision": "unsupported",
+        "json_object": "documented",
+        "tool_calls": "documented"
+      },
+      "request_options": {
+        "thinking": {
+          "type": "disabled"
+        }
+      },
+      "verify_tls": true,
+      "allow_redirect_with_credentials": false,
+      "last_successful_probe": null
+    }
+  ],
+  "custom_profile_form_defaults": {
+    "provider": "自定义兼容服务",
+    "protocol": "chat_completions",
+    "base_url": null,
+    "model": null,
+    "vision_capability": "unknown",
+    "requires_explicit_data_consent": true
+  },
+  "budgets": {
+    "max_requests_per_action": 8,
+    "max_schema_repairs": 2,
+    "max_transient_retries": 2,
+    "model_request_timeout_seconds": 120,
+    "source_timeout_seconds": 30,
+    "action_timeout_seconds": 300,
+    "application_context_budget_tokens": 32768,
+    "input_budget_tokens": 23552,
+    "output_budget_tokens": 8192,
+    "safety_margin_tokens": 1024,
+    "price_table": null,
+    "missing_price_display": "unknown"
+  },
+  "network_policy": {
+    "source_fetch_default": "public_http_https_only",
+    "local_model_requires_admin_allowlist": true,
+    "follow_model_redirects": false,
+    "silent_cross_provider_fallback": false
+  }
+}

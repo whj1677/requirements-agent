@@ -1,0 +1,21 @@
+{
+  "version": "1.1",
+  "system": "00_system.md",
+  "response_schema": "../examples/runtime_response.schema.json",
+  "stage_files": {
+    "ingest": "01_ingest.md",
+    "brainstorm": "02_brainstorm.md",
+    "clarify": "03_clarify.md",
+    "review": "04_review.md",
+    "ui": "05_ui.md",
+    "prd": "06_prd.md",
+    "handoff": "07_handoff.md",
+    "change": "08_change.md",
+    "vision": "09_vision.md"
+  },
+  "repair_addendum": "10_repair.md",
+  "repair_preserves_original_stage": true,
+  "runtime_may_confirm_or_publish": false,
+  "document_profiles": "../references/content_profiles.json",
+  "document_stage": "prd"
+}

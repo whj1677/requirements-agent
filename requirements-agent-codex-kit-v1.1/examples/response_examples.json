@@ -1,0 +1,519 @@
+{
+  "notice": "合成协议样例，不是已通过的模型输出。",
+  "examples": {
+    "ingest": {
+      "schema_version": "1.1",
+      "stage": "ingest",
+      "summary": "合成协议示例，非真实运行结果。",
+      "proposals": [],
+      "questions": [],
+      "findings": [],
+      "used_source_refs": [
+        {
+          "source_id": "SRC-0001",
+          "excerpt_id": "EX-0001"
+        }
+      ],
+      "limitations": [],
+      "result": {
+        "understanding": "管理员维护电价时段，只读角色不能修改。",
+        "material_limits": []
+      }
+    },
+    "vision": {
+      "schema_version": "1.1",
+      "stage": "vision",
+      "summary": "合成协议示例，非真实运行结果。",
+      "proposals": [],
+      "questions": [],
+      "findings": [],
+      "used_source_refs": [
+        {
+          "source_id": "SRC-IMG-1",
+          "excerpt_id": "EX-IMG-1"
+        }
+      ],
+      "limitations": [],
+      "result": {
+        "observations": [
+          {
+            "source_ref": {
+              "source_id": "SRC-IMG-1",
+              "excerpt_id": "EX-IMG-1"
+            },
+            "region": "页面右上角",
+            "observation": "可见一个标为“导出”的按钮。",
+            "uncertain": false
+          }
+        ],
+        "unobservable": [
+          "未看到点击后的输出、导出范围或权限处理。"
+        ],
+        "unreadable": []
+      }
+    },
+    "brainstorm": {
+      "schema_version": "1.1",
+      "stage": "brainstorm",
+      "summary": "合成协议示例，非真实运行结果。",
+      "proposals": [],
+      "questions": [],
+      "findings": [],
+      "used_source_refs": [
+        {
+          "source_id": "SRC-0001",
+          "excerpt_id": "EX-0001"
+        }
+      ],
+      "limitations": [],
+      "result": {
+        "options": [
+          {
+            "option_id": "OPT-TMP-A",
+            "name": "列表旁编辑",
+            "user_path": "查看列表后打开侧边编辑区域。",
+            "benefits": [
+              "保留列表上下文"
+            ],
+            "costs": [
+              "小屏可用区域较少"
+            ],
+            "dependencies": [
+              "确认可编辑字段"
+            ],
+            "risks": [
+              "需明确取消时的处理"
+            ],
+            "mvp_scope": [
+              "保留列表与单项编辑"
+            ],
+            "proposed_item_refs": [],
+            "source_refs": [
+              {
+                "source_id": "SRC-0001",
+                "excerpt_id": "EX-0001"
+              }
+            ],
+            "assumptions": [
+              "本期主要在桌面端操作"
+            ]
+          }
+        ],
+        "recommended_option_id": "OPT-TMP-A",
+        "recommendation_reason": "在桌面端约束成立时可减少页面切换；仍需用户选择。"
+      }
+    },
+    "clarify": {
+      "schema_version": "1.1",
+      "stage": "clarify",
+      "summary": "合成协议示例，非真实运行结果。",
+      "proposals": [],
+      "questions": [
+        {
+          "temp_id": "QTMP-001",
+          "topic_key": "tariff.interval.touching_boundary",
+          "question": "两个时段的结束时间和开始时间相同时，是否允许相接？",
+          "why": "该规则会影响重叠判定和边界验收，不能由 Agent 自行决定。",
+          "options": [
+            "允许相接",
+            "不允许相接",
+            "暂不决定，先不纳入本期"
+          ],
+          "blocking": true,
+          "related_refs": [
+            "REQ-0001"
+          ],
+          "source_refs": [
+            {
+              "source_id": "SRC-0001",
+              "excerpt_id": "EX-0001"
+            }
+          ]
+        }
+      ],
+      "findings": [],
+      "used_source_refs": [
+        {
+          "source_id": "SRC-0001",
+          "excerpt_id": "EX-0001"
+        }
+      ],
+      "limitations": [],
+      "result": {
+        "scope_summary": "维护时段并拒绝重叠；相接边界尚未确定。",
+        "outstanding_decisions": [
+          "确定相接边界规则"
+        ],
+        "next_focus": "确认时间段端点规则"
+      }
+    },
+    "review": {
+      "schema_version": "1.1",
+      "stage": "review",
+      "summary": "合成协议示例，非真实运行结果。",
+      "proposals": [],
+      "questions": [],
+      "findings": [
+        {
+          "type": "not_testable",
+          "severity": "blocker",
+          "message": "目前缺少端点相接规则，无法确定该边界的预期。",
+          "related_refs": [
+            "REQ-0001"
+          ],
+          "source_refs": [
+            {
+              "source_id": "SRC-0001",
+              "excerpt_id": "EX-0001"
+            }
+          ],
+          "suggested_resolution": "由产品经理确认后补充 AC。"
+        }
+      ],
+      "used_source_refs": [],
+      "limitations": [],
+      "result": {
+        "assessment": "needs_changes",
+        "reviewed_refs": [
+          "REQ-0001"
+        ],
+        "perspectives": [
+          {
+            "role": "测试",
+            "considerations": [
+              "需要明确端点相接是否算重叠"
+            ]
+          }
+        ],
+        "required_decisions": [
+          "时间段相接规则"
+        ]
+      }
+    },
+    "ui": {
+      "schema_version": "1.1",
+      "stage": "ui",
+      "summary": "合成协议示例，非真实运行结果。",
+      "proposals": [],
+      "questions": [],
+      "findings": [],
+      "used_source_refs": [],
+      "limitations": [],
+      "result": {
+        "spec": {
+          "schema_version": "1.0",
+          "title": "电价时段管理线框",
+          "draft_revision": 3,
+          "design_intent": "在现有列表旁显示模拟编辑面板；布局建议仍待确认。",
+          "demo_data_label": "模拟数据，仅用于原型演示",
+          "pages": [
+            {
+              "page_id": "UI-0001",
+              "title": "电价时段管理",
+              "requirement_refs": [
+                "REQ-0001"
+              ],
+              "regions": [
+                {
+                  "name": "main",
+                  "components": [
+                    {
+                      "component_id": "CMP-001",
+                      "type": "table",
+                      "label": "时段列表",
+                      "description": "展示模拟时段，不连接业务接口。",
+                      "ref_ids": [
+                        "REQ-0001"
+                      ],
+                      "fields": [],
+                      "columns": [
+                        {
+                          "key": "period",
+                          "label": "时段",
+                          "ref_ids": [
+                            "REQ-0001"
+                          ]
+                        },
+                        {
+                          "key": "price",
+                          "label": "电价",
+                          "ref_ids": [
+                            "REQ-0001"
+                          ]
+                        }
+                      ],
+                      "rows": [
+                        [
+                          "00:00—08:00",
+                          "示例值"
+                        ]
+                      ],
+                      "interaction": {
+                        "action": "none",
+                        "target_id": null,
+                        "target_state": null
+                      },
+                      "provisional": true
+                    }
+                  ]
+                }
+              ],
+              "states": [
+                "normal",
+                "loading",
+                "empty",
+                "error",
+                "forbidden"
+              ],
+              "state_messages": {
+                "normal": "模拟列表",
+                "loading": "加载中（模拟）",
+                "empty": "暂无数据（模拟）",
+                "error": "读取失败（模拟）",
+                "forbidden": "无权限（展示方式待确认）"
+              },
+              "not_applicable_states": []
+            }
+          ]
+        }
+      }
+    },
+    "prd": {
+      "schema_version": "1.1",
+      "stage": "prd",
+      "summary": "合成协议示例，非真实运行结果。",
+      "proposals": [],
+      "questions": [],
+      "findings": [],
+      "used_source_refs": [],
+      "limitations": [
+        "这里只展示局部协议结构，不是完整参考章节覆盖，也不是已通过的文档验收。"
+      ],
+      "result": {
+        "title": "电价时段管理 PRD（评审稿）",
+        "sections": [
+          {
+            "section_id": "PRD-01",
+            "title": "需求与验收",
+            "blocks": [
+              {
+                "kind": "requirement",
+                "ref_ids": [
+                  "REQ-0001"
+                ],
+                "text": null
+              },
+              {
+                "kind": "acceptance",
+                "ref_ids": [
+                  "AC-0001"
+                ],
+                "text": null
+              },
+              {
+                "kind": "open_question",
+                "ref_ids": [
+                  "Q-0001"
+                ],
+                "text": "相接边界规则仍待确认。"
+              }
+            ],
+            "level": 1,
+            "parent_section_id": null
+          }
+        ],
+        "coverage": [
+          {
+            "item_id": "REQ-0001",
+            "section_ids": [
+              "PRD-01"
+            ]
+          },
+          {
+            "item_id": "AC-0001",
+            "section_ids": [
+              "PRD-01"
+            ]
+          }
+        ],
+        "document_type": "prd",
+        "content_profile_id": "user-prd-reference",
+        "content_profile_version": "1.1",
+        "reference_mapping": [
+          {
+            "profile_section_id": "PRD-4.F.5",
+            "scope_ref": "REQ-0001",
+            "disposition": "included",
+            "output_section_ids": [
+              "PRD-01"
+            ],
+            "reason": null
+          }
+        ]
+      }
+    },
+    "handoff": {
+      "schema_version": "1.1",
+      "stage": "handoff",
+      "summary": "合成协议示例，非真实运行结果。",
+      "proposals": [],
+      "questions": [],
+      "findings": [],
+      "used_source_refs": [],
+      "limitations": [
+        "此示例只示范数据格式，真实导出必须补齐适用文档并满足基线门禁。"
+      ],
+      "result": {
+        "documents": [
+          {
+            "kind": "frontend",
+            "title": "前端交接",
+            "sections": [
+              {
+                "section_id": "FE-01",
+                "title": "时段管理",
+                "canonical_refs": [
+                  "REQ-0001",
+                  "AC-0001"
+                ],
+                "body_suggestions": [
+                  "建议在编辑区展示拒绝原因，具体布局待开发确认。"
+                ]
+              }
+            ]
+          }
+        ],
+        "mappings": [
+          {
+            "requirement_id": "REQ-0001",
+            "rule_ids": [
+              "RULE-0001"
+            ],
+            "ac_ids": [
+              "AC-0001"
+            ],
+            "ui_page_ids": [
+              "UI-0001"
+            ],
+            "frontend_sections": [
+              "FE-01"
+            ],
+            "backend_sections": [],
+            "not_applicable_reason": "仅用于演示外壳 Schema；不是完整交接包。"
+          }
+        ],
+        "technical_proposals": []
+      }
+    },
+    "change": {
+      "schema_version": "1.1",
+      "stage": "change",
+      "summary": "合成协议示例，非真实运行结果。",
+      "proposals": [],
+      "questions": [],
+      "findings": [],
+      "used_source_refs": [],
+      "limitations": [],
+      "result": {
+        "changes": [
+          {
+            "operation": "revise",
+            "target_ref": "RULE-0001",
+            "proposal_ref": null,
+            "rationale": "用户提出只读角色可导出，应澄清数据范围后修订。",
+            "source_refs": [
+              {
+                "source_id": "SRC-0001",
+                "excerpt_id": "EX-0001"
+              }
+            ]
+          }
+        ],
+        "impacted_refs": [
+          "REQ-0001",
+          "RULE-0001",
+          "AC-0001"
+        ],
+        "unimpacted_refs": [],
+        "needs_new_confirmation": true,
+        "unresolved_effects": [
+          "导出数据权限范围待确认"
+        ]
+      }
+    },
+    "mrd_document": {
+      "schema_version": "1.1",
+      "stage": "prd",
+      "summary": "MRD 局部协议样例，非模型实测。",
+      "proposals": [],
+      "questions": [],
+      "findings": [],
+      "used_source_refs": [],
+      "limitations": [
+        "这里只展示局部协议结构，不是完整参考章节覆盖，也不是已通过的文档验收。"
+      ],
+      "result": {
+        "title": "电价时段维护 MRD（草稿）",
+        "sections": [
+          {
+            "section_id": "MRD-01",
+            "title": "功能点描述与待确认事项",
+            "blocks": [
+              {
+                "kind": "requirement",
+                "ref_ids": [
+                  "REQ-0001"
+                ],
+                "text": null
+              },
+              {
+                "kind": "acceptance",
+                "ref_ids": [
+                  "AC-0001"
+                ],
+                "text": null
+              },
+              {
+                "kind": "open_question",
+                "ref_ids": [
+                  "Q-0001"
+                ],
+                "text": "相接边界规则仍待确认。"
+              }
+            ],
+            "level": 1,
+            "parent_section_id": null
+          }
+        ],
+        "coverage": [
+          {
+            "item_id": "REQ-0001",
+            "section_ids": [
+              "MRD-01"
+            ]
+          },
+          {
+            "item_id": "AC-0001",
+            "section_ids": [
+              "MRD-01"
+            ]
+          }
+        ],
+        "document_type": "mrd",
+        "content_profile_id": "user-mrd-reference",
+        "content_profile_version": "1.1",
+        "reference_mapping": [
+          {
+            "profile_section_id": "MRD-5.1.F.4",
+            "scope_ref": "REQ-0001",
+            "disposition": "included",
+            "output_section_ids": [
+              "MRD-01"
+            ],
+            "reason": null
+          }
+        ]
+      }
+    }
+  }
+}

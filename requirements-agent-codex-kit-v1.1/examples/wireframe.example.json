@@ -1,0 +1,76 @@
+{
+  "schema_version": "1.0",
+  "title": "电价时段管理线框",
+  "draft_revision": 3,
+  "design_intent": "在现有列表旁显示模拟编辑面板；布局建议仍待确认。",
+  "demo_data_label": "模拟数据，仅用于原型演示",
+  "pages": [
+    {
+      "page_id": "UI-0001",
+      "title": "电价时段管理",
+      "requirement_refs": [
+        "REQ-0001"
+      ],
+      "regions": [
+        {
+          "name": "main",
+          "components": [
+            {
+              "component_id": "CMP-001",
+              "type": "table",
+              "label": "时段列表",
+              "description": "展示模拟时段，不连接业务接口。",
+              "ref_ids": [
+                "REQ-0001"
+              ],
+              "fields": [],
+              "columns": [
+                {
+                  "key": "period",
+                  "label": "时段",
+                  "ref_ids": [
+                    "REQ-0001"
+                  ]
+                },
+                {
+                  "key": "price",
+                  "label": "电价",
+                  "ref_ids": [
+                    "REQ-0001"
+                  ]
+                }
+              ],
+              "rows": [
+                [
+                  "00:00—08:00",
+                  "示例值"
+                ]
+              ],
+              "interaction": {
+                "action": "none",
+                "target_id": null,
+                "target_state": null
+              },
+              "provisional": true
+            }
+          ]
+        }
+      ],
+      "states": [
+        "normal",
+        "loading",
+        "empty",
+        "error",
+        "forbidden"
+      ],
+      "state_messages": {
+        "normal": "模拟列表",
+        "loading": "加载中（模拟）",
+        "empty": "暂无数据（模拟）",
+        "error": "读取失败（模拟）",
+        "forbidden": "无权限（展示方式待确认）"
+      },
+      "not_applicable_states": []
+    }
+  ]
+}

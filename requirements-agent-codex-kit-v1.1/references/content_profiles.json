@@ -1,0 +1,555 @@
+{
+  "profile_schema_version": "1.0",
+  "profile_version": "1.1",
+  "purpose": "chapter_content_reference_not_fixed_layout",
+  "default_document_type": "prd",
+  "available_document_types": [
+    "prd",
+    "mrd"
+  ],
+  "always_generate_both": false,
+  "force_exact_heading_text": false,
+  "force_fixed_chapter_count": false,
+  "template_examples_are_business_facts": false,
+  "notice": "由用户原文件整理的内容参考；章节可合理合并、裁剪、增补，重要未知不得隐藏。不是已实现的导出器。",
+  "sources": [
+    {
+      "reference_id": "REF-PRD",
+      "file": "references/产品需求文档PRD模板(1).docx",
+      "sha256": "77cecafe388aa87c6a053007e49c31b1a3e402a0259b6e9718e93cb21b840bb7",
+      "use": "chapter_content_only",
+      "original_unchanged": true
+    },
+    {
+      "reference_id": "REF-MRD",
+      "file": "references/百度产品需求管理文档（MRD）模板(1).docx",
+      "sha256": "c14ee3d56d2889d5fc153f0b6e062164df2eefa735c8a151de2777d58a813bc2",
+      "use": "chapter_content_only",
+      "original_unchanged": true
+    }
+  ],
+  "profiles": [
+    {
+      "id": "user-prd-reference",
+      "version": "1.1",
+      "document_type": "prd",
+      "source_reference_id": "REF-PRD",
+      "default_outline_origin": "原目录及正文第一至第五章",
+      "sections": [
+        {
+          "id": "PRD-META",
+          "parent_id": null,
+          "reference_heading": "基本信息／文档修订历史／目录",
+          "content_dimension": "编写、审核、版本及修订来源；由真实记录填充，不拷贝旧值",
+          "mapping_required": true,
+          "repeat_per_function": false,
+          "origin": "original_template"
+        },
+        {
+          "id": "PRD-PREFACE",
+          "parent_id": null,
+          "reference_heading": "前言",
+          "content_dimension": "原目录有条目但未提供独立正文；可选前置说明",
+          "mapping_required": false,
+          "repeat_per_function": false,
+          "origin": "original_template"
+        },
+        {
+          "id": "PRD-1",
+          "parent_id": null,
+          "reference_heading": "第一章 文档说明",
+          "content_dimension": "组织容器，可合并或重排",
+          "mapping_required": false,
+          "repeat_per_function": false,
+          "origin": "original_template"
+        },
+        {
+          "id": "PRD-2",
+          "parent_id": null,
+          "reference_heading": "第二章 产品介绍",
+          "content_dimension": "组织容器，可合并或重排",
+          "mapping_required": false,
+          "repeat_per_function": false,
+          "origin": "original_template"
+        },
+        {
+          "id": "PRD-3",
+          "parent_id": null,
+          "reference_heading": "第三章 产品说明",
+          "content_dimension": "组织容器，可合并或重排",
+          "mapping_required": false,
+          "repeat_per_function": false,
+          "origin": "original_template"
+        },
+        {
+          "id": "PRD-4",
+          "parent_id": null,
+          "reference_heading": "第四章 功能需求",
+          "content_dimension": "组织容器，可合并或重排",
+          "mapping_required": false,
+          "repeat_per_function": false,
+          "origin": "original_template"
+        },
+        {
+          "id": "PRD-5",
+          "parent_id": null,
+          "reference_heading": "第五章 非功能性需求",
+          "content_dimension": "组织容器，可合并或重排",
+          "mapping_required": false,
+          "repeat_per_function": false,
+          "origin": "original_template"
+        },
+        {
+          "id": "PRD-1.1",
+          "parent_id": "PRD-1",
+          "reference_heading": "1.1 文档的目的",
+          "content_dimension": "文档用途和读者",
+          "mapping_required": true,
+          "repeat_per_function": false,
+          "origin": "original_template"
+        },
+        {
+          "id": "PRD-1.2",
+          "parent_id": "PRD-1",
+          "reference_heading": "1.2 参考文献",
+          "content_dimension": "实际来源及其适用性",
+          "mapping_required": true,
+          "repeat_per_function": false,
+          "origin": "original_template"
+        },
+        {
+          "id": "PRD-1.3",
+          "parent_id": "PRD-1",
+          "reference_heading": "1.3 产品命名规则",
+          "content_dimension": "本项目已有命名规则，无关可裁剪",
+          "mapping_required": true,
+          "repeat_per_function": false,
+          "origin": "original_template"
+        },
+        {
+          "id": "PRD-2.1",
+          "parent_id": "PRD-2",
+          "reference_heading": "2.1 产品概要说明",
+          "content_dimension": "产品概况，可整合背景与现状",
+          "mapping_required": true,
+          "repeat_per_function": false,
+          "origin": "original_template"
+        },
+        {
+          "id": "PRD-2.2",
+          "parent_id": "PRD-2",
+          "reference_heading": "2.2 产品用户定位",
+          "content_dimension": "目标用户与使用场景",
+          "mapping_required": true,
+          "repeat_per_function": false,
+          "origin": "original_template"
+        },
+        {
+          "id": "PRD-2.3",
+          "parent_id": "PRD-2",
+          "reference_heading": "2.3 产品中的角色",
+          "content_dimension": "角色、职责、功能和权限范围，不继承例子",
+          "mapping_required": true,
+          "repeat_per_function": false,
+          "origin": "original_template"
+        },
+        {
+          "id": "PRD-3.1",
+          "parent_id": "PRD-3",
+          "reference_heading": "3.1 产品信息结构图",
+          "content_dimension": "产品信息组织；必要时以简单关系表替代",
+          "mapping_required": true,
+          "repeat_per_function": false,
+          "origin": "original_template"
+        },
+        {
+          "id": "PRD-3.2",
+          "parent_id": "PRD-3",
+          "reference_heading": "3.2 产品功能结构图",
+          "content_dimension": "功能／模块关系；不编造模块",
+          "mapping_required": true,
+          "repeat_per_function": false,
+          "origin": "original_template"
+        },
+        {
+          "id": "PRD-3.3",
+          "parent_id": "PRD-3",
+          "reference_heading": "3.3 用户使用流程图",
+          "content_dimension": "用户行为路径；可用步骤替代复杂图",
+          "mapping_required": true,
+          "repeat_per_function": false,
+          "origin": "original_template"
+        },
+        {
+          "id": "PRD-4.F",
+          "parent_id": "PRD-4",
+          "reference_heading": "4.x 功能点",
+          "content_dimension": "逐功能组织容器",
+          "mapping_required": false,
+          "repeat_per_function": true,
+          "origin": "original_template"
+        },
+        {
+          "id": "PRD-4.F.1",
+          "parent_id": "PRD-4.F",
+          "reference_heading": "4.x.1 功能原型",
+          "content_dimension": "对应实际 UI／原型及版本，明确低保真与模拟",
+          "mapping_required": true,
+          "repeat_per_function": true,
+          "origin": "original_template"
+        },
+        {
+          "id": "PRD-4.F.2",
+          "parent_id": "PRD-4.F",
+          "reference_heading": "4.x.2 功能概述",
+          "content_dimension": "该功能解决什么问题",
+          "mapping_required": true,
+          "repeat_per_function": true,
+          "origin": "original_template"
+        },
+        {
+          "id": "PRD-4.F.3",
+          "parent_id": "PRD-4.F",
+          "reference_heading": "4.x.3 功能业务流程图",
+          "content_dimension": "正常及适用异常路径，简单时可合并步骤",
+          "mapping_required": true,
+          "repeat_per_function": true,
+          "origin": "original_template"
+        },
+        {
+          "id": "PRD-4.F.4",
+          "parent_id": "PRD-4.F",
+          "reference_heading": "4.x.4 功能点清单",
+          "content_dimension": "当前范围内子功能",
+          "mapping_required": true,
+          "repeat_per_function": true,
+          "origin": "original_template"
+        },
+        {
+          "id": "PRD-4.F.5",
+          "parent_id": "PRD-4.F",
+          "reference_heading": "4.x.5 功能详细描述",
+          "content_dimension": "适用规则与处理行为",
+          "mapping_required": true,
+          "repeat_per_function": true,
+          "origin": "original_template"
+        },
+        {
+          "id": "PRD-4.F.6",
+          "parent_id": "PRD-4.F",
+          "reference_heading": "4.x.6 与其他子模块的接口",
+          "content_dimension": "业务依赖及交互，未知技术实现不编造",
+          "mapping_required": true,
+          "repeat_per_function": true,
+          "origin": "original_template"
+        },
+        {
+          "id": "PRD-4.F.7",
+          "parent_id": "PRD-4.F",
+          "reference_heading": "4.x.7 业务数据描述",
+          "content_dimension": "数据对象、字段、来源及已确认约束",
+          "mapping_required": true,
+          "repeat_per_function": true,
+          "origin": "original_template"
+        },
+        {
+          "id": "PRD-4.F.8",
+          "parent_id": "PRD-4.F",
+          "reference_heading": "4.x.8 边界值处理",
+          "content_dimension": "适用边界及未决条件",
+          "mapping_required": true,
+          "repeat_per_function": true,
+          "origin": "original_template"
+        },
+        {
+          "id": "PRD-4.F.9",
+          "parent_id": "PRD-4.F",
+          "reference_heading": "4.x.9 异常处理",
+          "content_dimension": "失败行为及相关数据结果",
+          "mapping_required": true,
+          "repeat_per_function": true,
+          "origin": "original_template"
+        },
+        {
+          "id": "PRD-5.1",
+          "parent_id": "PRD-5",
+          "reference_heading": "5.1 界面操作需求",
+          "content_dimension": "界面和操作的适用要求",
+          "mapping_required": true,
+          "repeat_per_function": false,
+          "origin": "original_template"
+        },
+        {
+          "id": "PRD-5.2",
+          "parent_id": "PRD-5",
+          "reference_heading": "5.2 性能需求",
+          "content_dimension": "已确认可判定目标；无指标不编造",
+          "mapping_required": true,
+          "repeat_per_function": false,
+          "origin": "original_template"
+        },
+        {
+          "id": "PRD-5.3",
+          "parent_id": "PRD-5",
+          "reference_heading": "5.3 安全性需求",
+          "content_dimension": "适用安全与权限要求",
+          "mapping_required": true,
+          "repeat_per_function": false,
+          "origin": "original_template"
+        },
+        {
+          "id": "PRD-5.4",
+          "parent_id": "PRD-5",
+          "reference_heading": "5.4 维护与升级",
+          "content_dimension": "维护升级相关约束",
+          "mapping_required": true,
+          "repeat_per_function": false,
+          "origin": "original_template"
+        },
+        {
+          "id": "PRD-5.5",
+          "parent_id": "PRD-5",
+          "reference_heading": "5.5 可靠性和健壮性",
+          "content_dimension": "适用可靠性与容错",
+          "mapping_required": true,
+          "repeat_per_function": false,
+          "origin": "original_template"
+        },
+        {
+          "id": "PRD-5.6",
+          "parent_id": "PRD-5",
+          "reference_heading": "5.6 用户文档需求",
+          "content_dimension": "需要的用户帮助或文档",
+          "mapping_required": true,
+          "repeat_per_function": false,
+          "origin": "original_template"
+        },
+        {
+          "id": "PRD-5.7",
+          "parent_id": "PRD-5",
+          "reference_heading": "5.7 运行环境",
+          "content_dimension": "已有环境要求，不继承样例分辨率",
+          "mapping_required": true,
+          "repeat_per_function": false,
+          "origin": "original_template"
+        }
+      ]
+    },
+    {
+      "id": "user-mrd-reference",
+      "version": "1.1",
+      "document_type": "mrd",
+      "source_reference_id": "REF-MRD",
+      "default_outline_origin": "原目录及正文第1至第7章",
+      "sections": [
+        {
+          "id": "MRD-META",
+          "parent_id": null,
+          "reference_heading": "MRD 基本信息／修改记录／目录",
+          "content_dimension": "审核、拟制、日期、重要性、紧迫性、变更控制，来自真实记录或待确认",
+          "mapping_required": true,
+          "repeat_per_function": false,
+          "origin": "original_template"
+        },
+        {
+          "id": "MRD-1",
+          "parent_id": null,
+          "reference_heading": "1 项目背景",
+          "content_dimension": "项目／产品产生的背景",
+          "mapping_required": true,
+          "repeat_per_function": false,
+          "origin": "original_template"
+        },
+        {
+          "id": "MRD-2",
+          "parent_id": null,
+          "reference_heading": "2 名词解释",
+          "content_dimension": "实际新名词、概念及简略语，无需时裁剪",
+          "mapping_required": true,
+          "repeat_per_function": false,
+          "origin": "original_template"
+        },
+        {
+          "id": "MRD-3",
+          "parent_id": null,
+          "reference_heading": "3 可行性分析",
+          "content_dimension": "组织容器，可合并或重排",
+          "mapping_required": false,
+          "repeat_per_function": false,
+          "origin": "original_template"
+        },
+        {
+          "id": "MRD-4",
+          "parent_id": null,
+          "reference_heading": "4 综合描述",
+          "content_dimension": "组织容器，可合并或重排",
+          "mapping_required": false,
+          "repeat_per_function": false,
+          "origin": "original_template"
+        },
+        {
+          "id": "MRD-5",
+          "parent_id": null,
+          "reference_heading": "5 功能详述",
+          "content_dimension": "组织容器，可合并或重排",
+          "mapping_required": false,
+          "repeat_per_function": false,
+          "origin": "original_template"
+        },
+        {
+          "id": "MRD-3.1",
+          "parent_id": "MRD-3",
+          "reference_heading": "3.1 前期调研信息和数据",
+          "content_dimension": "实际立项依据、来源和局限；不编造研究",
+          "mapping_required": true,
+          "repeat_per_function": false,
+          "origin": "original_template"
+        },
+        {
+          "id": "MRD-3.2",
+          "parent_id": "MRD-3",
+          "reference_heading": "3.2 项目预期目标",
+          "content_dimension": "已知目标，数值未定保持未知",
+          "mapping_required": true,
+          "repeat_per_function": false,
+          "origin": "original_template"
+        },
+        {
+          "id": "MRD-4.1",
+          "parent_id": "MRD-4",
+          "reference_heading": "4.1 功能概述",
+          "content_dimension": "功能模块概览和本期重点，可简化",
+          "mapping_required": true,
+          "repeat_per_function": false,
+          "origin": "original_template"
+        },
+        {
+          "id": "MRD-4.2",
+          "parent_id": "MRD-4",
+          "reference_heading": "4.2 对其它产品的影响",
+          "content_dimension": "假设、依赖及外部接口关系",
+          "mapping_required": true,
+          "repeat_per_function": false,
+          "origin": "original_template"
+        },
+        {
+          "id": "MRD-5.1",
+          "parent_id": "MRD-5",
+          "reference_heading": "5.1 功能需求",
+          "content_dimension": "功能需求容器",
+          "mapping_required": false,
+          "repeat_per_function": false,
+          "origin": "original_template"
+        },
+        {
+          "id": "MRD-5.1.F",
+          "parent_id": "MRD-5.1",
+          "reference_heading": "5.1.x 功能点",
+          "content_dimension": "逐功能容器",
+          "mapping_required": false,
+          "repeat_per_function": true,
+          "origin": "original_template"
+        },
+        {
+          "id": "MRD-5.1.F.1",
+          "parent_id": "MRD-5.1.F",
+          "reference_heading": "5.1.x.1 功能点类型和优先级",
+          "content_dimension": "新增／旧有功能升级／Bugfix；高／中／低为参考，不替用户定优先级",
+          "mapping_required": true,
+          "repeat_per_function": true,
+          "origin": "original_template"
+        },
+        {
+          "id": "MRD-5.1.F.2",
+          "parent_id": "MRD-5.1.F",
+          "reference_heading": "5.1.x.2 流程图",
+          "content_dimension": "复杂流程图示，简单可裁剪",
+          "mapping_required": true,
+          "repeat_per_function": true,
+          "origin": "original_template"
+        },
+        {
+          "id": "MRD-5.1.F.3",
+          "parent_id": "MRD-5.1.F",
+          "reference_heading": "5.1.x.3 页面布局",
+          "content_dimension": "实际原型／页面设计，无可用图可说明或简化",
+          "mapping_required": true,
+          "repeat_per_function": true,
+          "origin": "original_template"
+        },
+        {
+          "id": "MRD-5.1.F.4",
+          "parent_id": "MRD-5.1.F",
+          "reference_heading": "5.1.x.4 功能点描述",
+          "content_dimension": "一致、无二义性的具体行为及已知要求",
+          "mapping_required": true,
+          "repeat_per_function": true,
+          "origin": "original_template"
+        },
+        {
+          "id": "MRD-5.2",
+          "parent_id": "MRD-5",
+          "reference_heading": "5.2 非功能需求",
+          "content_dimension": "性能、可维护性、可靠性、安全性、安装性等适用维度；可与功能合并，不强行补充指标",
+          "mapping_required": true,
+          "repeat_per_function": false,
+          "origin": "original_template"
+        },
+        {
+          "id": "MRD-6",
+          "parent_id": null,
+          "reference_heading": "6 其它问题描述",
+          "content_dimension": "上线风险／应对及其它部门影响，无关可裁剪",
+          "mapping_required": true,
+          "repeat_per_function": false,
+          "origin": "original_template"
+        },
+        {
+          "id": "MRD-7",
+          "parent_id": null,
+          "reference_heading": "7 附件",
+          "content_dimension": "本次实际相关附件；无可不设",
+          "mapping_required": true,
+          "repeat_per_function": false,
+          "origin": "original_template"
+        }
+      ]
+    }
+  ],
+  "project_added_dimensions": [
+    {
+      "name": "本期范围与非目标",
+      "origin": "current_project_requirement_not_template_quote"
+    },
+    {
+      "name": "验收条件与REQ/RULE/AC映射",
+      "origin": "current_project_requirement_not_template_quote"
+    },
+    {
+      "name": "事实/建议/假设/待确认区分",
+      "origin": "current_project_requirement_not_template_quote"
+    },
+    {
+      "name": "底稿版本/来源/UI关联/变更影响",
+      "origin": "current_project_requirement_not_template_quote"
+    }
+  ],
+  "do_not_copy_examples": [
+    "订单审核与撤销业务",
+    "示例角色及数字权限等级",
+    "用户名和密码长度",
+    "示例字段长度与字符规则",
+    "800×600分辨率要求",
+    "样例事务回滚机制",
+    "原公司及版权声明",
+    "旧审核签字/作者/日期/V2.10",
+    "静态目录页码及第X页共2页",
+    "模板原型网址与旧图"
+  ],
+  "mapping_dispositions": [
+    "included",
+    "merged",
+    "not_applicable",
+    "pending"
+  ]
+}

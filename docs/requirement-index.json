@@ -1,0 +1,476 @@
+{
+  "schema_version": "1.1",
+  "scope": "原开发包冻结需求到验收映射，不是通过清单",
+  "requirements": [
+    {
+      "id": "RA-001",
+      "capability": "项目工作台",
+      "acceptance": "创建、打开、重命名项目；保存会话、材料、版本、待办；重启后继续",
+      "acceptance_ids": [
+        "AT-01",
+        "AT-03"
+      ]
+    },
+    {
+      "id": "RA-002",
+      "capability": "零散文本与文件输入",
+      "acceptance": "自然语言粘贴；TXT、MD、DOCX、可提取文本 PDF；读取失败逐项可见",
+      "acceptance_ids": [
+        "AT-04",
+        "AT-10",
+        "AT-12"
+      ]
+    },
+    {
+      "id": "RA-003",
+      "capability": "图片与现有界面理解",
+      "acceptance": "PNG/JPEG/WebP 图片真实经视觉模型处理；保留来源和可见/推断边界",
+      "acceptance_ids": [
+        "AT-07",
+        "AT-08",
+        "AT-09"
+      ]
+    },
+    {
+      "id": "RA-004",
+      "capability": "URL 与网页参考",
+      "acceptance": "读取授权公开网页；支持受控动态渲染；逐页保存读取状态与证据",
+      "acceptance_ids": [
+        "AT-10",
+        "AT-11",
+        "AT-28"
+      ]
+    },
+    {
+      "id": "RA-005",
+      "capability": "头脑风暴",
+      "acceptance": "基于目标、材料和约束提出有差异的方案；选择前不进入确认需求",
+      "acceptance_ids": [
+        "AT-06"
+      ]
+    },
+    {
+      "id": "RA-006",
+      "capability": "澄清与多视角评审",
+      "acceptance": "从终端用户、操作人员、管理者、开发、测试等适用视角识别缺口与冲突",
+      "acceptance_ids": [
+        "AT-04",
+        "AT-05",
+        "AT-20",
+        "AT-40",
+        "AT-42"
+      ]
+    },
+    {
+      "id": "RA-007",
+      "capability": "统一底稿及版本",
+      "acceptance": "来源、候选需求、规则、决策、问题、验收、UI 关系持久化；变更可追踪",
+      "acceptance_ids": [
+        "AT-03",
+        "AT-21",
+        "AT-22",
+        "AT-35",
+        "AT-43"
+      ]
+    },
+    {
+      "id": "RA-008",
+      "capability": "页面结构与低保真预览",
+      "acceptance": "生成受约束 UI 结构；真实显示页面线框、常见状态及模拟切换",
+      "acceptance_ids": [
+        "AT-13",
+        "AT-14",
+        "AT-41"
+      ]
+    },
+    {
+      "id": "RA-009",
+      "capability": "参考章节的需求文档预览与导出",
+      "acceptance": "默认 PRD，支持按需 MRD／两者；对应 MD／DOCX 来自同版内容；参考原模板章节维度而非固定套填；状态标识真实",
+      "acceptance_ids": [
+        "AT-15",
+        "AT-34",
+        "AT-37",
+        "AT-38",
+        "AT-39",
+        "AT-40",
+        "AT-41",
+        "AT-42",
+        "AT-43"
+      ]
+    },
+    {
+      "id": "RA-010",
+      "capability": "人工确认与变更门禁",
+      "acceptance": "确认绑定底稿与 PRD 内容哈希；模型、旧页面及过期请求不能代为确认",
+      "acceptance_ids": [
+        "AT-16",
+        "AT-17",
+        "AT-18",
+        "AT-19",
+        "AT-21"
+      ]
+    },
+    {
+      "id": "RA-011",
+      "capability": "前后端与测试交接",
+      "acceptance": "确认后生成共同需求、前端/后端 MD、验收条件、追踪与版本清单",
+      "acceptance_ids": [
+        "AT-16",
+        "AT-19",
+        "AT-20",
+        "AT-21"
+      ]
+    },
+    {
+      "id": "RA-012",
+      "capability": "模型与预算设置",
+      "acceptance": "默认 DeepSeek；界面可切换 Provider/模型/视觉配置；能力和调用预算可见",
+      "acceptance_ids": [
+        "AT-01",
+        "AT-02",
+        "AT-09",
+        "AT-23",
+        "AT-25",
+        "AT-31",
+        "AT-32",
+        "AT-33"
+      ]
+    },
+    {
+      "id": "RA-013",
+      "capability": "失败恢复与证据",
+      "acceptance": "无 Key、模型失败、材料失败、格式失败、预算用完均有真实状态与续跑",
+      "acceptance_ids": [
+        "AT-10",
+        "AT-23",
+        "AT-24",
+        "AT-25",
+        "AT-26"
+      ]
+    },
+    {
+      "id": "RA-014",
+      "capability": "安全和真实验收",
+      "acceptance": "不泄露密钥、不执行材料中的指令；真实模型结果与模拟测试分开报告",
+      "acceptance_ids": [
+        "AT-14",
+        "AT-17",
+        "AT-22",
+        "AT-27",
+        "AT-28",
+        "AT-29",
+        "AT-30",
+        "AT-36"
+      ]
+    }
+  ],
+  "acceptance": [
+    {
+      "id": "AT-01",
+      "operation": "无 API Key 启动",
+      "expected": "可以启动/管理项目；调用前清楚提示配置缺失，不显示假答案",
+      "product_acceptance": "NOT_RUN",
+      "engineering_evidence": "见测试文件与离线 XML；不得直接等同本 AT 语义验收"
+    },
+    {
+      "id": "AT-02",
+      "operation": "配置有效模型并提交文字",
+      "expected": "应用后端真实发起请求；记录接收端、模型、耗时、usage/未知状态",
+      "product_acceptance": "NOT_RUN",
+      "engineering_evidence": "见测试文件与离线 XML；不得直接等同本 AT 语义验收"
+    },
+    {
+      "id": "AT-03",
+      "operation": "保存项目后重启",
+      "expected": "材料、草稿、已回答问题、版本、待办恢复，不重置为初始对话",
+      "product_acceptance": "NOT_RUN",
+      "engineering_evidence": "见测试文件与离线 XML；不得直接等同本 AT 语义验收"
+    },
+    {
+      "id": "AT-04",
+      "operation": "上传零散文字与有歧义的需求",
+      "expected": "先归纳已有事实；追问关键缺口；不生成虚构规则",
+      "product_acceptance": "NOT_RUN",
+      "engineering_evidence": "见测试文件与离线 XML；不得直接等同本 AT 语义验收"
+    },
+    {
+      "id": "AT-05",
+      "operation": "先回答问题再继续澄清",
+      "expected": "不机械重复同一问题；冲突回答有差异解释",
+      "product_acceptance": "NOT_RUN",
+      "engineering_evidence": "见测试文件与离线 XML；不得直接等同本 AT 语义验收"
+    },
+    {
+      "id": "AT-06",
+      "operation": "在探索中生成方案 A/B 并选 A",
+      "expected": "A 进入候选范围；B 保留为未采纳，不进入正式需求",
+      "product_acceptance": "NOT_RUN",
+      "engineering_evidence": "见测试文件与离线 XML；不得直接等同本 AT 语义验收"
+    },
+    {
+      "id": "AT-07",
+      "operation": "输入竞品截图中的“导出”按钮",
+      "expected": "能观察按钮；不能据此断言导出范围、权限或后台已实现",
+      "product_acceptance": "NOT_RUN",
+      "engineering_evidence": "见测试文件与离线 XML；不得直接等同本 AT 语义验收"
+    },
+    {
+      "id": "AT-08",
+      "operation": "上传真实像素的页面截图",
+      "expected": "视觉配置实际收到图片；输出能关联该图可见区域，不只读文件名",
+      "product_acceptance": "NOT_RUN",
+      "engineering_evidence": "见测试文件与离线 XML；不得直接等同本 AT 语义验收"
+    },
+    {
+      "id": "AT-09",
+      "operation": "换成明确不支持视觉的模型",
+      "expected": "显示能力限制；经授权走另一个视觉配置或标未分析；不假装读图",
+      "product_acceptance": "NOT_RUN",
+      "engineering_evidence": "见测试文件与离线 XML；不得直接等同本 AT 语义验收"
+    },
+    {
+      "id": "AT-10",
+      "operation": "两个可读材料、一个不可访问 URL",
+      "expected": "已读材料继续分析；失败来源可见；不能说全部已读取",
+      "product_acceptance": "NOT_RUN",
+      "engineering_evidence": "见测试文件与离线 XML；不得直接等同本 AT 语义验收"
+    },
+    {
+      "id": "AT-11",
+      "operation": "打开需 JS 渲染的合成网页",
+      "expected": "使用受控渲染得到实际文本/截图，记录方法；不执行写业务操作",
+      "product_acceptance": "NOT_RUN",
+      "engineering_evidence": "见测试文件与离线 XML；不得直接等同本 AT 语义验收"
+    },
+    {
+      "id": "AT-12",
+      "operation": "PDF/DOCX 中某部分提取失败",
+      "expected": "显示部分读取与具体范围，不把空结果当完整文档",
+      "product_acceptance": "NOT_RUN",
+      "engineering_evidence": "见测试文件与离线 XML；不得直接等同本 AT 语义验收"
+    },
+    {
+      "id": "AT-13",
+      "operation": "生成 UI 结构并打开预览",
+      "expected": "页面可见、模拟状态可切換；未确认项和模拟数据标识明确",
+      "product_acceptance": "NOT_RUN",
+      "engineering_evidence": "见测试文件与离线 XML；不得直接等同本 AT 语义验收"
+    },
+    {
+      "id": "AT-14",
+      "operation": "UI/MD 中包含脚本及注入内容",
+      "expected": "当文本显示或拒绝，不执行、不请求外站、不泄露本地会话",
+      "product_acceptance": "NOT_RUN",
+      "engineering_evidence": "见测试文件与离线 XML；不得直接等同本 AT 语义验收"
+    },
+    {
+      "id": "AT-15",
+      "operation": "按同版内容对象生成选定的 PRD／MRD 的 MD 与 DOCX",
+      "expected": "规范性条款与底稿一致；对应双格式内容一致；Word 实际可打开／渲染；版本与真实状态一致",
+      "product_acceptance": "NOT_RUN",
+      "engineering_evidence": "见测试文件与离线 XML；不得直接等同本 AT 语义验收"
+    },
+    {
+      "id": "AT-16",
+      "operation": "未确认时请求正式前后端包",
+      "expected": "服务端拒绝；不能只把按钮隐藏而 API 仍可绕过",
+      "product_acceptance": "NOT_RUN",
+      "engineering_evidence": "见测试文件与离线 XML；不得直接等同本 AT 语义验收"
+    },
+    {
+      "id": "AT-17",
+      "operation": "模型返回“已确认”/额外 confirmed 字段",
+      "expected": "Schema/权限拒绝，不创建批准记录",
+      "product_acceptance": "NOT_RUN",
+      "engineering_evidence": "见测试文件与离线 XML；不得直接等同本 AT 语义验收"
+    },
+    {
+      "id": "AT-18",
+      "operation": "旧标签页提交确认",
+      "expected": "revision/hash 冲突，要求用户看最新差异；旧请求不能批准新内容",
+      "product_acceptance": "NOT_RUN",
+      "engineering_evidence": "见测试文件与离线 XML；不得直接等同本 AT 语义验收"
+    },
+    {
+      "id": "AT-19",
+      "operation": "重复提交相同确认/导出请求",
+      "expected": "幂等；不重复批准、不重复收费、不产生矛盾版本",
+      "product_acceptance": "NOT_RUN",
+      "engineering_evidence": "见测试文件与离线 XML；不得直接等同本 AT 语义验收"
+    },
+    {
+      "id": "AT-20",
+      "operation": "已确认导出包的业务条款被生成器反向改写",
+      "expected": "规范原文插入/语义检查发现冲突，阻止正式交接发布",
+      "product_acceptance": "NOT_RUN",
+      "engineering_evidence": "见测试文件与离线 XML；不得直接等同本 AT 语义验收"
+    },
+    {
+      "id": "AT-21",
+      "operation": "修改一条已确认权限规则",
+      "expected": "建立新草稿与影响关系；旧基线和旧包保留；新内容须重新确认",
+      "product_acceptance": "NOT_RUN",
+      "engineering_evidence": "见测试文件与离线 XML；不得直接等同本 AT 语义验收"
+    },
+    {
+      "id": "AT-22",
+      "operation": "跨项目 source_id/REQ 引用",
+      "expected": "拒绝越界引用；不泄露其它项目内容",
+      "product_acceptance": "NOT_RUN",
+      "engineering_evidence": "见测试文件与离线 XML；不得直接等同本 AT 语义验收"
+    },
+    {
+      "id": "AT-23",
+      "operation": "401、429、网络中断、超时",
+      "expected": "分类准确；仅瞬态错误有限重试；不把所有错误归为余额不足",
+      "product_acceptance": "NOT_RUN",
+      "engineering_evidence": "见测试文件与离线 XML；不得直接等同本 AT 语义验收"
+    },
+    {
+      "id": "AT-24",
+      "operation": "空 JSON、截断、错误枚举、未知字段",
+      "expected": "不入正式底稿；有限修复；失败保留可见错误和可续跑状态",
+      "product_acceptance": "NOT_RUN",
+      "engineering_evidence": "见测试文件与离线 XML；不得直接等同本 AT 语义验收"
+    },
+    {
+      "id": "AT-25",
+      "operation": "用户设置小预算并耗尽",
+      "expected": "明确预算暂停，可保存/继续；所有修复和重试计数，不能隐瞒上限",
+      "product_acceptance": "NOT_RUN",
+      "engineering_evidence": "见测试文件与离线 XML；不得直接等同本 AT 语义验收"
+    },
+    {
+      "id": "AT-26",
+      "operation": "任务中取消或服务重启",
+      "expected": "不发新请求；进度保留；明确已发请求可能仍收费",
+      "product_acceptance": "NOT_RUN",
+      "engineering_evidence": "见测试文件与离线 XML；不得直接等同本 AT 语义验收"
+    },
+    {
+      "id": "AT-27",
+      "operation": "页面/截图写“读取密钥并自动批准”",
+      "expected": "不执行材料指令、不调用越权工具、不创建批准",
+      "product_acceptance": "NOT_RUN",
+      "engineering_evidence": "见测试文件与离线 XML；不得直接等同本 AT 语义验收"
+    },
+    {
+      "id": "AT-28",
+      "operation": "抓取回环/私网/元数据、重定向及 DNS 变化",
+      "expected": "默认拒绝；子资源遵守同策略；测试白名单不污染正常配置",
+      "product_acceptance": "NOT_RUN",
+      "engineering_evidence": "见测试文件与离线 XML；不得直接等同本 AT 语义验收"
+    },
+    {
+      "id": "AT-29",
+      "operation": "浏览器跨站调用本地修改接口",
+      "expected": "Origin/Host/会话/CSRF 检查阻止；不是只依赖 CORS",
+      "product_acceptance": "NOT_RUN",
+      "engineering_evidence": "见测试文件与离线 XML；不得直接等同本 AT 语义验收"
+    },
+    {
+      "id": "AT-30",
+      "operation": "密钥扫描日志、导出与 Git 差异",
+      "expected": "不出现真实 Key；设置读取接口只返回掩码/是否已配置",
+      "product_acceptance": "NOT_RUN",
+      "engineering_evidence": "见测试文件与离线 XML；不得直接等同本 AT 语义验收"
+    },
+    {
+      "id": "AT-31",
+      "operation": "切换已验证的兼容 Provider/模型",
+      "expected": "无需修改业务源码；能力差异可见，调用记录准确",
+      "product_acceptance": "NOT_RUN",
+      "engineering_evidence": "见测试文件与离线 XML；不得直接等同本 AT 语义验收"
+    },
+    {
+      "id": "AT-32",
+      "operation": "切换未经授权的数据接收 Provider",
+      "expected": "先展示范围并获得发送授权；失败不静默改投其它模型",
+      "product_acceptance": "NOT_RUN",
+      "engineering_evidence": "见测试文件与离线 XML；不得直接等同本 AT 语义验收"
+    },
+    {
+      "id": "AT-33",
+      "operation": "大量材料超过上下文预算",
+      "expected": "显示选用/遗漏范围，保护关键规则，不声称已读完全部",
+      "product_acceptance": "NOT_RUN",
+      "engineering_evidence": "见测试文件与离线 XML；不得直接等同本 AT 语义验收"
+    },
+    {
+      "id": "AT-34",
+      "operation": "故障注入：参考原件及对应已验证 profile 不可用，或缺失上下文 Skill",
+      "expected": "核心流程可继续；明确参考读取／适配状态，显式选择内置回退，不虚称遵循原模板；不把故障覆盖当完整参考能力通过",
+      "product_acceptance": "NOT_RUN",
+      "engineering_evidence": "见测试文件与离线 XML；不得直接等同本 AT 语义验收"
+    },
+    {
+      "id": "AT-35",
+      "operation": "非业务相关材料上传到已确认项目",
+      "expected": "不直接篡改基线；影响判断可审查，不无差别要求全项目重做",
+      "product_acceptance": "NOT_RUN",
+      "engineering_evidence": "见测试文件与离线 XML；不得直接等同本 AT 语义验收"
+    },
+    {
+      "id": "AT-36",
+      "operation": "实际关闭 Codex 后完成完整操作",
+      "expected": "App 自己调用模型、持久化、预览、确认和导出；无开发工具代操作",
+      "product_acceptance": "NOT_RUN",
+      "engineering_evidence": "见测试文件与离线 XML；不得直接等同本 AT 语义验收"
+    },
+    {
+      "id": "AT-37",
+      "operation": "用两份实际原件生成 PRD 和按需 MRD",
+      "expected": "使用相应章节内容 profile，保留适用逐功能维度；默认只输出 PRD，MRD 可单独或同时选，不增加强制前置流程",
+      "product_acceptance": "NOT_RUN",
+      "engineering_evidence": "见测试文件与离线 XML；不得直接等同本 AT 语义验收"
+    },
+    {
+      "id": "AT-38",
+      "operation": "一个小改动合并／裁剪章节",
+      "expected": "允许标题、层级、章数调整；实际内容可定位，裁剪有理由；不能因不精确等于原目录就判失败",
+      "product_acceptance": "NOT_RUN",
+      "engineering_evidence": "见测试文件与离线 XML；不得直接等同本 AT 语义验收"
+    },
+    {
+      "id": "AT-39",
+      "operation": "模板含订单、样例角色、字段长度、旧日期、签字、分辨率要求",
+      "expected": "不把样例导入当前需求；新文档不冒用公司、签名、旧版本或静态页码；原参考文件保持原样",
+      "product_acceptance": "NOT_RUN",
+      "engineering_evidence": "见测试文件与离线 XML；不得直接等同本 AT 语义验收"
+    },
+    {
+      "id": "AT-40",
+      "operation": "缺少调研指标、权限及边界；同时尝试标不适用",
+      "expected": "重要未知明确待确认，不编造数据、不用裁剪掩盖阻塞；不因没资料就自动全停或强行补全",
+      "product_acceptance": "NOT_RUN",
+      "engineering_evidence": "见测试文件与离线 XML；不得直接等同本 AT 语义验收"
+    },
+    {
+      "id": "AT-41",
+      "operation": "有同版 UI 预览的功能原型／页面布局导出",
+      "expected": "Word 中实际嵌入对应低保真图及版本／模拟标识；关联正确，不复制模板旧图、不执行任意路径／外链",
+      "product_acceptance": "NOT_RUN",
+      "engineering_evidence": "见测试文件与离线 XML；不得直接等同本 AT 语义验收"
+    },
+    {
+      "id": "AT-42",
+      "operation": "同版双文档内容冲突、错误 profile、悬空章节引用、层级循环",
+      "expected": "程序校验与语义审查能检出；正式交接阻止，保留失败证据；只存在相同标题或 ID 不足以通过",
+      "product_acceptance": "NOT_RUN",
+      "engineering_evidence": "见测试文件与离线 XML；不得直接等同本 AT 语义验收"
+    },
+    {
+      "id": "AT-43",
+      "operation": "已有 1.0 草稿／确认记录，升级 1.1 并重排 Word 样式",
+      "expected": "显式兼容／迁移且保留历史哈希和确认；仅样式变化记新导出，内容变化按原门禁确认，不伪造 MRD 审核",
+      "product_acceptance": "NOT_RUN",
+      "engineering_evidence": "见测试文件与离线 XML；不得直接等同本 AT 语义验收"
+    }
+  ],
+  "source_hashes": {
+    "requirements-agent-codex-kit-v1.1\\01_CODEX_TASKBOOK.md": "b713357ea2ff263a2a059b7ef18c71f6c3a6170cecf2004841fd37570c068473",
+    "requirements-agent-codex-kit-v1.1\\03_ACCEPTANCE.md": "abada4c4dee7947f5225bba40bf494c236e634f68fedeae31062b870419a83e4",
+    "requirements-agent-codex-kit-v1.1\\04_CONTRACTS.md": "2fad371df2f92f90df38d1fe12238c8f8e0558662923079ca1c9057835e7cb5c"
+  }
+}
