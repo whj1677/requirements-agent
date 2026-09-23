@@ -36,6 +36,7 @@ async def document_files(p, kind, status='草稿／待产品经理内容确认')
     require(kind in p['documents'], 'NOT_FOUND', '请先生成此类型文档', 404)
     artifact = p['documents'][kind]
     require(artifact['brief_hash'] == brief_hash(p), 'STALE_REVISION', '底稿已改变，请重新成文', 409)
+    require(kind not in p.get('stale_document_kinds', []), 'STALE_REVISION', '页面已改变，请重新生成此文档后导出', 409)
     content = artifact['content']
     meta = f'{status} · 底稿版本 {artifact["draft_revision"]} · 内容哈希 {digest(content)[:16]}'
     rendered = [(s, [block_text(b,p) for b in s['blocks']]) for s in content['sections']]

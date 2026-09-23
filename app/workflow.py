@@ -41,6 +41,11 @@ def apply_response(p, response):
                 base_ui_hash=digest(p['ui']['spec']), status='candidate'))
         elif not p['ui']:
             p['ui'] = next_ui
+        elif p['ui']['brief_hash'] != next_ui['brief_hash']:
+            # A regenerated identical view verifies the new brief without replacing its visual version.
+            p['ui']['brief_hash'] = next_ui['brief_hash']
+            p['ui']['verification'] = dict(brief_hash=next_ui['brief_hash'],
+                draft_revision=p['revision'], generated_spec_hash=digest(next_ui['spec']), created=next_ui['created'])
     if stage == 'prd':
         kind = r['result']['document_type']
         p['documents'][kind] = dict(id=ident('DOC'), content=r['result'], brief_hash=brief_hash(p), draft_revision=p['revision'], item_snapshot=copy.deepcopy(p['items']), created=now(), style_version='1', generator_version='1.1', reference_hashes={s['reference_id']:s['sha256'] for s in PROFILES['sources']} if p.get('reference_mode')!='builtin' else {}, limitations=r['limitations'])
