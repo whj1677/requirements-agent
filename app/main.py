@@ -1,6 +1,7 @@
 import asyncio
 import copy
 import hmac
+import json
 import os
 import secrets
 from pathlib import Path
@@ -10,7 +11,7 @@ from fastapi import FastAPI, Request, UploadFile, File, Form
 from fastapi.responses import JSONResponse, HTMLResponse, Response, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
-from .core import DATA, ROOT, Problem, brief_hash, digest, hashes, ident, now, require
+from .core import DATA, ROOT, Problem, brief_hash, digest, hashes, ident, now, require, ui_view_hash
 from .store import Store
 from .contracts import gate, PROFILES
 from .provider import Provider, DEFAULT, origin
@@ -110,6 +111,15 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
     app.state.store, app.state.provider, app.state.workflow = store, provider, workflow
     app.state.access_token = token
 
+    def attach_document_snapshot(pid, artifact):
+        if 'item_snapshot' not in artifact:
+            with store.connect() as db:
+                row=db.execute('SELECT payload FROM revisions WHERE project_id=? AND revision=?',
+                               (pid,artifact['draft_revision'])).fetchone()
+            if row:
+                artifact['item_snapshot']=json.loads(row['payload'])['items']
+        return artifact
+
     @app.exception_handler(Problem)
     async def error_handler(request, error):
         return JSONResponse({'code':error.code,'message':error.message}, status_code=error.status)
@@ -170,7 +180,10 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
             issues=gate(p)
         except Problem as e:
             issues=[e.message]
-        return dict(p, hashes=hashes(p), confirmation_issues=issues, baselines=store.records(pid,'baseline'), exports=store.records(pid,'export'))
+        result=dict(p, hashes=hashes(p), confirmation_issues=issues, baselines=store.records(pid,'baseline'), exports=store.records(pid,'export'))
+        for artifact in result['documents'].values():
+            attach_document_snapshot(pid,artifact)
+        return result
 
     @app.patch('/api/projects/{pid}')
     async def edit_project(pid:str, body:ProjectEdit):
@@ -189,7 +202,10 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
     @app.get('/api/projects/{pid}/artifacts')
     async def artifact_history(pid:str):
         store.get(pid)
-        return {kind:store.records(pid,kind) for kind in ('document_artifact','ui_artifact','review','document_export')}
+        records={kind:store.records(pid,kind) for kind in ('document_artifact','ui_artifact','review','document_export')}
+        for artifact in records['document_artifact']:
+            attach_document_snapshot(pid,artifact)
+        return records
 
     @app.post('/api/projects/{pid}/sources/text')
     async def text_source(pid:str,body:TextSource):
@@ -380,6 +396,36 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
         p=store.get(pid)
         require(p['ui'],'NOT_FOUND','尚未生成页面方案',404)
         return HTMLResponse(prototype(p['ui']['spec']))
+
+    @app.get('/api/projects/{pid}/ui-candidates/{cid}/prototype')
+    async def preview_candidate(pid:str,cid:str):
+        p=store.get(pid)
+        candidate=next((c for c in p.get('ui_candidates',[]) if c['id']==cid),None)
+        require(candidate is not None,'NOT_FOUND','页面候选不存在',404)
+        return HTMLResponse(prototype(candidate['spec']))
+
+    @app.post('/api/projects/{pid}/ui-candidates/{cid}/activate')
+    async def activate_candidate(pid:str,cid:str,body:Revision):
+        with store.edit(pid,body.expected_revision,'采纳页面候选') as (p,db):
+            candidate=next((c for c in p.get('ui_candidates',[]) if c['id']==cid),None)
+            require(candidate is not None and candidate['status']=='candidate','NOT_FOUND','页面候选不可采纳',404)
+            require(p['ui'] and candidate['base_ui_hash']==digest(p['ui']['spec']) and candidate['brief_hash']==brief_hash(p),
+                    'STALE_REVISION','底稿或页面已变化，请重新比较候选',409)
+            require(ui_view_hash(candidate['spec'])!=ui_view_hash(p['ui']['spec']),'NO_CHANGE','页面没有实际差异，未创建新版本')
+            candidate['status']='selected'
+            p['ui']=dict(spec=candidate['spec'],brief_hash=candidate['brief_hash'],created=candidate['created'])
+            p['stale_document_kinds']=list(p['documents'])
+            p['document_update_needed']=bool(p['stale_document_kinds'])
+            p['review']=None
+        return p
+
+    @app.post('/api/projects/{pid}/ui-candidates/{cid}/reject')
+    async def reject_candidate(pid:str,cid:str,body:Revision):
+        with store.edit(pid,body.expected_revision,'保留现有页面并拒绝候选',bump=False) as (p,db):
+            candidate=next((c for c in p.get('ui_candidates',[]) if c['id']==cid),None)
+            require(candidate is not None and candidate['status']=='candidate','NOT_FOUND','页面候选不可拒绝',404)
+            candidate['status']='rejected'
+        return p
 
     @app.get('/api/projects/{pid}/documents/{kind}/{fmt}')
     async def download_document(pid:str,kind:str,fmt:str):

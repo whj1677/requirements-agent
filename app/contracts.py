@@ -1,5 +1,6 @@
 import copy
 import hashlib
+import re
 import jsonschema
 from referencing import Registry, Resource
 from .core import KIT, brief_hash, digest, read_json, require
@@ -72,16 +73,53 @@ def validate_response(value, stage, project, excerpts, document_type='prd'):
 
 def validate_ui(spec, p):
     jsonschema.Draft202012Validator(WIRE).validate(spec)
+    forbidden=re.compile(r'https?://|javascript:|data:|<\s*(script|iframe|img|svg)\b|\bon(?:error|load|click)\s*=',re.I)
+    for node in nodes(spec):
+        if isinstance(node, dict):
+            require(not any(forbidden.search(value) for value in node.values() if isinstance(value,str)),
+                    'SCHEMA_INVALID','原型 spec 不接受脚本、HTML 标签或网络地址')
     require(spec['draft_revision'] == p['revision'], 'STALE_REVISION', '线框版本过期')
     components = [c for page in spec['pages'] for r in page['regions'] for c in r['components']]
     ids = [c['component_id'] for c in components]
     require(len(ids) == len(set(ids)) and len(ids) <= 150, 'SCHEMA_INVALID', '组件 ID 重复或超限')
     pages = [x['page_id'] for x in spec['pages']]
     require(len(pages) == len(set(pages)), 'SCHEMA_INVALID', '页面 ID 重复')
+    by_id = {c['component_id']: c for c in components}
+    datasets={c['simulation']['dataset_id']:c for c in components if c['type'] in ('table','list') and c.get('simulation')}
     for c in components:
         require(c['ref_ids'] or c['type'] in ('text', 'heading', 'notice'), 'REFERENCE_INVALID', '功能性组件缺少需求关联')
         require(not c['interaction']['target_id'] or c['interaction']['target_id'] in ids + pages, 'REFERENCE_INVALID', '交互目标不存在')
         require(all(len(row) == len(c['columns']) for row in c['rows']), 'SCHEMA_INVALID', '表格行列不一致')
+        action = c['interaction']['action']
+        target = by_id.get(c['interaction']['target_id'])
+        if action in ('new', 'edit', 'filter', 'save', 'cancel', 'switch_page') or c['type'] == 'drawer' or c.get('simulation') or any(f['type'] == 'time' for f in c['fields']):
+            require(spec['schema_version'] == '1.1', 'SCHEMA_INVALID', '新模拟能力需要 wireframe 1.1')
+        if action in ('new', 'edit'):
+            require(c['type'] in ('button', 'table', 'list') and target and target['type'] in ('form', 'panel', 'dialog', 'drawer'), 'REFERENCE_INVALID', '新增或编辑必须指向表单容器')
+        if action in ('save', 'cancel'):
+            require(c['type'] == 'button' and target and target['type'] in ('form', 'panel', 'dialog', 'drawer'), 'REFERENCE_INVALID', '保存或取消必须指向表单容器')
+        if action == 'filter':
+            require(c['type'] == 'button' and target and target['type'] in ('table', 'list'), 'REFERENCE_INVALID', '筛选必须指向列表')
+        if action == 'switch_page':
+            require(c['interaction']['target_id'] in pages, 'REFERENCE_INVALID', '导航目标必须是页面')
+        if c.get('simulation'):
+            sim = c['simulation']
+            fields = {f['name'] for f in c['fields']}
+            if c['type'] in ('form','panel','dialog','drawer'):
+                require(sim['dataset_id'] in datasets, 'REFERENCE_INVALID', '表单模拟数据集不存在')
+            for rule in sim['rules']:
+                require(set(rule['field_names']) <= fields, 'REFERENCE_INVALID', '模拟校验字段不存在')
+                require(set(rule['ref_ids']) <= {i['id'] for i in p['items']}, 'REFERENCE_INVALID', '模拟校验依据不存在')
+                require((rule['kind'] in ('required', 'non_negative') and len(rule['field_names']) == 1) or
+                        (rule['kind'] in ('start_before_end', 'no_overlap') and len(rule['field_names']) == 2),
+                        'SCHEMA_INVALID', '模拟校验字段数量不匹配')
+                if rule['kind']=='no_overlap':
+                    require(set(rule['field_names']) <= {col['key'] for col in datasets[sim['dataset_id']]['columns']},
+                            'REFERENCE_INVALID', '区间字段未绑定模拟列表')
+    for page in spec['pages']:
+        for c in (c for region in page['regions'] for c in region['components']):
+            if c['interaction']['action']=='switch_state':
+                require(c['interaction']['target_state'] in page['states'], 'REFERENCE_INVALID', '目标状态不适用于此页面')
 
 
 def validate_document(doc, p, kind):
@@ -138,6 +176,8 @@ def gate(p):
         if doc['brief_hash'] != brief_hash(p):
             issues.append('文档与当前底稿不一致，请重新生成')
         issues.extend(document_gaps(doc['content'], p))
+    if p.get('document_update_needed'):
+        issues.append('页面变化后文档需要更新：'+'、'.join(p.get('stale_document_kinds',[])))
     if p['ui'] and p['ui']['brief_hash'] != brief_hash(p):
         issues.append('线框对应旧底稿，请重新生成')
     issues.extend(q['question'] for q in p['questions'] if q['blocking'] and q['status'] != 'answered')

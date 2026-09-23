@@ -1,7 +1,7 @@
 import asyncio
 import copy
 import time
-from .core import KIT, Problem, brief_hash, digest, dumps, hashes, ident, now, require
+from .core import KIT, Problem, brief_hash, digest, dumps, hashes, ident, now, require, ui_view_hash
 from .contracts import gate, review_target, validate_response, PROFILES
 from .provider import DEFAULT, STAGES, assemble, origin
 
@@ -35,10 +35,15 @@ def apply_response(p, response):
         for option in r['result']['options']:
             p['options'].append(dict(option, id=ident('OPT'), selection_status='candidate'))
     if stage == 'ui':
-        p['ui'] = dict(spec=r['result']['spec'], brief_hash=brief_hash(p), created=now())
+        next_ui = dict(spec=r['result']['spec'], brief_hash=brief_hash(p), created=now())
+        if p['ui'] and ui_view_hash(p['ui']['spec']) != ui_view_hash(next_ui['spec']):
+            p.setdefault('ui_candidates', []).append(dict(id=ident('UIC'), **next_ui,
+                base_ui_hash=digest(p['ui']['spec']), status='candidate'))
+        elif not p['ui']:
+            p['ui'] = next_ui
     if stage == 'prd':
         kind = r['result']['document_type']
-        p['documents'][kind] = dict(id=ident('DOC'), content=r['result'], brief_hash=brief_hash(p), draft_revision=p['revision'], created=now(), style_version='1', generator_version='1.1', reference_hashes={s['reference_id']:s['sha256'] for s in PROFILES['sources']} if p.get('reference_mode')!='builtin' else {}, limitations=r['limitations'])
+        p['documents'][kind] = dict(id=ident('DOC'), content=r['result'], brief_hash=brief_hash(p), draft_revision=p['revision'], item_snapshot=copy.deepcopy(p['items']), created=now(), style_version='1', generator_version='1.1', reference_hashes={s['reference_id']:s['sha256'] for s in PROFILES['sources']} if p.get('reference_mode')!='builtin' else {}, limitations=r['limitations'])
     if stage == 'review':
         p['review'] = dict(target_hash=review_target(p), response=r, created=now())
     p['messages'].append(dict(role='assistant', stage=stage, text=r['summary'], response=r, created=now()))
@@ -110,12 +115,16 @@ class Workflow:
                 if run['stage']=='review':
                     require(review_target(current)==review_target(p),'STALE_REVISION','审查期间文档或页面已改变，请重新审查',409)
                 current['messages'].append(dict(role='user', stage=run['stage'], text=run['message'], created=now()))
+                candidate_count=len(current.get('ui_candidates', []))
                 apply_response(current, value)
                 if run['stage']=='prd':
                     artifact=current['documents'][run['document_type']]
+                    current['stale_document_kinds']=[kind for kind in current.get('stale_document_kinds',[]) if kind!=run['document_type']]
+                    current['document_update_needed']=bool(current['stale_document_kinds'])
                     self.store.record(pid,'document_artifact',artifact,db=db)
                 elif run['stage']=='ui':
-                    self.store.record(pid,'ui_artifact',current['ui'],db=db)
+                    artifact=current['ui_candidates'][-1] if len(current.get('ui_candidates', []))>candidate_count else current['ui']
+                    self.store.record(pid,'ui_artifact',artifact,db=db)
                 elif run['stage']=='review':
                     self.store.record(pid,'review',current['review'],db=db)
                 if run['stage']=='vision':

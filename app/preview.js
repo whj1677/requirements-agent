@@ -1,29 +1,98 @@
-const root = document.getElementById('app');
-const labels = {normal:'正常',loading:'加载中',empty:'空数据',error:'错误',forbidden:'无权限'};
-const element = (tag,text,parent) => { const n=document.createElement(tag); if(text!=null)n.textContent=text; if(parent)parent.append(n); return n; };
-element('h1',spec.title,root); element('p',spec.design_intent,root);
-const tabs=element('nav',null,root), content=element('div',null,root);
+// Fixed interpreter: spec values are rendered as text, never as code.
+const root=document.getElementById('app');
+const labels={normal:'正常',loading:'加载中',empty:'空数据',error:'错误',forbidden:'无权限'};
+const el=(tag,text,parent)=>{const node=document.createElement(tag);if(text!=null)node.textContent=String(text);parent?.append(node);return node;};
+const pages=new Map(spec.pages.map(page=>[page.page_id,page]));
+const data=new Map();
+for(const page of spec.pages)for(const region of page.regions)for(const c of region.components)
+  if(c.type==='table'||c.type==='list')data.set(c.simulation?.dataset_id||c.component_id,c.rows.map(row=>[...row]));
+const head=el('header',null,root);el('strong',spec.title,head);el('small','低保真交互 · 模拟数据 · 不连接业务系统 · UI v'+spec.draft_revision,head);
+const controls=el('nav',null,root),content=el('main',null,root);
+const pageSelect=el('select',null,controls);pageSelect.setAttribute('aria-label','页面选择');
+for(const page of spec.pages){const option=el('option',page.title,pageSelect);option.value=page.page_id;}
+const roleSelect=el('select',null,controls);roleSelect.setAttribute('aria-label','模拟角色');
+for(const role of [...new Set(['编辑者','只读',...spec.pages.flatMap(p=>p.regions.flatMap(r=>r.components.flatMap(c=>c.simulation?.editable_roles||[])))])]){const option=el('option',role,roleSelect);option.value=role;}
+let current=spec.pages[0],role='编辑者';
+pageSelect.onchange=()=>render(pages.get(pageSelect.value));roleSelect.onchange=()=>{role=roleSelect.value;render(current);};
 function render(page){
- content.replaceChildren(); element('h2',page.title,content);
- const controls=element('div',null,content), status=element('aside',null,content), normal=element('div',null,content);
- function state(s){status.textContent=(labels[s]||s)+' · '+(page.state_messages[s]||'模拟状态');normal.hidden=s!=='normal';}
- page.states.forEach(s=>{const b=element('button',labels[s],controls);b.onclick=()=>state(s);});
- const targets={};
- for(const region of page.regions){const area=element('article',null,normal);area.dataset.region=region.name;
-  for(const c of region.components){const block=element('section',null,area);targets[c.component_id]=block;
-   if(c.type==='dialog')block.hidden=true;
-   element('strong',c.label+(c.provisional?' · 待确认':''),block); element('p',c.description,block);
-   for(const field of c.fields){const l=element('label',field.label+(field.required_state==='unknown'?'（必填性待确认）':''),block);
-    const input=element(field.type==='select'?'select':'input',null,l);
-    if(field.type==='select')field.options.forEach(o=>element('option',o,input));else input.type=field.type==='number'?'number':field.type==='date'?'date':'text';
-    if(field.type==='read_only')input.readOnly=true;
-   }
-   if(c.columns.length){const table=element('table',null,block), head=element('tr',null,element('thead',null,table));c.columns.forEach(x=>element('th',x.label,head));const body=element('tbody',null,table);c.rows.forEach(row=>{const tr=element('tr',null,body);row.forEach(x=>element('td',x,tr));});}
-   if(c.type==='button'||c.interaction.action!=='none'){const b=element('button',c.label||'模拟操作',block);b.onclick=()=>{const a=c.interaction;if(a.action==='switch_state')state(a.target_state||'normal');else if(targets[a.target_id])targets[a.target_id].hidden=a.action==='close_panel';};}
-   element('small','关联 '+(c.ref_ids.join(' · ')||'装饰说明'),block);
+  current=page;pageSelect.value=page.page_id;content.replaceChildren();el('h1',page.title,content);
+  const stateBar=el('div',null,content),feedback=el('p',null,content),surface=el('div',null,content);feedback.setAttribute('role','status');
+  const blocks=new Map(),fields=new Map(),tables=new Map(),filterInputs=[];let filter='';
+  const setState=name=>{feedback.textContent=(labels[name]||name)+' · '+(page.state_messages[name]||'模拟状态');surface.hidden=name!=='normal';};
+  for(const name of page.states){const button=el('button',labels[name],stateBar);button.onclick=()=>setState(name);}
+  const tableRows=(c,block)=>{
+    block.querySelector('table')?.remove();block.querySelector('.empty-rows')?.remove();
+    const table=el('table',null,block),row=el('tr',null,el('thead',null,table));
+    for(const col of c.columns)el('th',col.label,row);
+    if(c.interaction.action==='edit')el('th','操作',row);
+    const body=el('tbody',null,table),dataset=data.get(c.simulation?.dataset_id||c.component_id)||[];
+    dataset.forEach((values,index)=>{
+      if(filter&&!values.some(value=>value.toLowerCase().includes(filter)))return;
+      const tr=el('tr',null,body);values.forEach(value=>el('td',value,tr));
+      if(c.interaction.action==='edit'){const button=el('button','编辑',el('td',null,tr));button.disabled=role==='只读';button.onclick=()=>open(c.interaction.target_id,index);}
+    });
+    if(!body.children.length){const empty=el('p','暂无匹配的模拟数据',block);empty.className='empty-rows';}
+  };
+  const open=(id,index)=>{
+    const block=blocks.get(id);if(!block)return;
+    if(role==='只读'){feedback.textContent='只读角色不能修改模拟数据。';return;}
+    block.hidden=false;block.dataset.editIndex=index==null?'':String(index);
+    const form=fields.get(id),sim=block._simulation||{},dataset=data.get(sim.dataset_id)||[];
+    const table=[...tables.values()].find(c=>(c.simulation?.dataset_id||c.component_id)===sim.dataset_id),values=index==null?[]:dataset[index]||[];
+    if(form)for(const [name,input] of form){const col=table?.columns.findIndex(x=>x.key===name)??-1;input.value=col>=0?values[col]||'':'';}
+    form?.values().next().value?.focus();
+  };
+  const save=id=>{
+    const block=blocks.get(id),form=fields.get(id);if(!block||!form)return;
+    const sim=block._simulation||{},dataset=data.get(sim.dataset_id),table=[...tables.values()].find(c=>(c.simulation?.dataset_id||c.component_id)===sim.dataset_id);
+    if(role==='只读'||(sim.editable_roles?.length&&!sim.editable_roles.includes(role))){feedback.textContent='当前角色没有模拟修改权限。';return;}
+    if(!dataset||!table){feedback.textContent='模拟数据集引用无效，未保存。';return;}
+    const values=Object.fromEntries([...form].map(([name,input])=>[name,input.value.trim()]));
+    const editIndex=block.dataset.editIndex===''?null:Number(block.dataset.editIndex);
+    const fail=message=>{feedback.textContent='模拟保存失败：'+message+'；输入已保留。';};
+    for(const rule of sim.rules||[]){const [a,b]=rule.field_names;
+      if(rule.kind==='required'&&!values[a])return fail(a+'为必填');
+      if(rule.kind==='non_negative'&&(!values[a]||!Number.isFinite(Number(values[a]))||Number(values[a])<0))return fail(a+'必须为非负数');
+      if(rule.kind==='start_before_end'&&!(values[a]<values[b]))return fail(a+'必须早于'+b);
+      if(rule.kind==='no_overlap'){
+        const ai=table.columns.findIndex(x=>x.key===a),bi=table.columns.findIndex(x=>x.key===b);
+        if(ai<0||bi<0)return fail('区间字段未绑定');
+        if(dataset.some((row,i)=>i!==editIndex&&values[a]<row[bi]&&row[ai]<values[b]))return fail('区间与已有模拟数据重叠');
+      }
+    }
+    const row=table.columns.map(col=>values[col.key]||'');
+    if(editIndex==null)dataset.push(row);else dataset[editIndex]=row;
+    for(const [tableId,c] of tables)if((c.simulation?.dataset_id||c.component_id)===sim.dataset_id)tableRows(c,blocks.get(tableId));
+    block.hidden=true;feedback.textContent='模拟保存成功；仅预览环境中的数据已更新。';
+  };
+  for(const region of page.regions){const area=el('article',null,surface);area.dataset.region=region.name;
+    for(const c of region.components){const block=el('section',null,area);blocks.set(c.component_id,block);block._simulation=c.simulation;
+      if(['dialog','drawer','panel'].includes(c.type))block.hidden=true;
+      if(c.type==='drawer'||c.type==='dialog')block.className=c.type;
+      el('h2',c.label+(c.provisional?' · 待确认':''),block);if(c.description)el('p',c.description,block);
+      const form=new Map();for(const field of c.fields){const label=el('label',field.label+(field.required_state==='unknown'?'（必填性待确认）':''),block);
+        const input=el(field.type==='select'?'select':'input',null,label);input.setAttribute('aria-label',field.label);
+        if(field.type==='select')field.options.forEach(option=>el('option',option,input));else input.type=({number:'number',date:'date',time:'time'})[field.type]||'text';
+        if(field.type==='read_only')input.readOnly=true;form.set(field.name,input);
+      }if(form.size)fields.set(c.component_id,form);
+      if(c.type==='filters')filterInputs.push(...form.values());
+      if(c.type==='table'||c.type==='list'){tables.set(c.component_id,c);tableRows(c,block);}
+      const action=c.interaction;
+      if(c.type==='button'||(action.action!=='none'&&action.action!=='edit')){const button=el('button',c.label||'模拟操作',block);
+        if(['new','edit','save'].includes(action.action))button.disabled=role==='只读';
+        button.onclick=()=>{
+          if(action.action==='switch_state')setState(action.target_state||'normal');
+          else if(action.action==='switch_page')render(pages.get(action.target_id));
+          else if(['new','edit'].includes(action.action))open(action.target_id,null);
+          else if(action.action==='save')save(action.target_id);
+          else if(['cancel','close_panel'].includes(action.action)){blocks.get(action.target_id).hidden=true;feedback.textContent='已取消；未保存的修改未写入模拟数据。';}
+          else if(action.action==='open_panel'&&blocks.has(action.target_id))blocks.get(action.target_id).hidden=false;
+          else if(action.action==='filter'){filter=filterInputs.map(input=>input.value.trim().toLowerCase()).find(Boolean)||'';const target=tables.get(action.target_id);if(target)tableRows(target,blocks.get(action.target_id));}
+        };
+      }
+      el('small','关联 '+(c.ref_ids.join(' · ')||'装饰说明'),block);
+    }
   }
- }
- state(page.states.includes('normal')?'normal':page.states[0]);
+  setState(page.states.includes('normal')?'normal':page.states[0]);
 }
-spec.pages.forEach(p=>{const b=element('button',p.title,tabs);b.onclick=()=>render(p);});
 render(spec.pages[0]);

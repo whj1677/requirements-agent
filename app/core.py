@@ -50,3 +50,8 @@ def hashes(p):
     return {'brief_hash': brief_hash(p),
             'prd_content_hash': digest(p['documents']['prd']['content']) if 'prd' in p['documents'] else None,
             'ui_spec_hash': digest(p['ui']['spec']) if p.get('ui') else None}
+
+
+def ui_view_hash(spec):
+    """Visual/interaction content only; prose-only intent edits do not create a new UI draft."""
+    return digest({'title':spec['title'],'pages':spec['pages']})
