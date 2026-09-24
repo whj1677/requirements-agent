@@ -194,3 +194,28 @@ def test_restart_pauses_unfinished_records_without_network(tmp_path):
     for kind in ('run','user_task'):
         record=reopened.records(p['id'],kind)[0]
         assert record['status']=='paused_budget' and record['error']=='RESTARTED' and record['calls']==1
+
+
+@pytest.mark.parametrize('purpose',['current','goal','reference','template'])
+def test_url_source_preserves_selected_purpose_even_on_failure(case,purpose):
+    c,app,model,root=case
+    p=c.get(root).json()
+    result=c.post(root+'/sources/url',json={
+        'expected_revision':p['revision'],'url':'http://127.0.0.1:1/blocked',
+        'dynamic':False,'authorized_public':True,'purpose':purpose,
+    })
+    assert result.status_code==200,result.text
+    source=result.json()
+    assert source['parse_status']=='failed'
+    assert source['purpose']==purpose
+
+
+def test_url_source_legacy_request_defaults_to_reference(case):
+    c,app,model,root=case
+    p=c.get(root).json()
+    result=c.post(root+'/sources/url',json={
+        'expected_revision':p['revision'],'url':'http://127.0.0.1:1/blocked',
+        'dynamic':False,'authorized_public':True,
+    })
+    assert result.status_code==200,result.text
+    assert result.json()['purpose']=='reference'

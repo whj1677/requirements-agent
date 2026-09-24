@@ -45,6 +45,7 @@ class TextSource(Revision):
 class URLSource(Revision):
     url: str = Field(max_length=2000)
     dynamic: bool = False
+    purpose: Literal['current','reference','goal','template'] = 'reference'
     authorized_public: bool = False
 
 class RunInput(Revision):
@@ -270,9 +271,9 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
         store.get(pid)
         try:
             raw,text,method,final=await asyncio.wait_for(webpage(body.url,body.dynamic),30)
-            s=save_source(store,body.url,raw,'reference',final,([(method,text)],'partial' if 'partial' in method else 'read','部分子资源被阻止' if 'partial' in method else '',None))
+            s=save_source(store,body.url,raw,body.purpose,final,([(method,text)],'partial' if 'partial' in method else 'read','部分子资源被阻止' if 'partial' in method else '',None))
         except Exception as e:
-            s=dict(id=ident('SRC'),title=body.url,purpose='reference',uri=body.url,sha256=None,created=now(),version=1,excluded=False,excerpts=[],parse_status='failed',failure_reason=e.message if isinstance(e,Problem) else '网页读取失败：'+type(e).__name__,image_mime=None)
+            s=dict(id=ident('SRC'),title=body.url,purpose=body.purpose,uri=body.url,sha256=None,created=now(),version=1,excluded=False,excerpts=[],parse_status='failed',failure_reason=e.message if isinstance(e,Problem) else '网页读取失败：'+type(e).__name__,image_mime=None)
         with store.edit(pid,body.expected_revision,'添加网页材料') as (p,db):
             p['sources'].append(s)
         return s

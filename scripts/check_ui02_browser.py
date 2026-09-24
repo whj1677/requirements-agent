@@ -99,10 +99,13 @@ async def main():
                     await workspace.get_by_text('此方案尚无原型。',exact=False).wait_for()
                     await page.screenshot(path=str(evidence/(topic+'-preview-boundary.png')),full_page=True)
                     before_p=await read_project(pid)
+                    await options.first.get_by_role('button',name='查看对应原型').click()
+                    await workspace.get_by_text('此方案尚无原型。',exact=False).wait_for()
                     await options.first.get_by_role('button',name='按此方向继续讨论').click()
                     await page.get_by_role('dialog',name='核对方案操作').get_by_role('button',name='确认提交').click()
                     await page.get_by_role('dialog',name='核对方案操作').wait_for(state='hidden')
                     after=await read_project(pid);assert after['items']==before_p['items'] and after['questions']==before_p['questions']
+                    assert await workspace.get_by_role('button',name='生成此方向讨论原型',exact=True).is_visible()
                     if topic=='电价时段':
                         task=await run_action(pid,workspace.get_by_role('button',name='生成讨论原型',exact=True))
                         assert task['status']=='succeeded',task
@@ -143,8 +146,13 @@ async def main():
                     await drawer.get_by_role('button',name='确认有权读取并添加').click()
                     bad=drawer.get_by_role('article').filter(has=page.get_by_role('heading',name='http://127.0.0.1:1/private'))
                     await bad.get_by_text('读取失败',exact=True).wait_for()
+                    assert await drawer.get_by_role('combobox').evaluate('(el) => el.value')=='goal'
+                    assert (await read_project(pid))['sources'][-1]['purpose']=='goal'
                     assert (await read_project(pid))['documents']['prd']==old
                     await page.screenshot(path=str(evidence/(topic+'-source-failure.png')),full_page=True)
+                    await bad.get_by_role('button',name='重新读取（保留原件）').click()
+                    await drawer.get_by_role('alert').wait_for()
+                    assert await drawer.get_by_role('alert').is_visible()
                     await bad.get_by_role('button',name='排除材料').click()
                     await bad.get_by_text('已排除',exact=True).wait_for()
                     await drawer.get_by_role('button',name='关闭项目资料').click()

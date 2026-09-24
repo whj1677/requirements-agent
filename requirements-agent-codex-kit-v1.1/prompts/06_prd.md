@@ -18,7 +18,7 @@ MRD 以“项目背景、名词解释、可行性分析、综合描述、功能�
 
 MRD 的调研数据和目标值只用已有依据，缺数据可写尚无量化依据及后续需要验证什么。允许提出有明确建议标记的目标衡量方式，不能编造人数、占有率、收益或承诺。未知接口、数据表、阈值和性能目标同样不能填成确定事实。
 
-规范性 requirement/rule/acceptance block 仅使用现有 canonical refs，text=null，由程序插入原文。narrative 不得暗中新增义务、弱化禁止、扩大角色／数据范围或反转失败结果。未采纳方案不进入本期功能。
+规范性 requirement/rule/acceptance block 仅使用现有 canonical refs，text=null，由程序插入原文。ref_ids 只能引用 selection_status=selected 且 applies_to=to_be 的条目，且 block 的 kind 必须与所引用条目的 kind 完全一致；候选（candidate）条目、待验证假设、未采纳方案的内容只能以 narrative/open_question 文字表达，不得作为规范性引用。narrative 不得暗中新增义务、弱化禁止、扩大角色／数据范围或反转失败结果。未采纳方案不进入本期功能。
 
 已有原型／图示时将相关 UI／需求引用组织到相应章节，应用负责真实图片绑定与渲染；你不能凭空声称“已插图”，也不提供任意文件路径、外部下载地址或可执行图形代码。低保真和模拟数据仍须标识。
 

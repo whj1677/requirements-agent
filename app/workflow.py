@@ -9,6 +9,11 @@ from .model_evidence import ModelCallEvidence
 PREFIX = {'requirement':'REQ','rule':'RULE','acceptance':'AC','ui_decision':'UID','goal':'GOAL','actor':'ROLE'}
 
 
+def next_output_budget(current, floor=16384, ceiling=32768):
+    """截断修复时的输出预算递增：同预算重试必然再次截断。"""
+    return min(max(current * 2, floor), ceiling)
+
+
 def replace_refs(value, mapping):
     if isinstance(value, str):
         return mapping.get(value, value)
@@ -83,6 +88,7 @@ class Workflow:
         run = self.store.get_record(pid, rid, 'run')
         calls, repair_count, retries = 0, 0, 0
         repair_parent = None
+        out_budget = config['max_tokens']
         attempts, events = [], []
         try:
             require(self.provider.key(config), 'CONFIG_MISSING', '请先在模型设置中配置此接收端的 Key')
@@ -106,7 +112,7 @@ class Workflow:
                 value = None
                 call_started = time.monotonic()
                 try:
-                    value, meta = await asyncio.wait_for(self.provider.request(config, messages, evidence=evidence), timeout=max(1, config['action_seconds']-(time.monotonic()-started)))
+                    value, meta = await asyncio.wait_for(self.provider.request(dict(config, max_tokens=out_budget), messages, evidence=evidence), timeout=max(1, config['action_seconds']-(time.monotonic()-started)))
                     attempt.update(meta)
                     require(self.store.get_record(pid, rid, 'run')['status'] != 'cancelled', 'CANCELLED', '已取消，结果未采纳')
                     validate_response(value, run['stage'], p, excerpts, run['document_type'])
@@ -130,6 +136,10 @@ class Workflow:
                     if e.code in ('SCHEMA_INVALID','REFERENCE_INVALID','OUTPUT_EMPTY','OUTPUT_TRUNCATED') and repair_count < 2:
                         repair_count += 1
                         repair_parent = call_id
+                        if e.code == 'OUTPUT_TRUNCATED':
+                            # 截断说明输出预算不足，同预算修复必然再次截断；逐步提高输出上限（仍受动作请求数约束）
+                            out_budget = next_output_budget(out_budget)
+                            events.append(dict(time=now(), phase='提高输出预算至 ' + str(out_budget) + ' 并重试', call=calls))
                         failed_output = dumps(value) if value is not None else (evidence.value.get('final_output') or '无可用最终输出')
                         messages = messages[:2] + [{'role':'user', 'content': (KIT/'prompts/10_repair.md').read_text('utf-8') + '\n校验错误：' + e.message + '\n原输出（不可信）：' + failed_output}]
                         continue

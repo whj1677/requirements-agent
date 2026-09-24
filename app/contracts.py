@@ -40,9 +40,23 @@ def nodes(value):
             yield from nodes(v)
 
 
+def describe_schema_error(errors):
+    flat = []
+    stack = list(errors)
+    while stack:
+        e = stack.pop()
+        flat.append(e)
+        stack.extend(getattr(e, 'context', None) or [])
+    best = max(flat, key=lambda e: (len(list(e.absolute_path)), len(list(e.absolute_schema_path))))
+    message = best.message
+    if len(message) > 160:
+        message = message[:160] + '…'
+    return str(list(best.absolute_path)) + ' ' + message
+
+
 def validate_response(value, stage, project, excerpts, document_type='prd'):
     errors = sorted(VALIDATOR.iter_errors(value), key=lambda e: str(e.path))
-    require(not errors, 'SCHEMA_INVALID', '模型响应不匹配 Schema：' + (str(list(errors[0].path)) if errors else ''))
+    require(not errors, 'SCHEMA_INVALID', '模型响应不匹配 Schema：' + (describe_schema_error(errors) if errors else ''))
     require(value['stage'] == stage, 'SCHEMA_INVALID', '模型返回了错误阶段')
     item_ids = {i['id'] for i in project['items']}
     question_ids = {q['id'] for q in project['questions']}
@@ -57,10 +71,11 @@ def validate_response(value, stage, project, excerpts, document_type='prd'):
             require((node['source_id'], node['excerpt_id']) in pairs, 'REFERENCE_INVALID', '来源不在本轮实际输入范围')
         for key in ('related_refs', 'ref_ids', 'canonical_refs', 'requirement_refs', 'proposed_item_refs', 'reviewed_refs', 'impacted_refs', 'unimpacted_refs', 'rule_ids', 'ac_ids'):
             if key in node:
-                require(set(node[key]) <= allowed, 'REFERENCE_INVALID', '引用不存在或跨项目：' + key)
+                bad = sorted(set(node[key]) - allowed)
+                require(not bad, 'REFERENCE_INVALID', '引用不存在或跨项目：' + key + '（' + '、'.join(bad[:5]) + (' 等' if len(bad) > 5 else '') + '）')
         for key in ('target_ref', 'target_item_id', 'requirement_id', 'item_id', 'scope_ref'):
             if node.get(key) is not None:
-                require(node[key] in allowed, 'REFERENCE_INVALID', '未知关联：' + key)
+                require(node[key] in allowed, 'REFERENCE_INVALID', '未知关联：' + key + '（' + str(node[key]) + '）')
     for proposal in value['proposals']:
         require((proposal['action'] == 'add' and proposal['target_item_id'] is None) or
                 (proposal['action'] == 'revise' and proposal['target_item_id'] in item_ids),
@@ -146,8 +161,10 @@ def validate_document(doc, p, kind):
     for s in doc['sections']:
         for b in s['blocks']:
             if b['kind'] in ('requirement', 'rule', 'acceptance'):
-                require(all(r in items and items[r]['selection_status'] == 'selected' and items[r]['applies_to'] == 'to_be' for r in b['ref_ids']), 'SEMANTIC_BLOCKED', '规范内容只能引用本期已选目标条目')
-                require(all(items[r]['kind'] == b['kind'] for r in b['ref_ids']), 'REFERENCE_INVALID', '规范段落与条目类型不一致')
+                unselected = sorted(r for r in b['ref_ids'] if not (r in items and items[r]['selection_status'] == 'selected' and items[r]['applies_to'] == 'to_be'))
+                require(not unselected, 'SEMANTIC_BLOCKED', '规范内容只能引用本期已选目标条目（' + '、'.join(unselected[:5]) + (' 等' if len(unselected) > 5 else '') + ' 未已选）')
+                mismatched = sorted(r for r in b['ref_ids'] if r in items and items[r]['kind'] != b['kind'])
+                require(not mismatched, 'REFERENCE_INVALID', '规范段落与条目类型不一致（' + '、'.join(mismatched[:5]) + (' 等' if len(mismatched) > 5 else '') + '）')
 
 
 def document_gaps(doc, p):

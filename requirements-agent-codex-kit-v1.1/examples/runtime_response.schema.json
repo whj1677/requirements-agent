@@ -1337,7 +1337,7 @@
             "properties": {
               "section_id": {
                 "type": "string",
-                "pattern": "^(PRD|MRD)-[A-Za-z0-9_-]+$",
+                "pattern": "^(PRD|MRD)-[A-Za-z0-9_.-]+$",
                 "maxLength": 120
               },
               "title": {
@@ -1428,7 +1428,7 @@
                 "anyOf": [
                   {
                     "type": "string",
-                    "pattern": "^(PRD|MRD)-[A-Za-z0-9_-]+$",
+                    "pattern": "^(PRD|MRD)-[A-Za-z0-9_.-]+$",
                     "maxLength": 120
                   },
                   {
