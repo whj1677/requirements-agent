@@ -5,7 +5,7 @@ from .core import KIT, Problem, brief_hash, digest, dumps, hashes, ident, now, r
 from .contracts import gate, review_target, validate_response, PROFILES
 from .provider import DEFAULT, STAGES, assemble, origin, input_metrics
 from .model_evidence import ModelCallEvidence
-from .prd import compile_plan
+from .prd import compile_plan, repair_instruction
 
 PREFIX = {'requirement':'REQ','rule':'RULE','acceptance':'AC','ui_decision':'UID','goal':'GOAL','actor':'ROLE'}
 
@@ -158,7 +158,7 @@ class Workflow:
                         if e.code == 'OUTPUT_TRUNCATED':
                             events.append(dict(time=now(),phase='保持批准输出上限 '+str(out_budget)+'，压缩章节与叙述后修复',call=calls))
                         failed_output = evidence.value.get('final_output') or (dumps(value) if value is not None else '无可用最终输出')
-                        repair=(KIT/'prompts/10_repair.md').read_text('utf-8') if run['stage']!='prd' else '仅修复 plan_version=1 的章节建议契约；不创建新业务决定，不把候选改成规范或确定性叙述。输出需更短：省略叙述，合并章节，只列引用 ID。'
+                        repair=(KIT/'prompts/10_repair.md').read_text('utf-8') if run['stage']!='prd' else repair_instruction(e,p)
                         messages = messages[:2] + [{'role':'user', 'content': repair + '\n校验错误：' + e.message + '\n原输出摘录（不可信，完整响应在本机证据）：' + failed_output[:12000]}]
                         continue
                     if e.code=='OUTPUT_TRUNCATED':

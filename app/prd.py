@@ -1,8 +1,8 @@
 """Bounded document planning contract; canonical text and bookkeeping stay local."""
 import copy
 import jsonschema
-from .core import digest, require
-from .contracts import profile, describe_schema_error
+from .core import digest, dumps, require
+from .contracts import profile
 
 NORMATIVE = ('requirement', 'rule', 'acceptance')
 REFS = dict(type='array', items=dict(type='string', minLength=1, maxLength=120), maxItems=100, uniqueItems=True)
@@ -24,6 +24,40 @@ def allowed(item):
     return item['kind'] in NORMATIVE and item['selection_status']=='selected' and item['applies_to']=='to_be'
 
 
+def plan_contract(p):
+    example=dict(plan_version='1',title='需求讨论稿',sections=[dict(title='背景与待定范围',
+        normative_refs=[],discussion_refs=[],narration='')],limitations=[])
+    jsonschema.Draft202012Validator(PLAN_SCHEMA).validate(example)
+    return dict(version='prd-plan-contract-2',example=example,
+        normative_item_ids=[i['id'] for i in p['items'] if allowed(i)],
+        discussion_item_ids=[i['id'] for i in p['items']],
+        rules='根节点只有且必须包含 plan_version、title、sections、limitations。'
+        '所有 sections 元素只有且必须包含 title、normative_refs、discussion_refs、narration。'
+        'narration 是章节级必填字符串，无内容为 ""，不得省略、放到根节点或使用 null。'
+        'normative_refs 只能使用 normative_item_ids；白名单为空时必须全部为 []。'
+        'discussion_refs 只能使用 discussion_item_ids。问题、方案、来源 ID 不得放入这两个字段。'
+        '已有回答与未决问题由程序单独保留，不需要重复引用；不引用问题 ID 不等于删除问题。'
+        '示例仅说明结构，不是本项目答案或失败回退产物。')
+
+
+def repair_instruction(error,p):
+    common='重新输出完整章节建议对象，保留未出错的业务含义；不重选方向、不补答、不改规则或采纳状态，不把候选写成规范或确定性叙述。'
+    instructions={
+        'SCHEMA_INVALID':'按实际错误位置修复结构或 JSON。根节点不得添加字段；所有 sections 元素必须保留 narration，无需说明时填空字符串，不使用 null。不得静默删除内容后宣称成功。',
+        'REFERENCE_INVALID':'按错误位置、具体 ID 和实际对象类型修复引用。问题由程序保留，不能放入条目引用；不能修改底稿或问题记录。',
+        'OUTPUT_EMPTY':'返回符合契约的完整对象，不能使用结构示例代替项目内容。',
+        'OUTPUT_TRUNCATED':'实际输出截断：在既定预算内压缩叙述或合并章节，仍保留全部必填字段、业务边界和未决事项；不提高 max_tokens，不增加请求次数。'}
+    return common+'\n'+instructions.get(error.code,'按实际错误修复，不改变业务含义。')+'\n实际错误：'+error.message+'\n唯一章节建议契约：'+dumps(plan_contract(p))
+
+
+def require_item(ref,at,p,ids):
+    if ref in ids:return
+    for collection,label in (('questions','问题'),('options','方案'),('sources','来源')):
+        if any(x['id']==ref for x in p[collection]):
+            require(False,'REFERENCE_INVALID',at+' '+ref+' 该ID存在，但属于'+label+'，不是条目；允许范围为任务头的条目清单')
+    require(False,'REFERENCE_INVALID',at+' '+ref+' 该ID在本次允许范围内不存在；允许范围为任务头的条目清单')
+
+
 def context(p):
     return dict(
         A_normative={kind:[copy.deepcopy(i) for i in p['items'] if allowed(i) and i['kind']==kind] for kind in NORMATIVE},
@@ -40,8 +74,10 @@ def context(p):
 
 def compile_plan(plan, p, kind, omitted=()):
     errors=list(jsonschema.Draft202012Validator(PLAN_SCHEMA).iter_errors(plan))
-    require(not errors,'SCHEMA_INVALID','成文章节建议错误：'+(describe_schema_error(errors) if errors else ''))
+    details=[''.join('['+str(x)+']' if isinstance(x,int) else ('.' if j else '')+x for j,x in enumerate(e.absolute_path)) or '根节点' for e in errors]
+    require(not errors,'SCHEMA_INVALID','成文章节建议错误：'+'；'.join(at+' '+e.message for at,e in zip(details,errors)))
     items={i['id']:i for i in p['items']}
+    contract=plan_contract(p)
     sections=[]; coverage={}; discussed=set()
     def section(title,blocks):
         sid=kind.upper()+'-'+digest(dict(title=title,index=len(sections)))[:12]
@@ -58,12 +94,12 @@ def compile_plan(plan, p, kind, omitted=()):
         blocks=[]
         for j,r in enumerate(s['normative_refs']):
             at=f'sections[{n}].normative_refs[{j}]'
-            require(r in items,'REFERENCE_INVALID',at+' 未知条目 '+r)
-            require(allowed(items[r]),'SEMANTIC_BLOCKED',at+' '+r+' 不在本期已选规范白名单；需业务决定，不能自动采纳或改写为确定性叙述')
+            require_item(r,at,p,contract['discussion_item_ids'])
+            require(r in contract['normative_item_ids'],'SEMANTIC_BLOCKED',at+' '+r+' 不在本期已选规范白名单；需业务决定，不能自动采纳或改写为确定性叙述')
             blocks.append(dict(kind=items[r]['kind'],ref_ids=[r],text=None))
             blocks.append(text(f'{r}：{items[r]["epistemic_status"]}；草稿采纳不代表业务负责人批准'+provenance(items[r]),[r]))
         for j,r in enumerate(s['discussion_refs']):
-            require(r in items,'REFERENCE_INVALID',f'sections[{n}].discussion_refs[{j}] 未知条目 '+r)
+            require_item(r,f'sections[{n}].discussion_refs[{j}]',p,contract['discussion_item_ids'])
             blocks.append(discussion(items[r]));discussed.add(r)
         if s['narration']:
             blocks.append(text('【模型讨论说明，未核实；不构成规范或批准】'+s['narration']))

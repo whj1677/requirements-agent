@@ -7,7 +7,7 @@ import httpx
 from .core import KIT, Problem, dumps, now, read_json, require
 from .contracts import SCHEMA, profile
 from .config import ProjectEnvironment, usable_key
-from .prd import PLAN_SCHEMA, context as document_context
+from .prd import PLAN_SCHEMA, plan_contract, context as document_context
 
 DEFAULT = dict(name='DeepSeek 官方', base_url='https://api.deepseek.com', model='deepseek-flash',
                key_env='RA_DEEPSEEK_API_KEY', vision='documented', json_mode=True, timeout=120,
@@ -93,7 +93,7 @@ def assemble(p, stage, user_message, config, folder, kind='prd', generation_targ
     if generation_target:
         header['generation_target']=generation_target
     if stage == 'prd':
-        header.update(document_type=kind, content_profile=profile(kind,p.get('reference_mode')=='builtin'))
+        header.update(document_type=kind, content_profile=profile(kind,p.get('reference_mode')=='builtin'),plan_contract=plan_contract(p))
     base = (KIT / 'prompts/00_system.md').read_text('utf-8')
     if stage=='prd':base=base.split('## 输出')[0]
     system = base + '\n' + (KIT / 'prompts' / STAGES[stage]).read_text('utf-8') + '\n可信任务头：' + dumps(header)
