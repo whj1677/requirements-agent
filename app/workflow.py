@@ -1,7 +1,7 @@
 import asyncio
 import copy
 import time
-from .core import KIT, Problem, brief_hash, digest, dumps, hashes, ident, now, require, ui_view_hash
+from .core import KIT, Problem, brief_hash, digest, dumps, hashes, ident, now, require, ui_view_hash, execution_hash
 from .contracts import gate, review_target, validate_response, PROFILES
 from .provider import DEFAULT, STAGES, assemble, origin
 from .model_evidence import ModelCallEvidence
@@ -63,13 +63,16 @@ class Workflow:
     def config(self, stage):
         return self.store.setting('vision' if stage == 'vision' else 'model') or dict(DEFAULT)
 
-    def start(self, pid, revision, stage, message, kind='prd', resumed_from=None):
+    def start(self, pid, revision, stage, message, kind='prd', resumed_from=None, *, user_task_id=None, config_override=None, generation_target=None):
         require(stage in STAGES and stage != 'handoff', 'STAGE_INVALID', '请选择支持的分析阶段')
-        config = self.config(stage)
+        config = config_override or self.config(stage)
+        require(not any(t['status'] in ('queued','running') and t['id'] != user_task_id for t in self.store.records(pid,'user_task')), 'PROJECT_BUSY','当前项目任务正在执行，请等待或取消',409)
+        require(not any(t['status'] in ('queued','running') for t in self.store.records(pid,'run')), 'PROJECT_BUSY','当前项目已有模型任务',409)
         p = self.store.get(pid)
         require(p['revision'] == revision, 'STALE_REVISION', '页面已过期', 409)
         run = dict(stage=stage, status='queued', revision=revision, message=message, document_type=kind, calls=0, attempts=[], events=[], created=now(), error=None, resumed_from=resumed_from, provider={k:v for k,v in config.items() if k not in ('proxy',)}, prompt_version='1.1', cost=None)
         rid = self.store.record(pid, 'run', run)
+        self.store.update_run(pid,rid,user_task_id=user_task_id,generation_target=generation_target,input_state_hash=execution_hash(p))
         task = asyncio.create_task(self.execute(pid, rid, p, config))
         self.tasks[rid] = task
         task.add_done_callback(lambda _: self.tasks.pop(rid, None))
@@ -86,7 +89,7 @@ class Workflow:
             require(origin(config) in p['grants'], 'DATA_AUTH_REQUIRED', '请先确认该接收端和项目材料的发送授权')
             current_sources = {s['id'] for s in p['sources'] if not s['excluded']}
             require(current_sources <= set(p['grants'][origin(config)]['source_ids']), 'DATA_AUTH_REQUIRED', '新增材料尚未授权发送，请检查材料范围')
-            messages, excerpts, omitted = assemble(p, run['stage'], run['message'], config, self.store.folder, run['document_type'])
+            messages, excerpts, omitted = assemble(p, run['stage'], run['message'], config, self.store.folder, run['document_type'], run.get('generation_target'), pending_images_only=bool(run.get('user_task_id')))
             self.store.update_run(pid, rid, status='running', sent_excerpt_ids=[x['id'] for x in excerpts], omitted_excerpt_ids=omitted, input_hash=digest(messages))
             while True:
                 state = self.store.get_record(pid, rid, 'run')
@@ -138,12 +141,16 @@ class Workflow:
                     attempts.append(attempt)
                     self.store.update_run(pid, rid, attempts=attempts)
                     raise
+            # Keep the validated result tied to its actual input even if activation conflicts.
+            self.store.update_run(pid,rid,response=value,result_applied=False)
             with self.store.edit(pid, p['revision'], '模型：' + run['stage'], bump=bool(value['proposals'] or value['questions'])) as (current, db):
                 state=next(x for x in self.store.records(pid,'run',db) if x['id']==rid)
                 require(state['status']!='cancelled','CANCELLED','已取消，结果未采纳')
+                require(execution_hash(current)==execution_hash(p),'STALE_REVISION','任务执行期间输入或产物发生变化；结果已保留在调用证据，未激活',409)
                 if run['stage']=='review':
                     require(review_target(current)==review_target(p),'STALE_REVISION','审查期间文档或页面已改变，请重新审查',409)
-                current['messages'].append(dict(role='user', stage=run['stage'], text=run['message'], created=now()))
+                if run['message'].strip():
+                    current['messages'].append(dict(role='user', stage=run['stage'], text=run['message'], created=now()))
                 candidate_count=len(current.get('ui_candidates', []))
                 apply_response(current, value)
                 if run['stage']=='prd':
@@ -153,6 +160,9 @@ class Workflow:
                     self.store.record(pid,'document_artifact',artifact,db=db)
                 elif run['stage']=='ui':
                     artifact=current['ui_candidates'][-1] if len(current.get('ui_candidates', []))>candidate_count else current['ui']
+                    artifact['generation_target']=run.get('generation_target')
+                    artifact['input_revision']=p['revision']
+                    artifact['generation_run_id']=rid
                     self.store.record(pid,'ui_artifact',artifact,db=db)
                 elif run['stage']=='review':
                     self.store.record(pid,'review',current['review'],db=db)
@@ -160,15 +170,20 @@ class Workflow:
                     sent_sources={x['source_id'] for x in excerpts}
                     for s in current['sources']:
                         if s['image_mime'] and s['id'] in sent_sources:
-                            s['parse_status']='read'
+                            observed=any(o['source_ref']['source_id']==s['id'] for o in value['result']['observations'])
+                            limited=bool(value['result']['unreadable']) or not observed
+                            s['parse_status']='partial' if limited else 'read'
+                            s['failure_reason']='图像内容存在不可辨认部分或没有可靠观察，请核对' if limited else ''
                             s['vision_run_id']=rid
+                output_state=copy.deepcopy(current)
+                output_state['revision']+=int(bool(value['proposals'] or value['questions']))
             cost=None
             if config.get('input_price') is not None and config.get('output_price') is not None:
                 usages=[a.get('usage') for a in attempts if a.get('usage')]
-                if usages and all(u and 'prompt_tokens' in u and 'completion_tokens' in u for u in usages):
+                if usages and len(usages)==len(attempts) and all(u and 'prompt_tokens' in u and 'completion_tokens' in u for u in usages):
                     cost=sum((u['prompt_tokens']*config['input_price']+u['completion_tokens']*config['output_price'])/1000000 for u in usages)
             status = 'partial' if omitted or value['limitations'] or any(s['parse_status'] in ('failed','partial') for s in p['sources'] if not s['excluded']) else ('awaiting_user' if value['questions'] else 'succeeded')
-            self.store.update_run(pid, rid, status=status, calls=calls, attempts=attempts, completed=now(), response=value, cost=cost, repair_count=repair_count, events=events + [dict(time=now(),phase='校验并保存')])
+            self.store.update_run(pid, rid, status=status, calls=calls, attempts=attempts, completed=now(), response=value, result_applied=True, cost=cost, repair_count=repair_count, output_state_hash=execution_hash(output_state), events=events + [dict(time=now(),phase='校验并保存')])
         except Exception as e:
             error = e if isinstance(e, Problem) else Problem('INTERNAL_ERROR', '处理失败：' + type(e).__name__)
             state = 'cancelled' if error.code == 'CANCELLED' else 'paused_budget' if error.code == 'BUDGET_EXHAUSTED' else 'failed'

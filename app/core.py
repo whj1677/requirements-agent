@@ -46,6 +46,12 @@ def brief_hash(p):
     return digest({k: p[k] for k in ('items', 'questions', 'options')})
 
 
+def execution_hash(p):
+    """Input identity for paid work, including sources and derived artifacts."""
+    return digest({k:p.get(k) for k in ('revision','items','questions','options','sources',
+        'documents','ui','messages','reference_mode','mode')})
+
+
 def hashes(p):
     return {'brief_hash': brief_hash(p),
             'prd_content_hash': digest(p['documents']['prd']['content']) if 'prd' in p['documents'] else None,

@@ -16,6 +16,7 @@ from .store import Store
 from .contracts import gate, PROFILES
 from .provider import Provider, DEFAULT, origin
 from .workflow import Workflow, confirm
+from .actions import Actions
 from .sources import MAX_BYTES, save_source, webpage
 from .preview import prototype
 from .exports import document_files, handoff, zip_files
@@ -49,6 +50,18 @@ class RunInput(Revision):
     stage: str
     message: str = Field(default='',max_length=12000)
     document_type: Literal['prd','mrd'] = 'prd'
+
+class ActionPlan(Revision):
+    action: Literal['organize','explore','clarify','prototype','document','review','change']
+    message: str = Field(default='',max_length=12000)
+    document_type: Literal['prd','mrd'] = 'prd'
+    option_id: str | None = None
+    max_calls: int = Field(default=8,ge=1,le=30)
+
+class ActionStart(ActionPlan):
+    plan_hash: str
+    idempotency_key: str = Field(min_length=8,max_length=100)
+    authorize: bool = False
 
 class Decision(Revision):
     selection_status: Literal['candidate','selected','rejected','deferred']
@@ -111,10 +124,12 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
             require(bound is None or bound == endpoint, 'KEY_ORIGIN_CONFLICT', '已保存的模型密钥变量绑定到不同接收端，请修正模型配置')
             provider.env_origins[name] = endpoint
     workflow = Workflow(store, provider)
+    actions = Actions(store, workflow)
     token = access_token or os.environ.get('RA_ACCESS_TOKEN') or secrets.token_urlsafe(32)
     sessions = {}
     app = FastAPI(title='需求 Agent', version='1.1', docs_url=None, redoc_url=None)
     app.state.store, app.state.provider, app.state.workflow = store, provider, workflow
+    app.state.actions = actions
     app.state.access_token = token
 
     def attach_document_snapshot(pid, artifact):
@@ -284,6 +299,10 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
             i=next((x for x in p['items'] if x['id']==iid),None)
             require(i is not None,'NOT_FOUND','条目不存在',404)
             if body.statement:
+                if body.statement != i['statement']:
+                    s=save_source(store,'人工修订.txt',body.statement.encode('utf-8'),'goal')
+                    p['sources'].append(s)
+                    i['source_refs']=i.get('source_refs',[])+[dict(source_id=s['id'],excerpt_id=ex['id']) for ex in s['excerpts']]
                 i['statement']=body.statement
             if i.get('target_item_id') and body.selection_status=='selected':
                 target=next(x for x in p['items'] if x['id']==i['target_item_id'])
@@ -404,6 +423,28 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
     async def run(pid:str,body:RunInput):
         return workflow.start(pid,body.expected_revision,body.stage,body.message,body.document_type)
 
+    @app.post('/api/projects/{pid}/actions/plan')
+    async def action_plan(pid:str,body:ActionPlan):
+        return actions.plan(pid,body.model_dump())
+
+    @app.post('/api/projects/{pid}/actions')
+    async def action_start(pid:str,body:ActionStart):
+        values=body.model_dump()
+        plan_hash=values.pop('plan_hash'); key=values.pop('idempotency_key'); authorize=values.pop('authorize')
+        return actions.start(pid,values,plan_hash,key,authorize)
+
+    @app.get('/api/projects/{pid}/actions')
+    async def user_tasks(pid:str):
+        store.get(pid)
+        tasks=store.records(pid,'user_task')
+        for task in tasks:
+            task['calls']=sum(store.get_record(pid,rid,'run')['calls'] for rid in task['run_ids'])
+        return tasks
+
+    @app.post('/api/projects/{pid}/actions/{tid}/cancel')
+    async def action_cancel(pid:str,tid:str):
+        return actions.cancel(pid,tid)
+
     @app.get('/api/projects/{pid}/runs')
     async def runs(pid:str):
         store.get(pid)
@@ -412,6 +453,8 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
     @app.post('/api/projects/{pid}/runs/{rid}/cancel')
     async def cancel(pid:str,rid:str):
         r=store.get_record(pid,rid,'run')
+        if r.get('user_task_id'):
+            return actions.cancel(pid,r['user_task_id'])
         require(r['status'] in ('queued','running'),'RUN_FINISHED','此任务已结束')
         store.update_run(pid,rid,status='cancelled',message='已取消；已发请求仍可能计费')
         return {'status':'cancelled'}
@@ -419,6 +462,7 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
     @app.post('/api/projects/{pid}/runs/{rid}/resume')
     async def resume(pid:str,rid:str,body:Revision):
         r=store.get_record(pid,rid,'run')
+        require(not r.get('user_task_id'),'TASK_REVIEW_REQUIRED','此步骤属于业务任务，请重新核对整个任务的范围和总预算',409)
         require(r['status'] in ('failed','cancelled','paused_budget'),'RUN_FINISHED','无需重跑已成功阶段')
         return workflow.start(pid,body.expected_revision,r['stage'],r['message'],r['document_type'],rid)
 
@@ -445,6 +489,7 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
             require(ui_view_hash(candidate['spec'])!=ui_view_hash(p['ui']['spec']),'NO_CHANGE','页面没有实际差异，未创建新版本')
             candidate['status']='selected'
             p['ui']=dict(spec=candidate['spec'],brief_hash=candidate['brief_hash'],created=candidate['created'])
+            p['ui'].update({k:candidate[k] for k in ('generation_target','input_revision','generation_run_id') if k in candidate})
             p['stale_document_kinds']=list(p['documents'])
             p['document_update_needed']=bool(p['stale_document_kinds'])
             p['review']=None

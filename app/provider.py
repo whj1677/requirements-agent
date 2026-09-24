@@ -87,8 +87,10 @@ class Provider:
         return value, meta
 
 
-def assemble(p, stage, user_message, config, folder, kind='prd'):
+def assemble(p, stage, user_message, config, folder, kind='prd', generation_target=None, pending_images_only=False):
     header = dict(stage=stage, project_id=p['id'], current_revision=p['revision'], mode=p['mode'], schema=SCHEMA, remaining_budget=config['max_calls'])
+    if generation_target:
+        header['generation_target']=generation_target
     if stage == 'prd':
         header.update(document_type=kind, content_profile=profile(kind,p.get('reference_mode')=='builtin'))
     system = (KIT / 'prompts/00_system.md').read_text('utf-8') + '\n' + (KIT / 'prompts' / STAGES[stage]).read_text('utf-8') + '\n可信任务头：' + dumps(header)
@@ -98,19 +100,22 @@ def assemble(p, stage, user_message, config, folder, kind='prd'):
     context['direction_semantics'] = 'direction_status仅记录讨论方向；关联proposed_item_refs不代表条目已采纳，以各条目的selection_status和epistemic_status为准。旧selection_status是历史整包操作。'
     context['user_message'] = user_message
     context['recent_messages'] = p['messages'][-8:]
+    active_sources={s['id'] for s in p['sources'] if not s['excluded']}
+    context['vision_observations']=[m['response'] for m in p['messages'] if m.get('stage')=='vision'
+        and m.get('response') and all(r['source_id'] in active_sources for r in m['response']['used_source_refs'])]
     context['source_status'] = [{k:s.get(k) for k in ('id','title','parse_status','failure_reason','excluded','purpose')} for s in p['sources']]
     remaining = config['context_chars'] - len(system) - len(dumps(context)) - config['max_tokens'] * 4 - 4000
     require(remaining > 0, 'BUDGET_EXHAUSTED', '关键底稿与输出预留已超过上下文预算；不能截断已选规则')
     selected, omitted, images = [], [], []
     for source in p['sources']:
-        if source['excluded']:
+        if source['excluded'] or (stage=='vision' and pending_images_only and source.get('image_mime') and source['parse_status']=='read'):
             continue
         for ex in source['excerpts']:
-            cost = len(dumps(ex)) + (12000 if source['image_mime'] else 0)
-            if cost > remaining or (source['image_mime'] and stage != 'vision'):
+            cost = len(dumps(ex)) + (12000 if source['image_mime'] and stage == 'vision' else 0)
+            if cost > remaining or (source['image_mime'] and stage != 'vision' and not source.get('vision_run_id')):
                 omitted.append(ex['id'])
                 continue
-            if source['image_mime']:
+            if source['image_mime'] and stage == 'vision':
                 require(config['vision'] in ('documented','verified'), 'VISION_UNAVAILABLE', '所选视觉模型能力不支持或未知；图片未分析')
                 data = (folder / 'sources' / source['id']).read_bytes()
                 images.append({'type':'image_url', 'image_url': {'url':'data:' + source['image_mime'] + ';base64,' + base64.b64encode(data).decode()}})

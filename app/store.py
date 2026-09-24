@@ -20,7 +20,7 @@ class Store:
               INSERT OR IGNORE INTO migrations VALUES(1,datetime('now'));
             ''')
             # Never replay a possibly charged request after process death.
-            for row in db.execute("SELECT id,payload FROM records WHERE kind='run'").fetchall():
+            for row in db.execute("SELECT id,payload FROM records WHERE kind IN ('run','user_task')").fetchall():
                 run = json.loads(row['payload'])
                 if run['status'] in ('running', 'queued'):
                     run.update(status='paused_budget', error='RESTARTED', message='服务已重启。已发请求可能计费；请明确续跑。')
@@ -97,9 +97,12 @@ class Store:
             return dict(json.loads(row['payload']), id=rid)
 
     def update_run(self, pid, rid, **changes):
+        self.update_record(pid, rid, 'run', **changes)
+
+    def update_record(self, pid, rid, kind, **changes):
         with self.connect() as db:
             db.execute('BEGIN IMMEDIATE')
-            row = db.execute("SELECT payload FROM records WHERE id=? AND project_id=? AND kind='run'", (rid, pid)).fetchone()
+            row = db.execute("SELECT payload FROM records WHERE id=? AND project_id=? AND kind=?", (rid, pid, kind)).fetchone()
             require(row is not None, 'NOT_FOUND', '任务不存在', 404)
             run = json.loads(row[0])
             run.update(changes)
