@@ -18,7 +18,7 @@ from tests.helpers import prepared
 
 
 async def main(case):
-    evidence = ROOT/'evidence/runtime/review-fixes'
+    evidence = ROOT/'evidence/runtime/ui02-regression'/('review-'+uuid.uuid4().hex[:8])
     evidence.mkdir(parents=True, exist_ok=True)
     app = create_app(evidence/('db-'+uuid.uuid4().hex), access_token='offline-review-token', env_path=evidence/'.env')
     store = app.state.store
@@ -59,7 +59,7 @@ async def main(case):
                 await page.get_by_role('button', name='进入工作台').click()
                 await page.get_by_role('button', name='合成工程验证项目').first.click()
                 if case == 'r1':
-                    await page.get_by_role('button', name='需求文档', exact=True).click()
+                    await page.get_by_role('button', name='文档评审', exact=False).click()
                     await page.get_by_label('文档版本').select_option(index=1)
                     await page.get_by_role('heading', name='PRD A 专属正文').first.wait_for()
                     assert await page.get_by_role('link', name='DOCX 下载').count() == 0, 'historical A incorrectly offers current B download'
@@ -75,7 +75,8 @@ async def main(case):
                     assert 'PRD B 专属正文' in content and 'PRD A 专属正文' not in content
                     await page.screenshot(path=str(evidence/'r1-document.png'), full_page=True)
                 else:
-                    await page.get_by_role('button', name='原型画布', exact=True).click()
+                    await page.get_by_role('button', name='推演方案', exact=False).click()
+                    await page.get_by_role('button',name='查看项目当前原型').click()
                     frame = page.frame_locator('iframe[title="低保真页面预览"]')
                     await frame.get_by_text('时段列表', exact=False).first.wait_for()
                     await frame.locator('body').evaluate('node => { window.__reviewMarker = 17; }')
@@ -88,7 +89,7 @@ async def main(case):
                     await frame.get_by_text('已采纳的新布局', exact=False).first.wait_for(timeout=5000)
                     assert await frame.locator('body').evaluate('node => window.__reviewMarker') is None
                     await page.screenshot(path=str(evidence/'r3-activated.png'), full_page=True)
-                print(case.upper()+' browser regression PASS')
+                print(case.upper()+' browser regression PASS '+str(evidence))
             finally:
                 await browser.close()
     finally:

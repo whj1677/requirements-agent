@@ -17,7 +17,8 @@ from tests.test_pilot01_fix import setup
 
 
 async def main():
-    folder = ROOT / 'evidence/runtime/pilot-01-fix' / ('db-' + uuid.uuid4().hex)
+    evidence = ROOT / 'evidence/runtime/ui02-regression' / ('pilot-fix-' + uuid.uuid4().hex[:8])
+    folder = evidence / 'db'
     client, store, pid = setup(folder)
     app = client.app
     with socket.socket() as sock:
@@ -31,20 +32,19 @@ async def main():
             break
         await asyncio.sleep(.1)
     assert server.started
-    evidence = ROOT / 'evidence/runtime/pilot-01-fix'
     requests = []
     try:
         async with async_playwright() as pw:
             browser = await pw.chromium.launch(headless=True)
             try:
                 page = await browser.new_page(viewport={'width': 1440, 'height': 900})
-                page.on('request', lambda request: requests.append(request.url) if request.method == 'POST' and request.url.endswith('/runs') else None)
+                page.on('request', lambda request: requests.append(request.url) if request.method == 'POST' and request.url.endswith(('/runs','/actions')) else None)
                 await page.goto(f'http://127.0.0.1:{port}')
                 await page.get_by_label('本机访问令牌').fill('test-token')
                 await page.get_by_role('button', name='进入工作台').click()
                 await page.get_by_role('button', name='离线方案测试').first.click()
                 await page.get_by_role('heading', name='离线方案测试').wait_for()
-                await page.get_by_role('tab', name='方案对比').click()
+                await page.get_by_role('button', name='推演方案', exact=False).click()
                 first = page.get_by_role('article').filter(has=page.get_by_role('heading', name='方向 1'))
                 await first.get_by_role('button', name='按此方向继续讨论').click()
                 await page.get_by_role('dialog', name='核对方案操作').get_by_role('button', name='确认提交').click()
@@ -56,7 +56,7 @@ async def main():
                 assert await dialog.get_by_role('button', name='确认提交').is_disabled()
                 await dialog.get_by_role('checkbox').first.check()
                 assert await dialog.get_by_text('合成原文 1').is_visible()
-                assert await dialog.get_by_text('合成来源原文').first.is_visible()
+                assert await dialog.get_by_text('合成来源原文', exact=False).first.is_visible()
                 await page.screenshot(path=str(evidence / 'explicit-item-review.png'), full_page=True)
                 await dialog.get_by_role('button', name='确认提交').click()
                 await dialog.wait_for(state='hidden')

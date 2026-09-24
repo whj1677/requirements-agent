@@ -15,7 +15,7 @@ from app.exports import document_files
 from tests.helpers import prepared
 
 async def main():
-    run_dir=ROOT/'evidence/runtime/browser'
+    run_dir=ROOT/'evidence/runtime/ui02-regression'/('browser-'+uuid.uuid4().hex[:8])
     run_dir.mkdir(parents=True,exist_ok=True)
     app=create_app(run_dir/('db-'+uuid.uuid4().hex),access_token='offline-browser-engineering-token',env_path=run_dir/'.env')
     p=prepared(app.state.store)
@@ -29,13 +29,14 @@ async def main():
         browser=await pw.chromium.launch(headless=True)
         page=await browser.new_page(viewport={'width':1440,'height':1000})
         errors=[];page.on('pageerror',lambda e:errors.append(str(e)))
-        run_posts=[];page.on('request',lambda request:run_posts.append(request.url) if request.method=='POST' and request.url.endswith('/runs') else None)
+        run_posts=[];page.on('request',lambda request:run_posts.append(request.url) if request.method=='POST' and request.url.endswith(('/runs','/actions')) else None)
         try:
             await page.goto('http://127.0.0.1:8876')
             await page.get_by_label('本机访问令牌',exact=True).fill('offline-browser-engineering-token')
             await page.get_by_role('button',name='进入工作台').click()
             await page.get_by_role('button',name='合成工程验证项目').first.click()
-            composer=page.get_by_label('本轮想讨论的内容')
+            work=page.locator('.project-workspace:not([hidden])')
+            composer=work.get_by_label('本轮想讨论的内容')
             await composer.fill('保留的讨论草稿')
             await composer.evaluate("node=>{node.dispatchEvent(new CompositionEvent('compositionstart',{bubbles:true}));node.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',isComposing:true,bubbles:true}));node.dispatchEvent(new CompositionEvent('compositionend',{bubbles:true}));}")
             assert await composer.input_value()=='保留的讨论草稿' and not run_posts
@@ -44,28 +45,30 @@ async def main():
                 assert await page.locator('body').evaluate('(node)=>node.scrollWidth<=window.innerWidth'),f'discussion overflow at {width}'
                 await page.screenshot(path=str(run_dir/f'discussion-{width}.png'),full_page=True)
             await page.set_viewport_size({'width':800,'height':900})
-            await page.get_by_role('button',name='成果',exact=True).click()
-            await page.get_by_role('heading',name='需求摘要').first.wait_for()
+            await page.get_by_role('button',name='任务内容',exact=True).click()
+            await page.get_by_role('button',name='明确需求',exact=False).click()
+            await work.get_by_role('heading',name='需求摘要').first.wait_for()
             assert await page.locator('body').evaluate('(node)=>node.scrollWidth<=window.innerWidth')
             await page.screenshot(path=str(run_dir/'discussion-800-artifacts.png'),full_page=True)
             await page.set_viewport_size({'width':1440,'height':1000})
-            await page.get_by_label('新项目名称').fill('草稿切换验证')
+            await page.get_by_label('新项目名称',exact=True).fill('草稿切换验证')
             await page.get_by_role('button',name='创建项目',exact=True).click()
             await page.get_by_role('heading',name='草稿切换验证').wait_for()
-            await page.get_by_label('本轮想讨论的内容').fill('第二项目草稿')
+            await work.get_by_label('本轮想讨论的内容').fill('第二项目草稿')
             await page.get_by_role('button',name='合成工程验证项目').click()
             await page.get_by_role('heading',name='合成工程验证项目').wait_for()
-            assert await page.get_by_label('本轮想讨论的内容').input_value()=='保留的讨论草稿'
+            assert await work.get_by_label('本轮想讨论的内容').input_value()=='保留的讨论草稿'
             await page.get_by_role('button',name='草稿切换验证').click()
             await page.get_by_role('heading',name='草稿切换验证').wait_for()
-            assert await page.get_by_label('本轮想讨论的内容').input_value()=='第二项目草稿'
+            assert await work.get_by_label('本轮想讨论的内容').input_value()=='第二项目草稿'
             await page.get_by_role('button',name='合成工程验证项目').click()
             await page.get_by_role('heading',name='合成工程验证项目').wait_for()
-            await page.get_by_role('button',name='原型画布',exact=True).click()
-            await page.get_by_role('button',name='讨论工作台',exact=True).click()
+            await page.get_by_role('button',name='推演方案',exact=False).click()
+            await page.get_by_role('button',name='理解需求',exact=False).click()
             assert await composer.input_value()=='保留的讨论草稿'
-            await page.get_by_role('button',name='原型画布',exact=True).click()
-            frame=page.frame_locator('iframe[title="低保真页面预览"]')
+            await page.get_by_role('button',name='推演方案',exact=False).click()
+            await page.get_by_role('button',name='查看项目当前原型').click()
+            frame=work.frame_locator('iframe[title="低保真页面预览"]')
             await frame.get_by_role('cell',name='00:00—08:00',exact=True).wait_for()
             await frame.get_by_role('button',name='错误',exact=True).click()
             await frame.get_by_text('读取失败（模拟）',exact=False).wait_for()
@@ -77,11 +80,20 @@ async def main():
                 assert await page.locator('body').evaluate('(node)=>node.scrollWidth<=window.innerWidth'),f'horizontal clipping at {width}'
                 await page.screenshot(path=str(run_dir/f'workbench-{width}.png'),full_page=True)
             await page.set_viewport_size({'width':1440,'height':1000})
-            await page.get_by_role('button',name='需求文档',exact=True).click()
-            await page.get_by_text('本期范围 规则 验收与未知事项').first.wait_for()
+            await page.get_by_role('button',name='文档评审',exact=False).click()
+            await work.locator('.document-layout').get_by_text('本期范围 规则 验收与未知事项').first.wait_for()
             await page.screenshot(path=str(run_dir/'document.png'),full_page=True)
-            await page.get_by_role('button',name='确认与交接',exact=True).click()
+            await page.get_by_role('button',name='确认交接',exact=False).click()
             await page.get_by_role('button',name='确认此版本的 PRD 内容').click()
+            async def invalid_csrf(route):
+                await route.continue_(headers={**route.request.headers,'x-csrf-token':'synthetic-invalid-csrf'})
+            await page.route('**/confirmations',invalid_csrf)
+            await page.get_by_role('dialog',name='确认内容复核').get_by_role('button',name='提交服务端确认').click()
+            await page.get_by_role('dialog',name='确认内容复核').get_by_role('alert').wait_for()
+            assert await page.get_by_role('dialog',name='确认内容复核').is_visible()
+            assert not app.state.store.records(p['id'],'confirmation')
+            await page.unroute('**/confirmations',invalid_csrf)
+            results.append({'case':'confirmation 403 preserves context without success','result':'ENGINEERING_PASS'})
             await page.get_by_role('dialog',name='确认内容复核').get_by_role('button',name='提交服务端确认').click()
             await page.get_by_role('button',name='生成此基线的研发交接包').wait_for()
             await page.get_by_role('button',name='生成此基线的研发交接包').click()
@@ -106,23 +118,25 @@ async def main():
             results.append({'case':'confirmation 409 preserves dialog and no replay','result':'ENGINEERING_PASS'})
             await page.reload()
             await page.get_by_role('button',name='合成工程验证项目').click()
-            await page.get_by_role('button',name='需求文档',exact=True).click()
+            await page.get_by_role('button',name='文档评审',exact=False).click()
             await page.get_by_text('基于旧版本',exact=False).wait_for()
-            assert await page.get_by_text('管理员能够维护电价时段。',exact=False).count()>0
-            assert await page.get_by_text('并发合成修改，旧确认请求必须拒绝。',exact=False).count()==0
+            assert await work.locator('.document-layout').get_by_text('管理员能够维护电价时段。',exact=False).count()>0
+            assert await work.locator('.document-layout').get_by_text('并发合成修改，旧确认请求必须拒绝。',exact=False).count()==0
             results.append({'case':'stale document uses own item snapshot','result':'ENGINEERING_PASS'})
             # Untouched real runtime, no key, new project.
-            await page.get_by_label('新项目名称').fill('无 Key 浏览器验证')
+            await page.get_by_label('新项目名称',exact=True).fill('无 Key 浏览器验证')
             await page.get_by_role('button',name='创建项目',exact=True).click()
-            await page.get_by_role('button',name='重命名',exact=True).click()
+            await page.get_by_role('heading',name='无 Key 浏览器验证',exact=True).wait_for()
+            await work.get_by_role('button',name='重命名',exact=True).click()
             await page.get_by_role('dialog').get_by_label('项目名称').fill('无 Key 项目（已重命名）')
             await page.get_by_role('dialog').get_by_role('button',name='保存').click()
             await page.get_by_role('heading',name='无 Key 项目（已重命名）').wait_for()
-            await page.get_by_label('本轮想讨论的内容').fill('模型失败后应保留这段输入')
-            await page.get_by_role('button',name='发送并运行').click()
-            await page.get_by_text('任务详情与接收端').click()
-            await page.get_by_text('请先在模型设置中配置此接收端的 Key',exact=False).wait_for()
-            assert await page.get_by_label('本轮想讨论的内容').input_value()=='模型失败后应保留这段输入'
+            await work.get_by_label('本轮想讨论的内容').fill('模型失败后应保留这段输入')
+            await page.get_by_role('button',name='发送并整理').click()
+            await page.get_by_text('主分析尚未配置可用 Key',exact=False).wait_for()
+            assert await page.get_by_role('dialog').get_by_role('button',name='授权本次范围并运行').is_disabled()
+            assert not run_posts
+            assert await work.get_by_label('本轮想讨论的内容').input_value()=='模型失败后应保留这段输入'
             await page.screenshot(path=str(run_dir/'no-key.png'),full_page=True)
             results.append({'case':'AT-01','result':'ENGINEERING_PASS','evidence':'browser/no-key.png'})
             assert not errors,errors
@@ -138,6 +152,6 @@ async def main():
             server.should_exit=True
             thread.join(timeout=10)
     (run_dir/'results.json').write_text(dumps({'mode':'OFFLINE_ENGINEERING_FIXTURE','results':results}),encoding='utf8')
-    print(dumps(results))
+    print(dumps(dict(evidence=str(run_dir),results=results)))
 
 if __name__=='__main__':asyncio.run(main())

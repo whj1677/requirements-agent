@@ -1,6 +1,10 @@
 export type JsonObject = Record<string, any>;
 export interface ProjectSummary { id: string; name: string; revision: number }
 export interface Run { id: string; stage: string; status: string; message: string; calls: number; error?: string; cost?: number }
+export type BusinessAction = 'organize' | 'explore' | 'clarify' | 'prototype' | 'document' | 'review' | 'change';
+export interface ActionInput { expected_revision: number; action: BusinessAction; message: string; document_type: string; option_id?: string | null; max_calls: number }
+export interface ActionPlan { plan_hash: string; label: string; stages: string[]; max_calls: number; expected_revision: number; pending_text: string; context_scope: string; missing: string[]; recipients: { origin: string; model: string; needs_authorization: boolean }[]; sources: { id: string; title: string; status: string }[]; generation_target?: JsonObject }
+export interface UserTask { id: string; action: BusinessAction; label: string; status: string; message: string; calls: number; max_calls: number; run_ids: string[]; source_ids: string[]; completed_steps: number; stages: string[]; cost: number | null }
 export interface Project extends ProjectSummary {
   mode: string; reference_mode: string; sources: JsonObject[]; items: JsonObject[]; options: JsonObject[];
   questions: JsonObject[]; messages: JsonObject[]; documents: Record<string, JsonObject>;
