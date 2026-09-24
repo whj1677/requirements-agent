@@ -132,7 +132,11 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
             provider.env_origins[name] = endpoint
     workflow = Workflow(store, provider)
     actions = Actions(store, workflow)
-    token = access_token or os.environ.get('RA_ACCESS_TOKEN') or secrets.token_urlsafe(32)
+    # RA_ACCESS_TOKEN=off 为临时的本机无令牌模式，待硬件绑定方案替换；其余情况保持强制令牌
+    if access_token is None and os.environ.get('RA_ACCESS_TOKEN')=='off':
+        token=None
+    else:
+        token = access_token or os.environ.get('RA_ACCESS_TOKEN') or secrets.token_urlsafe(32)
     sessions = {}
     app = FastAPI(title='需求 Agent', version='1.1', docs_url=None, redoc_url=None)
     app.state.store, app.state.provider, app.state.workflow = store, provider, workflow
@@ -167,7 +171,7 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
             expected_origin = str(request.base_url).rstrip('/')
             if remote_origin and remote_origin != expected_origin:
                 return JSONResponse({'code':'ORIGIN_DENIED','message':'拒绝跨站访问'},status_code=403)
-            if request.url.path != '/api/session/login':
+            if request.url.path != '/api/session/login' and token is not None:
                 session = sessions.get(request.cookies.get('ra_session',''))
                 if not session:
                     return JSONResponse({'code':'SESSION_REQUIRED','message':'请输入本机访问令牌'},status_code=401)
@@ -184,6 +188,8 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
 
     @app.post('/api/session/login')
     async def login(body: KeyInput):
+        if token is None:
+            return {'csrf':''}
         require(hmac.compare_digest(body.key,token), 'AUTH_FAILED', '本机访问令牌错误', 401)
         sid, csrf = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
         sessions[sid] = csrf
@@ -194,7 +200,7 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
     @app.get('/api/session')
     async def session(request:Request):
         # backend 为纯附加字段：旧前端忽略它，新前端据此核实接口能力。
-        return {'csrf':sessions[request.cookies['ra_session']], 'mode':'live', 'version':'1.1',
+        return {'csrf':sessions.get(request.cookies.get('ra_session',''),''), 'mode':'live', 'version':'1.1',
                 'backend': app.state.runtime}
 
     @app.get('/api/projects')

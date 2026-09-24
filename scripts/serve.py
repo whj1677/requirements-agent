@@ -19,4 +19,6 @@ if __name__ == '__main__':
     print('说明：前端更新后，已打开的标签页需重新加载才会使用新资源；刷新前请保留未发送的输入。', flush=True)
     if not __import__('os').environ.get('RA_ACCESS_TOKEN'):
         print('本机访问令牌（仅本机登录使用，不是模型 Key）：'+app.state.access_token,flush=True)
+    elif __import__('os').environ.get('RA_ACCESS_TOKEN')=='off':
+        print('临时无令牌模式：本机页面不再要求登录（待硬件绑定方案替换）；标准随机令牌模式请用 scripts/start.ps1 启动。',flush=True)
     uvicorn.run(app,host='127.0.0.1',port=port,access_log=False)
