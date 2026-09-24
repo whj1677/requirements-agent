@@ -63,13 +63,14 @@ export function Workspace({ id, active, models, onProjectsChanged, compat, onExi
   }
   async function startAction() {
     if (!pending) return;
+    if (actionBlockReason) { setActionError(actionBlockReason); return; }
     setBusy(true); setActionError('');
     try { await api(root + '/actions', 'POST', { ...pending.input, plan_hash: pending.plan.plan_hash, idempotency_key: pending.key, authorize: pending.plan.recipients.some(r => r.needs_authorization) }); if (pending.input.message) setLastSent(pending.input.message); setPending(null); await refresh(); }
     catch(e) { setActionError((e as Error).message); } finally { setBusy(false); }
   }
   function navigate(tab: string) { if (tab === 'documents') setPhase(3); else if (tab === 'prototype') { setPhase(1); setPrototypeOpen(true); } else if (tab === 'sources') setSourcesOpen(true); else { setPhase(2); setShowAll(true); } }
   function stageAction(s: string) { const action: Record<string, BusinessAction> = { ingest: 'organize', vision: 'organize', brainstorm: 'explore', clarify: 'clarify', ui: 'prototype', prd: 'document', review: 'review', change: 'change' }; act(() => planAction(action[s] || 'organize')); }
-  const actionBlockReason = compat.status === 'incompatible' ? '后端缺少必需接口能力（' + compat.missing.join('、') + '），发起动作已暂停；请重启服务并重新加载本标签页' : (stale.includes('任务列表') && !tasksLoaded) ? '任务状态尚未取得，发起动作已暂停；请先重试刷新' : '';
+  const actionBlockReason = compat.status === 'incompatible' ? '后端缺少必需接口能力（' + compat.missing.join('、') + '），发起动作已暂停；请重启服务并重新加载本标签页' : stale.includes('任务列表') ? (tasksLoaded ? '任务状态读取失败，当前状态待刷新；页面显示的是此前取得的任务记录，发起动作已暂停，请重试刷新' : '任务状态尚未取得，发起动作已暂停；请先重试刷新') : '';
   if (!p) {
     if (fatal) {
       const category = categorizeError(fatal);

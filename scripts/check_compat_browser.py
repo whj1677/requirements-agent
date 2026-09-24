@@ -2,9 +2,12 @@
 
 Uses a synthetic loopback model server, an isolated data directory and synthetic
 credentials. No real model requests are made; the script asserts they stay zero.
+Set RA_COMPAT_DIST to serve a temporary frontend build instead of web/dist
+(keeps the build under test off the directory a running service may serve).
 """
 import asyncio
 import json
+import os
 import re
 import socket
 import sys
@@ -14,15 +17,16 @@ from pathlib import Path
 
 sys.path.insert(0,str(Path(__file__).resolve().parent.parent))
 import uvicorn
-from fastapi.responses import HTMLResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from playwright.async_api import async_playwright
 from app.core import ROOT
 from app.main import create_app
-from app.provider import Provider
+from app.provider import Provider, origin
 from tests.ui02_fixture import model_server
 
 TOKEN='compat-synthetic-token'
 PROJECT_GET=re.compile(r'^/api/projects/[^/]+$')
+STATIC=os.environ.get('RA_COMPAT_DIST')
 
 
 async def main():
@@ -30,11 +34,16 @@ async def main():
     evidence.mkdir(parents=True)
     with model_server() as model:
         provider=Provider(evidence/'absent.env')
+        provider.keys[origin(model['config'])]='compat-synthetic-key'
         app=create_app(evidence/'data',access_token=TOKEN,provider=provider)
+        for slot in ('model','vision'):app.state.store.setting(slot,model['config'])
         faults={'legacy_actions':False,'project_not_found':False,'html500':False,'empty500':False,'session_patch':None}
         @app.middleware('http')
         async def fault_injection(request,call_next):
             path=request.url.path
+            if STATIC and request.method=='GET' and not path.startswith('/api/'):
+                candidate=Path(STATIC)/path.lstrip('/')
+                return FileResponse(candidate) if candidate.is_file() else FileResponse(Path(STATIC)/'index.html')
             if faults['legacy_actions'] and re.match(r'^/api/projects/[^/]+/(actions|artifacts)$',path):
                 return JSONResponse({'detail':'Not Found'},status_code=404)
             if faults['session_patch'] and path=='/api/session' and request.method=='GET':
@@ -66,6 +75,7 @@ async def main():
                 context=await browser.new_context(viewport={'width':1440,'height':1000})
                 page=await context.new_page()
                 errors=[];page.on('pageerror',lambda e:errors.append(str(e)))
+                plan_posts=[];page.on('request',lambda r:plan_posts.append(r.url) if r.method=='POST' and r.url.endswith('/actions/plan') else None)
                 base=f'http://127.0.0.1:{port}'
                 await page.goto(base)
                 await page.get_by_label('本机访问令牌').fill(TOKEN)
@@ -208,6 +218,87 @@ async def main():
                 await page.screenshot(path=str(evidence/'f-incompatible.png'),full_page=True)
                 faults['session_patch']=None
                 results.append({'scenario':'f-capability-missing-and-unverified','status':'VERIFIED'})
+
+                # g. 任务列表“先成功加载、后读取失败”：旧记录保留、状态标记待刷新、动作在发起路径被阻止
+                await page.reload()
+                await page.get_by_role('heading',name='选择或新建需求项目').wait_for()
+                workspace=await create_and_enter('状态失效检查C')
+                pid_c=await project_pid('状态失效检查C')
+                app.state.store.record(pid_c,'user_task',dict(action='organize',label='合成历史任务',status='succeeded',message='合成工程记录，非模型产物',max_calls=8,run_ids=[],source_ids=[],completed_steps=1,stages=['ingest'],cost=None))
+                await page.get_by_role('button',name='兼容检查A',exact=False).first.click()
+                await page.get_by_role('button',name='状态失效检查C',exact=False).first.click()
+                workspace=page.locator('.project-workspace:not([hidden])')
+                await workspace.get_by_text('合成历史任务',exact=False).wait_for()
+                composer=workspace.get_by_label('本轮想讨论的内容')
+                await composer.fill('状态失效前的草稿')
+                assert await workspace.locator('.task-guide .primary').is_enabled()
+                # A：打开 /actions 故障并触发刷新——任务状态当前无效
+                faults['legacy_actions']=True
+                await page.get_by_role('button',name='兼容检查A',exact=False).first.click()
+                await page.get_by_role('button',name='状态失效检查C',exact=False).first.click()
+                await workspace.get_by_text('任务状态读取失败',exact=False).wait_for()
+                assert await workspace.get_by_text('合成历史任务',exact=False).is_visible()
+                await workspace.get_by_text('部分状态未能更新',exact=False).wait_for()
+                assert await composer.input_value()=='状态失效前的草稿'
+                assert await workspace.locator('.task-guide .primary').is_disabled()
+                await page.screenshot(path=str(evidence/'g-stale-blocked.png'),full_page=True)
+                # 守卫落在发起路径：未被置灰的入口同样被阻止，连 plan 请求都不发出
+                plan_calls_before=len(plan_posts)
+                await workspace.get_by_role('button',name='明确需求',exact=False).click()
+                await workspace.get_by_role('button',name='根据回答更新理解').click()
+                assert len(plan_posts)==plan_calls_before,'守卫未拦截时仍会发起 plan 请求'
+                await workspace.get_by_text('发起动作已暂停',exact=False).first.wait_for()
+                assert await page.get_by_role('dialog',name='核对本次任务').count()==0
+                await workspace.locator('.error.banner').get_by_role('button',name='关闭').click()
+                results.append({'scenario':'g-stale-tasks-block-new-actions','status':'VERIFIED'})
+                # B：重试成功取得任务状态后按实际状态恢复，不重建项目、不丢输入与版本
+                faults['legacy_actions']=False
+                await workspace.get_by_role('button',name='重试',exact=True).click()
+                await workspace.get_by_text('部分状态未能更新',exact=False).wait_for(state='detached')
+                assert await workspace.locator('.task-guide .primary').is_enabled()
+                assert await composer.input_value()=='状态失效前的草稿'
+                await workspace.get_by_role('button',name='理解需求',exact=False).click()
+                await workspace.locator('.task-guide .primary').click()
+                dialog=page.get_by_role('dialog',name='核对本次任务')
+                await dialog.wait_for()
+                await dialog.get_by_role('button',name='返回保留输入').click()
+                await dialog.wait_for(state='hidden')
+                projects=await (await page.request.get(base+'/api/projects')).json()
+                assert len(projects)==3,'恢复过程不得重建项目'
+                restored=await (await page.request.get(base+'/api/projects/'+pid_c)).json()
+                assert restored['revision']==0,'全程不得产生业务写入'
+                assert len(model['requests'])==0
+                await page.screenshot(path=str(evidence/'g-recovered.png'),full_page=True)
+                results.append({'scenario':'g-retry-recovers-actual-state','status':'VERIFIED'})
+                # C：预检弹窗打开后任务状态失效，提交被最终核对阻止，0 业务任务创建
+                # （弹窗为模态，侧栏真实点击被遮罩拦截；用 DOM 派发走真实 React 处理器触发刷新）
+                workspace=await create_and_enter('弹窗失效检查D')
+                pid_d=await project_pid('弹窗失效检查D')
+                app.state.store.record(pid_d,'user_task',dict(action='organize',label='合成历史任务',status='succeeded',message='合成工程记录，非模型产物',max_calls=8,run_ids=[],source_ids=[],completed_steps=1,stages=['ingest'],cost=None))
+                await page.get_by_role('button',name='兼容检查A',exact=False).first.click()
+                await page.get_by_role('button',name='弹窗失效检查D',exact=False).first.click()
+                workspace=page.locator('.project-workspace:not([hidden])')
+                await workspace.get_by_text('合成历史任务',exact=False).wait_for()
+                await workspace.get_by_label('本轮想讨论的内容').fill('弹窗打开时的输入')
+                await workspace.get_by_role('button',name='明确需求',exact=False).click()
+                await workspace.get_by_role('button',name='根据回答更新理解').click()
+                dialog=page.get_by_role('dialog',name='核对本次任务')
+                await dialog.wait_for()
+                assert await dialog.locator('button.primary').is_enabled()
+                faults['legacy_actions']=True
+                await page.evaluate("()=>{const b=[...document.querySelectorAll('.project-list button')];b.find(x=>x.textContent.includes('兼容检查A'))?.click();}")
+                await page.evaluate("()=>{const b=[...document.querySelectorAll('.project-list button')];b.find(x=>x.textContent.includes('弹窗失效检查D'))?.click();}")
+                await workspace.get_by_text('任务状态读取失败',exact=False).wait_for()
+                tasks_before=len(app.state.store.records(pid_d,'user_task'))
+                await dialog.locator('button.primary').click()
+                await dialog.get_by_text('发起动作已暂停',exact=False).wait_for()
+                assert await dialog.is_visible()
+                assert len(app.state.store.records(pid_d,'user_task'))==tasks_before,'提交被阻止前不得创建业务任务'
+                assert len(model['requests'])==0
+                await page.screenshot(path=str(evidence/'g-dialog-blocked.png'),full_page=True)
+                await dialog.get_by_role('button',name='返回保留输入').click()
+                faults['legacy_actions']=False
+                results.append({'scenario':'g-dialog-submit-rechecks-block','status':'VERIFIED'})
                 assert len(model['requests'])==0
                 assert not errors,errors
                 (evidence/'results.json').write_text(json.dumps({'results':results,'model_calls':len(model['requests']),'console_errors':errors},ensure_ascii=False,indent=2),'utf-8')

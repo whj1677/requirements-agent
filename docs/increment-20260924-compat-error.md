@@ -44,3 +44,38 @@
 - 8765 真实服务未重启、未改动；其维护（含以新构建重启）需用户另行许可。走查报告第一章"标签页实际加载版本无法从服务端证实"的核对点保持原状。
 - unverified 状态只表示"兼容性未核实"，不代表已确认不兼容；runtime_id 是源码指纹而非语义版本，文档提交/重新构建等不影响它，但任何 `app/*.py` 内容变化都会改变它。
 - 真实模型质量、真人体验与首审保持 NOT_RUN；本轮全部为合成凭据、合成端点与故障注入的工程验证，不改变任何验收状态。
+
+# 追加：任务列表"先成功后失败"时新动作未暂停（2026-09-24 第二轮）
+
+起点：同分支 `1bdb339`。缺陷：阻塞条件 `stale.includes('任务列表') && !tasksLoaded` 只覆盖"从未加载成功"；`/actions` 首次成功后转为失败时，旧任务记录仍在界面，但当前任务状态已无法核实，发起动作路径却被判定为可执行。
+
+## 复现与修复
+
+- 回归先行：在 `scripts/check_compat_browser.py` 追加场景组 g（注入合成任务记录，故障开关控制 `/actions`）。修复前运行退出码 1，失败于 `get_by_text("任务状态读取失败")` 等待超时（`scripts/check_compat_browser.py` 场景 A，日志见本机 `/tmp/compat-prefix.log`）：先成功后失败时既无提示也不暂停。
+- 最小修复（仅 `web/src/workspace.tsx`，`api.ts` 未动）：阻塞条件改为 `stale.includes('任务列表')`（不再要求 `!tasksLoaded`），提示区分两个事实——曾经取得过任务数据（旧记录保留可供查看，提示"任务状态读取失败，当前状态待刷新"）与从未取得（提示"任务状态尚未取得"）；读取失败从不清空 tasks 数组。守卫同时落在实际发起路径：`planAction`（原有）与 `startAction`（新增提交前最终核对，弹窗打开后发生的读取失败同样生效，拒绝时原因显示在弹窗内，不创建业务任务）。重试成功取得任务状态后按实际状态恢复；有活动任务时的既有串行规则（plan.missing / busy）未改动。
+
+## 本轮验证
+
+命令均在仓库根目录运行（前端构建在 `web/`），合成凭据与隔离数据目录，未触碰 8765 与其提供的 `web/dist`（前端构建输出到 `evidence/runtime/compat-web/`，经 `RA_COMPAT_DIST` 提供给被测服务）。
+
+| 检查 | 退出码 | 实际结果 |
+|---|---|---|
+| 修复前 `python scripts/check_compat_browser.py`（场景 g） | 1 | 按预期检出缺陷：场景 A 等待"任务状态读取失败"超时 |
+| `cd web && npx tsc && npx vite build --outDir dist-verify`（验证后删除） | 0 | 类型检查与构建通过，无 dist 变更、无残留产物 |
+| `cd web && npx vite build --outDir ../evidence/runtime/compat-web --emptyOutDir` | 0 | 临时构建 `index-CzcPKpUe.js`；`git status` 无 dist 变更 |
+| `RA_COMPAT_DIST=<临时构建> python scripts/check_compat_browser.py` | 0 | 10 个场景全部 VERIFIED（原 7 个无回归 + 新增 g 组 3 个），model_calls=0，无页面 JS 错误 |
+| `python -m pytest tests -q --junitxml=evidence/runtime/compat-stale-tasks-pytest.xml` | 0 | 112 项通过，0 失败（含 tests/test_runtime_info.py） |
+| `python scripts/check_browser.py` | 0 | 全部 ENGINEERING_PASS，证据 `evidence/runtime/ui02-regression/browser-2f4f186c` |
+| `python scripts/check_ui02_browser.py` | 0 | 通过，证据 `evidence/runtime/ui02/fdd548da` |
+| `git diff --check` | 0 | 无空白错误 |
+
+场景 g（证据 `evidence/runtime/compat/b97da84f/`）：
+
+- A 先成功后失败：旧任务记录"合成历史任务"仍可见，出现"部分状态未能更新（任务列表…）"与"任务状态读取失败，当前状态待刷新…发起动作已暂停"，主动作按钮禁用；经未置灰入口（根据回答更新理解）发起时被守卫拦截，连 plan 预检请求都未发出（截图 `g-stale-blocked.png`）。
+- B 重试成功后按实际状态恢复：横幅消失、按钮恢复、可再次打开预检弹窗；项目数不变（不重建项目）、revision 保持 0（无业务写入）、未发送输入保留（截图 `g-recovered.png`）。
+- C 弹窗已打开时状态失效：弹窗为模态，侧栏真实点击被遮罩拦截，改用 DOM 派发走真实 React 处理器触发刷新；失效后点击"授权本次范围并运行"被提交前最终核对阻止，原因显示在弹窗内、弹窗保持打开、业务任务数不变、模型请求 0（截图 `g-dialog-blocked.png`）。
+
+## 限制
+
+- `scripts/check_compat_browser.py` 的 g 场景针对含修复的前端；不设 `RA_COMPAT_DIST` 运行时仍服务 `web/dist` 旧构建，g 场景会按设计失败——8765 换用新构建需用户授权重启后另行验证。
+- 后端授权、预算、串行执行、确认门禁未改动；`api.ts` 未改动。真实模型请求全程为 0，真人体验与首审保持 NOT_RUN。
