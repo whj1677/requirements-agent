@@ -7,6 +7,7 @@ import httpx
 from .core import KIT, Problem, dumps, now, read_json, require
 from .contracts import SCHEMA, profile
 from .config import ProjectEnvironment, usable_key
+from .prd import PLAN_SCHEMA, context as document_context
 
 DEFAULT = dict(name='DeepSeek 官方', base_url='https://api.deepseek.com', model='deepseek-flash',
                key_env='RA_DEEPSEEK_API_KEY', vision='documented', json_mode=True, timeout=120,
@@ -88,12 +89,14 @@ class Provider:
 
 
 def assemble(p, stage, user_message, config, folder, kind='prd', generation_target=None, pending_images_only=False):
-    header = dict(stage=stage, project_id=p['id'], current_revision=p['revision'], mode=p['mode'], schema=SCHEMA, remaining_budget=config['max_calls'])
+    header = dict(stage=stage, project_id=p['id'], current_revision=p['revision'], mode=p['mode'], schema=PLAN_SCHEMA if stage=='prd' else SCHEMA, remaining_budget=config['max_calls'])
     if generation_target:
         header['generation_target']=generation_target
     if stage == 'prd':
         header.update(document_type=kind, content_profile=profile(kind,p.get('reference_mode')=='builtin'))
-    system = (KIT / 'prompts/00_system.md').read_text('utf-8') + '\n' + (KIT / 'prompts' / STAGES[stage]).read_text('utf-8') + '\n可信任务头：' + dumps(header)
+    base = (KIT / 'prompts/00_system.md').read_text('utf-8')
+    if stage=='prd':base=base.split('## 输出')[0]
+    system = base + '\n' + (KIT / 'prompts' / STAGES[stage]).read_text('utf-8') + '\n可信任务头：' + dumps(header)
     context = {k:p[k] for k in ('items','questions','options','documents','ui')}
     context['discussion_direction'] = [dict(option_id=o['id'], name=o['name'], status=o['direction_status'])
                                        for o in p['options'] if o.get('direction_status')]
@@ -104,6 +107,9 @@ def assemble(p, stage, user_message, config, folder, kind='prd', generation_targ
     context['vision_observations']=[m['response'] for m in p['messages'] if m.get('stage')=='vision'
         and m.get('response') and all(r['source_id'] in active_sources for r in m['response']['used_source_refs'])]
     context['source_status'] = [{k:s.get(k) for k in ('id','title','parse_status','failure_reason','excluded','purpose')} for s in p['sources']]
+    if stage=='prd':
+        context=document_context(p)
+        context['user_message']=user_message
     remaining = config['context_chars'] - len(system) - len(dumps(context)) - config['max_tokens'] * 4 - 4000
     require(remaining > 0, 'BUDGET_EXHAUSTED', '关键底稿与输出预留已超过上下文预算；不能截断已选规则')
     selected, omitted, images = [], [], []
@@ -127,3 +133,13 @@ def assemble(p, stage, user_message, config, folder, kind='prd', generation_targ
     context['omitted_excerpt_ids'] = omitted
     content = [{'type':'text','text':dumps(context)}] + images
     return [{'role':'system','content':system},{'role':'user','content':content}], selected, omitted
+
+
+def input_metrics(messages):
+    """Serialized characters/UTF-8 bytes only; never pretend these are token usage."""
+    system,raw=messages[0]['content'].split('可信任务头：',1)
+    header=json.loads(raw);ctx=json.loads(messages[1]['content'][0]['text'])
+    parts=dict(system_prompts=system,schema=header['schema'],reference_profile=header.get('content_profile',{}),
+        brief={k:v for k,v in ctx.items() if k not in ('excerpts','recent_messages')},
+        history=ctx.get('recent_messages',[]),raw_materials=ctx.get('excerpts',[]),repair_context=messages[2:])
+    return {k:dict(characters=len(v if isinstance(v,str) else dumps(v)),utf8_bytes=len((v if isinstance(v,str) else dumps(v)).encode('utf-8'))) for k,v in parts.items()}

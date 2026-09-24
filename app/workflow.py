@@ -3,14 +3,15 @@ import copy
 import time
 from .core import KIT, Problem, brief_hash, digest, dumps, hashes, ident, now, require, ui_view_hash, execution_hash
 from .contracts import gate, review_target, validate_response, PROFILES
-from .provider import DEFAULT, STAGES, assemble, origin
+from .provider import DEFAULT, STAGES, assemble, origin, input_metrics
 from .model_evidence import ModelCallEvidence
+from .prd import compile_plan
 
 PREFIX = {'requirement':'REQ','rule':'RULE','acceptance':'AC','ui_decision':'UID','goal':'GOAL','actor':'ROLE'}
 
 
 def next_output_budget(current, floor=16384, ceiling=32768):
-    """截断修复时的输出预算递增：同预算重试必然再次截断。"""
+    """Legacy calculation retained for old tests; never used by request execution."""
     return min(max(current * 2, floor), ceiling)
 
 
@@ -70,7 +71,7 @@ class Workflow:
 
     def start(self, pid, revision, stage, message, kind='prd', resumed_from=None, *, user_task_id=None, config_override=None, generation_target=None):
         require(stage in STAGES and stage != 'handoff', 'STAGE_INVALID', '请选择支持的分析阶段')
-        config = config_override or self.config(stage)
+        config = copy.deepcopy(config_override or self.config(stage))
         require(not any(t['status'] in ('queued','running') and t['id'] != user_task_id for t in self.store.records(pid,'user_task')), 'PROJECT_BUSY','当前项目任务正在执行，请等待或取消',409)
         require(not any(t['status'] in ('queued','running') for t in self.store.records(pid,'run')), 'PROJECT_BUSY','当前项目已有模型任务',409)
         p = self.store.get(pid)
@@ -88,6 +89,8 @@ class Workflow:
         run = self.store.get_record(pid, rid, 'run')
         calls, repair_count, retries = 0, 0, 0
         repair_parent = None
+        pending_repair = False
+        # Snapshot approved max_tokens; every retry remains inside the same ceiling.
         out_budget = config['max_tokens']
         attempts, events = [], []
         try:
@@ -96,17 +99,30 @@ class Workflow:
             current_sources = {s['id'] for s in p['sources'] if not s['excluded']}
             require(current_sources <= set(p['grants'][origin(config)]['source_ids']), 'DATA_AUTH_REQUIRED', '新增材料尚未授权发送，请检查材料范围')
             messages, excerpts, omitted = assemble(p, run['stage'], run['message'], config, self.store.folder, run['document_type'], run.get('generation_target'), pending_images_only=bool(run.get('user_task_id')))
-            self.store.update_run(pid, rid, status='running', sent_excerpt_ids=[x['id'] for x in excerpts], omitted_excerpt_ids=omitted, input_hash=digest(messages))
+            import json
+            header=json.loads(messages[0]['content'].split('可信任务头：',1)[1])
+            authorization=dict(user_task_id=run.get('user_task_id'),run_id=rid,approved_max_tokens=out_budget,
+                approved_max_calls=config['max_calls'],config_hash=digest(run['provider']),
+                prompt_hash=digest(messages[0]['content'].split('可信任务头：',1)[0]),schema_hash=digest(header['schema']),
+                profile_hash=digest(header.get('content_profile')),input_revision=p['revision'],assembly_version='prd-plan-1' if run['stage']=='prd' else 'runtime-1.1')
+            self.store.update_run(pid, rid, status='running', sent_excerpt_ids=[x['id'] for x in excerpts], omitted_excerpt_ids=omitted, input_hash=digest(messages),authorization=authorization,input_metrics=input_metrics(messages))
             while True:
                 state = self.store.get_record(pid, rid, 'run')
                 require(state['status'] != 'cancelled', 'CANCELLED', '任务已取消；已发请求仍可能计费')
                 require(calls < config['max_calls'] and time.monotonic()-started < config['action_seconds'], 'BUDGET_EXHAUSTED', '动作预算耗尽；保存进度，可明确续跑')
+                if run['stage']=='prd':
+                    require(len(dumps(messages))+out_budget*4<=config['context_chars'],'BUDGET_EXHAUSTED','成文输入及修复上下文超过批准预算；已暂停，不能截断关键底稿')
+                if pending_repair:
+                    repair_count += 1
+                    pending_repair = False
                 calls += 1
                 call_id = ident('CALL')
                 evidence = ModelCallEvidence(self.store.folder, call_id, rid, run['stage'],
                                              config['model'], origin(config), repair_parent,
                                              self.provider.key(config))
-                attempt = dict(call=calls, call_id=call_id, repair_of=repair_parent)
+                evidence.request_context(config,messages,authorization,input_metrics(messages))
+                attempt = dict(call=calls, call_id=call_id, repair_of=repair_parent,max_tokens=out_budget,
+                    authorization_hash=digest(authorization),actual_input_hash=digest(messages))
                 events.append(dict(time=now(), phase='调用模型', call=calls, call_id=call_id))
                 self.store.update_run(pid, rid, calls=calls, events=events)
                 value = None
@@ -115,6 +131,8 @@ class Workflow:
                     value, meta = await asyncio.wait_for(self.provider.request(dict(config, max_tokens=out_budget), messages, evidence=evidence), timeout=max(1, config['action_seconds']-(time.monotonic()-started)))
                     attempt.update(meta)
                     require(self.store.get_record(pid, rid, 'run')['status'] != 'cancelled', 'CANCELLED', '已取消，结果未采纳')
+                    if run['stage']=='prd':
+                        value=compile_plan(value,p,run['document_type'],omitted)
                     validate_response(value, run['stage'], p, excerpts, run['document_type'])
                     evidence.finish('accepted', round(time.monotonic()-call_started, 3))
                     attempt['validation_result']='accepted'
@@ -126,6 +144,7 @@ class Workflow:
                         e = Problem('BUDGET_EXHAUSTED', '动作时间预算耗尽')
                     evidence.finish(e.code, round(time.monotonic()-call_started, 3))
                     attempt.update(error=e.code, validation_result=e.code,
+                                   usage=evidence.value.get('usage'),finish_reason=evidence.value.get('finish_reason'),
                                    evidence_limitations=evidence.limitations[:])
                     attempts.append(attempt)
                     self.store.update_run(pid, rid, attempts=attempts)
@@ -134,15 +153,16 @@ class Workflow:
                         await asyncio.sleep(min(retries, 2))
                         continue
                     if e.code in ('SCHEMA_INVALID','REFERENCE_INVALID','OUTPUT_EMPTY','OUTPUT_TRUNCATED') and repair_count < 2:
-                        repair_count += 1
+                        pending_repair = True
                         repair_parent = call_id
                         if e.code == 'OUTPUT_TRUNCATED':
-                            # 截断说明输出预算不足，同预算修复必然再次截断；逐步提高输出上限（仍受动作请求数约束）
-                            out_budget = next_output_budget(out_budget)
-                            events.append(dict(time=now(), phase='提高输出预算至 ' + str(out_budget) + ' 并重试', call=calls))
-                        failed_output = dumps(value) if value is not None else (evidence.value.get('final_output') or '无可用最终输出')
-                        messages = messages[:2] + [{'role':'user', 'content': (KIT/'prompts/10_repair.md').read_text('utf-8') + '\n校验错误：' + e.message + '\n原输出（不可信）：' + failed_output}]
+                            events.append(dict(time=now(),phase='保持批准输出上限 '+str(out_budget)+'，压缩章节与叙述后修复',call=calls))
+                        failed_output = evidence.value.get('final_output') or (dumps(value) if value is not None else '无可用最终输出')
+                        repair=(KIT/'prompts/10_repair.md').read_text('utf-8') if run['stage']!='prd' else '仅修复 plan_version=1 的章节建议契约；不创建新业务决定，不把候选改成规范或确定性叙述。输出需更短：省略叙述，合并章节，只列引用 ID。'
+                        messages = messages[:2] + [{'role':'user', 'content': repair + '\n校验错误：' + e.message + '\n原输出摘录（不可信，完整响应在本机证据）：' + failed_output[:12000]}]
                         continue
+                    if e.code=='OUTPUT_TRUNCATED':
+                        raise Problem('BUDGET_EXHAUSTED','输出仍截断，已暂停；未提高批准的单请求上限，请重新决定范围或预算')
                     raise e
                 except Exception:
                     evidence.finish('INTERNAL_ERROR', round(time.monotonic()-call_started, 3))
@@ -197,7 +217,7 @@ class Workflow:
         except Exception as e:
             error = e if isinstance(e, Problem) else Problem('INTERNAL_ERROR', '处理失败：' + type(e).__name__)
             state = 'cancelled' if error.code == 'CANCELLED' else 'paused_budget' if error.code == 'BUDGET_EXHAUSTED' else 'failed'
-            self.store.update_run(pid, rid, status=state, error=error.code, message=error.message, calls=calls, attempts=attempts, completed=now())
+            self.store.update_run(pid, rid, status=state, error=error.code, message=error.message, calls=calls, attempts=attempts, repair_count=repair_count, events=events, completed=now())
 
 
 def confirm(store, pid, body):

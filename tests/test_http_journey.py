@@ -39,9 +39,8 @@ def test_real_http_adapter_to_confirmation_and_export(tmp_path):
                 spec=json.loads(json.dumps(spec).replace('REQ-0001',req));spec['draft_revision']=header['current_revision']
                 value['result']={'spec':spec}
             elif stage=='prd':
-                kind=header['document_type'];sid=kind.upper()+'-1';prof=header['content_profile']
-                req=next(i['id'] for i in ctx['items'] if i['kind']=='requirement')
-                value['result']=dict(document_type=kind,content_profile_id=prof['id'],content_profile_version=prof['version'],title='合成时段需求 '+kind.upper(),sections=[dict(section_id=sid,level=1,parent_section_id=None,title='本期内容',blocks=[dict(kind=i['kind'],ref_ids=[i['id']],text=None) for i in ctx['items']])],coverage=[dict(item_id=i['id'],section_ids=[sid]) for i in ctx['items']],reference_mapping=[dict(profile_section_id=d['id'],scope_ref=req if d['repeat_per_function'] else None,disposition='pending',output_section_ids=[sid],reason='这是工程协议测试，业务维度未完成；实际发布需要真实业务评审。') for d in prof['sections'] if d['mapping_required']])
+                chosen=[i for group in ctx['A_normative'].values() for i in group]
+                value=dict(plan_version='1',title='合成时段需求 '+header['document_type'].upper(),sections=[dict(title='本期内容',normative_refs=[i['id'] for i in chosen],discussion_refs=[],narration='工程协议检查，不代表真实业务批准。')],limitations=[])
             elif stage=='review':
                 value['result']=dict(assessment='ready_for_human_review',reviewed_refs=[i['id'] for i in ctx['items']],perspectives=[{'role':'合成工程审查','considerations':['只验证程序链路，不代表真实业务审查']}],required_decisions=[])
             payload=json.dumps(dict(model='SYNTHETIC_HTTP_FIXTURE',choices=[dict(message={'content':json.dumps(value,ensure_ascii=False)},finish_reason='stop')],usage={'prompt_tokens':120,'completion_tokens':100,'total_tokens':220}),ensure_ascii=False).encode()

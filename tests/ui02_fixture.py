@@ -67,19 +67,17 @@ def model_server():
                                     c['columns']=[dict(key='name',label='姓名',ref_ids=[req])];c['rows']=[['小李']]
                 value['result']={'spec':spec}
             elif stage=='prd':
-                kind=header['document_type'];prof=header['content_profile'];sid=kind.upper()+'-1'
-                chosen=[i for i in ctx['items'] if i['selection_status']=='selected' and i['kind'] in ('requirement','rule','acceptance')]
-                blocks=[dict(kind=i['kind'],ref_ids=[i['id']],text=None) for i in chosen]
-                blocks.append(dict(kind='narrative',ref_ids=[],text=f'{topic}讨论稿；未采纳建议不是确定规则。'))
-                blocks += [dict(kind='open_question',ref_ids=[q['id']],text=q['question']+'（尚未决定）') for q in ctx['questions'] if q['status']=='open']
-                req=next((i['id'] for i in chosen if i['kind']=='requirement'),None)
-                value['result']=dict(document_type=kind,content_profile_id=prof['id'],content_profile_version=prof['version'],title=topic+'需求讨论稿',sections=[dict(section_id=sid,level=1,parent_section_id=None,title='本期内容与未决规则',blocks=blocks)],coverage=[dict(item_id=i['id'],section_ids=[sid]) for i in chosen],reference_mapping=[dict(profile_section_id=d['id'],scope_ref=req if d['repeat_per_function'] else None,disposition='pending',output_section_ids=[sid],reason='合成场景参考维度待人工核对') for d in prof['sections'] if d['mapping_required']])
+                chosen=[i for group in ctx['A_normative'].values() for i in group]
+                value=dict(plan_version='1',title=topic+'需求讨论稿',sections=[dict(title='本期内容与未决规则',normative_refs=[i['id'] for i in chosen],discussion_refs=[],narration=f'{topic}讨论稿；未采纳建议不是确定规则。')],limitations=[])
             elif stage=='review':
                 value['result']=dict(assessment='ready_for_human_review',reviewed_refs=[i['id'] for i in ctx['items']],perspectives=[dict(role='合成工程审查',considerations=['不代表真人审查'])],required_decisions=[q['question'] for q in ctx['questions'] if q['status']=='open'])
+            if state.get('transform'):
+                value=state['transform'](value,body,ctx)
             content=json.dumps(value,ensure_ascii=False)
             if state['invalid_next']:
                 state['invalid_next']=False;content='{invalid first response'
-            payload=json.dumps(dict(model='UI02_SYNTHETIC_HTTP',choices=[dict(message={'content':content},finish_reason='stop')],usage=dict(prompt_tokens=10,completion_tokens=10,total_tokens=20)),ensure_ascii=False).encode()
+            finish='length' if state.get('truncate') else 'stop'
+            payload=json.dumps(dict(model='UI02_SYNTHETIC_HTTP',choices=[dict(message={'content':content},finish_reason=finish)],usage=dict(prompt_tokens=10,completion_tokens=10,total_tokens=20)),ensure_ascii=False).encode()
             self.send_response(200); self.send_header('Content-Type','application/json');self.send_header('Content-Length',str(len(payload)));self.end_headers();self.wfile.write(payload)
     server=ThreadingHTTPServer(('127.0.0.1',0),Handler)
     thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()

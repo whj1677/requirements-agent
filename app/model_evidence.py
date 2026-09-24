@@ -4,7 +4,7 @@ import os
 import re
 from pathlib import Path
 
-from .core import now
+from .core import now, digest, dumps
 
 MAX_FINAL_CHARS = 100_000
 
@@ -31,6 +31,19 @@ class ModelCallEvidence:
         except OSError:
             if 'evidence_save_failed' not in self.limitations:
                 self.limitations.append('evidence_save_failed')
+
+    def request_context(self, config, messages, authorization, metrics):
+        """Keep bounded local input evidence; no headers, keys, proxy or hidden fields."""
+        raw=dumps(messages)
+        safe=raw.replace(self.secret,'[REDACTED]') if self.secret else raw
+        safe=re.sub(r'Bearer\s+[^\s"\\]+|\bsk-[A-Za-z0-9_-]{8,}\b','[REDACTED]',safe,flags=re.I)
+        if safe!=raw:self.limitations.append('request_input_redacted')
+        if len(safe)>1_000_000:
+            safe=safe[:1_000_000];self.limitations.append('request_input_truncated')
+        self.value.update(max_tokens=config['max_tokens'],authorization=authorization,
+            actual_input_hash=digest(messages),input_metrics=metrics,request_input=safe)
+        self.value['evidence_limitations']=self.limitations[:]
+        self.save()
 
     def response(self, content=None, *, http_status=None, finish_reason=None, usage=None,
                  response_model=None, elapsed_seconds=None):

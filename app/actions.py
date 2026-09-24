@@ -18,7 +18,7 @@ class Actions:
         self.store, self.workflow = store, workflow
         self.jobs = {}
 
-    def plan(self, pid, body, p=None):
+    def plan(self, pid, body, p=None, config_snapshot=None):
         p = p or self.store.get(pid)
         require(p['revision']==body['expected_revision'],'STALE_REVISION','内容版本已变化，请保留输入并重新核对',409)
         require(body['action'] in LABELS,'ACTION_INVALID','业务动作不存在')
@@ -26,6 +26,8 @@ class Actions:
         images=[s for s in active if s.get('image_mime') and s['parse_status']!='read']
         stages=STAGES.get(body['action']) or (['vision'] if images else []) + ['clarify' if p['items'] else 'ingest']
         configs={s:self.workflow.config(s) for s in stages}
+        if config_snapshot is not None:
+            config_snapshot.update(copy.deepcopy(configs))
         blockers=[]
         if not any(s['excerpts'] for s in active) and not p['items'] and not body['message'].strip():
             blockers.append('请先描述目标或添加项目资料。')
@@ -74,7 +76,8 @@ class Actions:
                 require(existing['request_hash']==request_hash,'IDEMPOTENCY_CONFLICT','此提交标识已对应另一任务',409)
                 return existing
             p=self.store.get(pid,db)
-            plan=self.plan(pid,body,p)
+            configs={}
+            plan=self.plan(pid,body,p,config_snapshot=configs)
             require(plan['plan_hash']==plan_hash,'STALE_PLAN','输入或接收端配置变化，请重新核对，不会自动发送',409)
             require(not plan['missing'],'ACTION_BLOCKED','；'.join(plan['missing']),409)
             require(authorize or not any(r['needs_authorization'] for r in plan['recipients']),
@@ -89,11 +92,12 @@ class Actions:
                 for r in plan['recipients']:
                     p['grants'][r['origin']]=dict(source_ids=ids,created=now(),actor='authenticated_local_user',user_task_id=tid)
             db.execute('UPDATE projects SET revision=?,payload=? WHERE id=?',(p['revision'],dumps(p),pid))
-            configs={s:copy.deepcopy(self.workflow.config(s)) for s in plan['stages']}
             task=dict(action=body['action'],label=plan['label'],status='queued',created=now(),
                 input_revision=p['revision'],input_state_hash=execution_hash(p),source_ids=ids,
                 stages=plan['stages'],run_ids=[],max_calls=body['max_calls'],calls=0,cost=None,
                 request_hash=request_hash,idempotency_key=idempotency_key,message='等待开始',
+                authorized_configs={s:{k:v for k,v in c.items() if k!='proxy'} for s,c in configs.items()},
+                approved_plan_hash=plan_hash,
                 generation_target=plan['generation_target'],completed_steps=0)
             self.store.record(pid,'user_task',task,tid,db)
         job=asyncio.create_task(self.execute(pid,tid,body,configs))
