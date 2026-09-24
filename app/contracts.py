@@ -5,6 +5,9 @@ import jsonschema
 from referencing import Registry, Resource
 from .core import KIT, brief_hash, digest, read_json, require
 
+API_CAPABILITIES = tuple(sorted(('actions', 'artifacts', 'confirmations', 'documents', 'exports', 'models',
+                                 'options-direction', 'options-items', 'projects', 'runs', 'session', 'sources')))
+
 SCHEMA = read_json(KIT / 'examples/runtime_response.schema.json')
 WIRE = read_json(KIT / 'examples/wireframe.schema.json')
 REGISTRY = Registry().with_resource('wireframe.schema.json', Resource.from_contents(WIRE))

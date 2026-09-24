@@ -11,17 +11,48 @@ export interface Project extends ProjectSummary {
   ui?: JsonObject; hashes: Record<string, string | null>; confirmation_issues: string[];
   baselines: JsonObject[]; exports: JsonObject[]; active_baseline_id?: string;
 }
+export interface BackendInfo { runtime_id: string; started_at: string; capabilities: string[] }
+export interface SessionInfo { csrf: string; mode: string; version: string; backend?: BackendInfo }
 let csrf = '';
 export function setCsrf(value: string) { csrf = value; }
+export type ErrorKind = 'json' | 'text' | 'empty' | 'network';
 export class ApiError extends Error {
-  constructor(public status: number, public code: string, message: string) { super(message); }
+  constructor(public status: number, public code: string, message: string, public kind: ErrorKind = 'json', public path = '') { super(message); }
 }
 export async function api<T = any>(path: string, method = 'GET', body?: unknown, signal?: AbortSignal): Promise<T> {
   const options: RequestInit = { method, credentials: 'same-origin', signal, headers: { 'X-CSRF-Token': csrf } };
   if (body instanceof FormData) options.body = body;
   else if (body !== undefined) { options.body = JSON.stringify(body); options.headers = { ...options.headers, 'Content-Type': 'application/json' }; }
-  const response = await fetch('/api' + path, options);
-  const data = await response.json();
-  if (!response.ok) throw new ApiError(response.status, data.code || 'HTTP_ERROR', data.message || JSON.stringify(data.detail));
+  let response: Response;
+  try {
+    response = await fetch('/api' + path, options);
+  } catch (e) {
+    if (e instanceof DOMException && e.name === 'AbortError') throw e;
+    throw new ApiError(0, 'NETWORK', '无法连接服务，请确认服务已启动', 'network', path);
+  }
+  const text = await response.text();
+  let data: any = null, kind: ErrorKind = 'empty';
+  if (text) {
+    try { data = JSON.parse(text); kind = 'json'; }
+    catch { kind = 'text'; }
+  }
+  if (!response.ok) {
+    if (kind === 'json' && data && (data.code || data.message)) throw new ApiError(response.status, data.code || 'HTTP_ERROR', data.message || '请求失败', 'json', path);
+    if (kind === 'json') throw new ApiError(response.status, 'ROUTE_OR_OBJECT', `请求未成功（HTTP ${response.status}）`, 'json', path);
+    if (kind === 'text') throw new ApiError(response.status, 'NON_JSON', `服务返回了无法识别的内容（HTTP ${response.status}）`, 'text', path);
+    throw new ApiError(response.status, 'EMPTY_RESPONSE', `服务未返回内容（HTTP ${response.status}）`, 'empty', path);
+  }
   return data as T;
+}
+export type ErrorCategory = 'not-found' | 'route-missing' | 'network' | 'non-json' | 'session' | 'forbidden' | 'conflict' | 'server' | 'unknown';
+export function categorizeError(e: unknown): ErrorCategory {
+  if (!(e instanceof ApiError)) return 'unknown';
+  if (e.kind === 'network') return 'network';
+  if (e.status === 404 && e.kind === 'json') return e.code === 'ROUTE_OR_OBJECT' ? 'route-missing' : 'not-found';
+  if (e.kind === 'text' || e.kind === 'empty') return 'non-json';
+  if (e.status === 401) return 'session';
+  if (e.status === 403) return 'forbidden';
+  if (e.status === 409) return 'conflict';
+  if (e.status >= 500) return 'server';
+  return 'unknown';
 }

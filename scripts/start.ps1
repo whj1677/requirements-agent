@@ -1,4 +1,4 @@
-﻿param([int]$Port = 8765)
+param([int]$Port = 8765)
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path $PSScriptRoot -Parent
 $pythonPath = Join-Path $projectRoot '.venv\Scripts\python.exe'
@@ -9,7 +9,7 @@ $dataPath = Join-Path $projectRoot 'data'
 $pidPath = Join-Path $dataPath 'server.pid'
 if (Test-Path -LiteralPath $pidPath) {
     $priorPid = [int](Get-Content -LiteralPath $pidPath -Raw)
-    if (Get-Process -Id $priorPid -ErrorAction SilentlyContinue) { throw 'PID 文件指向正在运行的进程，请先诊断或停止本项目服务' }
+    if (Get-Process -Id $priorPid -ErrorAction SilentlyContinue) { throw "端口 $Port 可能已被 PID $priorPid 占用（PID 文件指向正在运行的进程，可能是本项目已在运行的服务）；请用 scripts\diagnose.ps1 检查，或确认后手动停止该进程。本脚本不会自动结束任何进程。" }
 }
 $tokenBytes = New-Object byte[] 32
 $rng = [Security.Cryptography.RandomNumberGenerator]::Create()

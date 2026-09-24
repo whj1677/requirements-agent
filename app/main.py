@@ -1,5 +1,6 @@
 import asyncio
 import copy
+import hashlib
 import hmac
 import json
 import os
@@ -13,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 from .core import DATA, ROOT, Problem, brief_hash, digest, hashes, ident, now, require, ui_view_hash
 from .store import Store
-from .contracts import gate, PROFILES
+from .contracts import gate, API_CAPABILITIES, PROFILES
 from .provider import Provider, DEFAULT, origin
 from .workflow import Workflow, confirm
 from .actions import Actions
@@ -112,6 +113,12 @@ class Grant(Revision):
     source_ids: list[str]
 
 
+def runtime_fingerprint():
+    """启动时对 app 包源码算一次指纹；进程内固定，不在请求时重读磁盘。"""
+    payload = b''.join(p.read_bytes() for p in sorted((ROOT / 'app').glob('*.py')))
+    return hashlib.sha256(payload).hexdigest()[:16]
+
+
 def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
     store = Store(folder)
     provider = provider or Provider(env_path=env_path)
@@ -131,6 +138,8 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
     app.state.store, app.state.provider, app.state.workflow = store, provider, workflow
     app.state.actions = actions
     app.state.access_token = token
+    app.state.runtime = {'runtime_id': runtime_fingerprint(), 'started_at': now(),
+                         'capabilities': list(API_CAPABILITIES)}
 
     def attach_document_snapshot(pid, artifact):
         if 'item_snapshot' not in artifact:
@@ -184,7 +193,9 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
 
     @app.get('/api/session')
     async def session(request:Request):
-        return {'csrf':sessions[request.cookies['ra_session']], 'mode':'live', 'version':'1.1'}
+        # backend 为纯附加字段：旧前端忽略它，新前端据此核实接口能力。
+        return {'csrf':sessions[request.cookies['ra_session']], 'mode':'live', 'version':'1.1',
+                'backend': app.state.runtime}
 
     @app.get('/api/projects')
     async def projects():
