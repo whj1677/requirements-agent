@@ -43,7 +43,7 @@ class Provider:
         value,source=self.resolve_key(config)
         return dict(key_configured=bool(value),key_env=config.get('key_env',''),key_source=source,bound_origin=origin(config))
 
-    async def request(self, config, messages):
+    async def request(self, config, messages, evidence=None):
         key = self.key(config)
         require(key, 'CONFIG_MISSING', '尚未配置此接收端的 API Key；未发送材料')
         body = dict(model=config['model'], messages=messages, max_tokens=config['max_tokens'], stream=False)
@@ -60,6 +60,8 @@ class Provider:
         except httpx.HTTPError:
             raise Problem('NETWORK_ERROR', '无法连接模型接收端')
         codes = {400:'PARAMETER_UNSUPPORTED', 401:'AUTH_FAILED', 403:'AUTH_FAILED', 402:'PROVIDER_QUOTA', 404:'MODEL_UNSUPPORTED', 429:'RATE_LIMITED'}
+        if evidence and response.status_code != 200:
+            evidence.response(http_status=response.status_code, elapsed_seconds=round(time.monotonic()-started, 3))
         require(response.status_code == 200, codes.get(response.status_code, 'PROVIDER_ERROR'), '模型接口 HTTP ' + str(response.status_code))
         try:
             raw = response.json()
@@ -67,7 +69,13 @@ class Provider:
             content = choice['message'].get('content')
             meta = dict(request_model=config['model'], response_model=raw.get('model'), usage=raw.get('usage'), finish_reason=choice.get('finish_reason'), elapsed_seconds=round(time.monotonic()-started, 3), origin=origin(config))
         except (KeyError, ValueError, IndexError, TypeError):
+            if evidence:
+                evidence.response(http_status=response.status_code, elapsed_seconds=round(time.monotonic()-started, 3))
             raise Problem('SCHEMA_INVALID', '模型协议响应无法读取')
+        if evidence:
+            # Persist only final content, before JSON parsing and all validation.
+            evidence.response(content, http_status=response.status_code, finish_reason=meta['finish_reason'],
+                              usage=meta['usage'], response_model=meta['response_model'], elapsed_seconds=meta['elapsed_seconds'])
         require(choice.get('finish_reason') != 'length', 'OUTPUT_TRUNCATED', '模型输出截断；请缩减生成范围或提高输出预算')
         require(isinstance(content, str) and content.strip(), 'OUTPUT_EMPTY', '模型返回空内容')
         require(key not in content, 'SECURITY_BLOCKED', '模型输出包含凭据信息，已拒绝保存')
@@ -85,6 +93,9 @@ def assemble(p, stage, user_message, config, folder, kind='prd'):
         header.update(document_type=kind, content_profile=profile(kind,p.get('reference_mode')=='builtin'))
     system = (KIT / 'prompts/00_system.md').read_text('utf-8') + '\n' + (KIT / 'prompts' / STAGES[stage]).read_text('utf-8') + '\n可信任务头：' + dumps(header)
     context = {k:p[k] for k in ('items','questions','options','documents','ui')}
+    context['discussion_direction'] = [dict(option_id=o['id'], name=o['name'], status=o['direction_status'])
+                                       for o in p['options'] if o.get('direction_status')]
+    context['direction_semantics'] = 'direction_status仅记录讨论方向；关联proposed_item_refs不代表条目已采纳，以各条目的selection_status和epistemic_status为准。旧selection_status是历史整包操作。'
     context['user_message'] = user_message
     context['recent_messages'] = p['messages'][-8:]
     context['source_status'] = [{k:s.get(k) for k in ('id','title','parse_status','failure_reason','excluded','purpose')} for s in p['sources']]

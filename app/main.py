@@ -54,6 +54,12 @@ class Decision(Revision):
     selection_status: Literal['candidate','selected','rejected','deferred']
     statement: str | None = Field(default=None,min_length=1,max_length=6000)
 
+class DirectionDecision(Revision):
+    direction_status: Literal['selected','deferred','rejected']
+
+class OptionItems(Revision):
+    item_ids: list[str] = Field(min_length=1)
+
 class Answer(Revision):
     answer: str = Field(min_length=1,max_length=6000)
 
@@ -296,13 +302,38 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
 
     @app.post('/api/projects/{pid}/options/{oid}')
     async def choose(pid:str,oid:str,body:Decision):
-        with store.edit(pid,body.expected_revision,'人工选择方案') as (p,db):
+        store.get(pid)
+        raise Problem('LEGACY_OPTION_WRITE','旧版整包方案写入已停用；请分别选择讨论方向与明确指定条目。历史记录保留原义。',409)
+
+    @app.post('/api/projects/{pid}/options/{oid}/direction')
+    async def choose_direction(pid:str,oid:str,body:DirectionDecision):
+        with store.edit(pid,body.expected_revision,'记录方案讨论方向') as (p,db):
             option=next((x for x in p['options'] if x['id']==oid),None)
             require(option is not None,'NOT_FOUND','方案不存在',404)
-            option['selection_status']=body.selection_status
-            for i in p['items']:
-                if i['id'] in option['proposed_item_refs']:
-                    i['selection_status']=body.selection_status
+            if body.direction_status=='selected':
+                for other in p['options']:
+                    if other is not option and other.get('direction_status')=='selected':
+                        other['direction_status']='deferred'
+            option['direction_status']=body.direction_status
+            option['direction_decided_at']=now()
+        return p
+
+    @app.post('/api/projects/{pid}/options/{oid}/items')
+    async def accept_option_items(pid:str,oid:str,body:OptionItems):
+        with store.edit(pid,body.expected_revision,'人工采纳指定关联条目') as (p,db):
+            option=next((x for x in p['options'] if x['id']==oid),None)
+            require(option is not None,'NOT_FOUND','方案不存在',404)
+            ids=set(body.item_ids)
+            require(len(ids)==len(body.item_ids) and ids <= set(option['proposed_item_refs']),
+                    'REFERENCE_INVALID','只能明确采纳本方案关联的不同条目')
+            items={i['id']:i for i in p['items']}
+            require(ids <= set(items),'REFERENCE_INVALID','条目引用不存在')
+            excerpts={(s['id'],ex['id']) for s in p['sources'] for ex in s['excerpts']}
+            for iid in ids:
+                require(items[iid].get('source_refs') and all((r['source_id'],r['excerpt_id']) in excerpts for r in items[iid]['source_refs']) and items[iid].get('epistemic_status'),
+                        'REFERENCE_INVALID','条目缺少来源或假设状态，不可批量采纳')
+                require(not items[iid].get('target_item_id'), 'REFERENCE_INVALID', '修订条目需单独核对原条目')
+                items[iid]['selection_status']='selected'
         return p
 
     @app.post('/api/projects/{pid}/questions/{qid}')

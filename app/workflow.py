@@ -4,6 +4,7 @@ import time
 from .core import KIT, Problem, brief_hash, digest, dumps, hashes, ident, now, require, ui_view_hash
 from .contracts import gate, review_target, validate_response, PROFILES
 from .provider import DEFAULT, STAGES, assemble, origin
+from .model_evidence import ModelCallEvidence
 
 PREFIX = {'requirement':'REQ','rule':'RULE','acceptance':'AC','ui_decision':'UID','goal':'GOAL','actor':'ROLE'}
 
@@ -78,6 +79,7 @@ class Workflow:
         started = time.monotonic()
         run = self.store.get_record(pid, rid, 'run')
         calls, repair_count, retries = 0, 0, 0
+        repair_parent = None
         attempts, events = [], []
         try:
             require(self.provider.key(config), 'CONFIG_MISSING', '请先在模型设置中配置此接收端的 Key')
@@ -91,19 +93,32 @@ class Workflow:
                 require(state['status'] != 'cancelled', 'CANCELLED', '任务已取消；已发请求仍可能计费')
                 require(calls < config['max_calls'] and time.monotonic()-started < config['action_seconds'], 'BUDGET_EXHAUSTED', '动作预算耗尽；保存进度，可明确续跑')
                 calls += 1
-                events.append(dict(time=now(), phase='调用模型', call=calls))
+                call_id = ident('CALL')
+                evidence = ModelCallEvidence(self.store.folder, call_id, rid, run['stage'],
+                                             config['model'], origin(config), repair_parent,
+                                             self.provider.key(config))
+                attempt = dict(call=calls, call_id=call_id, repair_of=repair_parent)
+                events.append(dict(time=now(), phase='调用模型', call=calls, call_id=call_id))
                 self.store.update_run(pid, rid, calls=calls, events=events)
                 value = None
+                call_started = time.monotonic()
                 try:
-                    value, meta = await asyncio.wait_for(self.provider.request(config, messages), timeout=max(1, config['action_seconds']-(time.monotonic()-started)))
-                    attempts.append(dict(call=calls, **meta))
+                    value, meta = await asyncio.wait_for(self.provider.request(config, messages, evidence=evidence), timeout=max(1, config['action_seconds']-(time.monotonic()-started)))
+                    attempt.update(meta)
                     require(self.store.get_record(pid, rid, 'run')['status'] != 'cancelled', 'CANCELLED', '已取消，结果未采纳')
                     validate_response(value, run['stage'], p, excerpts, run['document_type'])
+                    evidence.finish('accepted', round(time.monotonic()-call_started, 3))
+                    attempt['validation_result']='accepted'
+                    attempt['evidence_limitations']=evidence.limitations[:]
+                    attempts.append(attempt)
                     break
                 except (Problem, asyncio.TimeoutError) as e:
                     if isinstance(e, asyncio.TimeoutError):
                         e = Problem('BUDGET_EXHAUSTED', '动作时间预算耗尽')
-                    attempts.append(dict(call=calls, error=e.code))
+                    evidence.finish(e.code, round(time.monotonic()-call_started, 3))
+                    attempt.update(error=e.code, validation_result=e.code,
+                                   evidence_limitations=evidence.limitations[:])
+                    attempts.append(attempt)
                     self.store.update_run(pid, rid, attempts=attempts)
                     if e.code in ('NETWORK_ERROR','TIMEOUT','RATE_LIMITED','PROVIDER_ERROR') and retries < 2:
                         retries += 1
@@ -111,9 +126,18 @@ class Workflow:
                         continue
                     if e.code in ('SCHEMA_INVALID','REFERENCE_INVALID','OUTPUT_EMPTY','OUTPUT_TRUNCATED') and repair_count < 2:
                         repair_count += 1
-                        messages = messages[:2] + [{'role':'user', 'content': (KIT/'prompts/10_repair.md').read_text('utf-8') + '\n校验错误：' + e.message + '\n原输出（不可信）：' + dumps(value)}]
+                        repair_parent = call_id
+                        failed_output = dumps(value) if value is not None else (evidence.value.get('final_output') or '无可用最终输出')
+                        messages = messages[:2] + [{'role':'user', 'content': (KIT/'prompts/10_repair.md').read_text('utf-8') + '\n校验错误：' + e.message + '\n原输出（不可信）：' + failed_output}]
                         continue
                     raise e
+                except Exception:
+                    evidence.finish('INTERNAL_ERROR', round(time.monotonic()-call_started, 3))
+                    attempt.update(error='INTERNAL_ERROR', validation_result='INTERNAL_ERROR',
+                                   evidence_limitations=evidence.limitations[:])
+                    attempts.append(attempt)
+                    self.store.update_run(pid, rid, attempts=attempts)
+                    raise
             with self.store.edit(pid, p['revision'], '模型：' + run['stage'], bump=bool(value['proposals'] or value['questions'])) as (current, db):
                 state=next(x for x in self.store.records(pid,'run',db) if x['id']==rid)
                 require(state['status']!='cancelled','CANCELLED','已取消，结果未采纳')
@@ -140,7 +164,7 @@ class Workflow:
                             s['vision_run_id']=rid
             cost=None
             if config.get('input_price') is not None and config.get('output_price') is not None:
-                usages=[a.get('usage') for a in attempts if 'error' not in a]
+                usages=[a.get('usage') for a in attempts if a.get('usage')]
                 if usages and all(u and 'prompt_tokens' in u and 'completion_tokens' in u for u in usages):
                     cost=sum((u['prompt_tokens']*config['input_price']+u['completion_tokens']*config['output_price'])/1000000 for u in usages)
             status = 'partial' if omitted or value['limitations'] or any(s['parse_status'] in ('failed','partial') for s in p['sources'] if not s['excluded']) else ('awaiting_user' if value['questions'] else 'succeeded')

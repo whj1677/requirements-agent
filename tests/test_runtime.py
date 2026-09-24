@@ -82,7 +82,7 @@ def test_questions_not_repeated_and_candidate_not_auto_approved(tmp_path):
 class FakeProvider(Provider):
     def __init__(self,results,delay=0):super().__init__();self.results=iter(results);self.delay=delay;self.received=[]
     def key(self,c):return 'offline-fixture'
-    async def request(self,c,m):
+    async def request(self,c,m,evidence=None):
         self.received.append(m);await asyncio.sleep(self.delay)
         r=next(self.results)
         if isinstance(r,Exception):raise r
