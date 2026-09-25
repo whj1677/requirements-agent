@@ -69,16 +69,29 @@ def context(p):
         D_unknowns_limits=dict(questions=[copy.deepcopy(q) for q in p['questions'] if q['status']!='answered'],
             source_status=[{k:s.get(k) for k in ('id','title','purpose','parse_status','failure_reason','excluded')} for s in p['sources']],
             ui='尚无原型' if not p.get('ui') else '已有低保真模拟原型，不能证明业务实现',
-            recorded_limitations=[x for m in p['messages'] for x in (m.get('response') or {}).get('limitations',[])]))
+            active_ui=None if not p.get('ui') else dict(version=p['ui']['spec']['draft_revision'],
+                pages=[dict(title=page['title'],requirement_refs=page['requirement_refs'],
+                    components=[dict(type=c['type'],label=c['label'],ref_ids=c['ref_ids']) for region in page['regions'] for c in region['components']]) for page in p['ui']['spec']['pages']],
+                notice='这是当前活动原型的实际布局；可能已在原讨论方向上修改布局。不能用旧方案文字覆盖它，也不代表条目采纳或正式确认。'),
+            current_material_count=len([s for s in p['sources'] if not s['excluded']]),
+            reference_notice='当前章节参考由可信任务头 content_profile 指定；项目材料与章节参考不是同一对象。'),
+        historical_notes=[dict(round=n+1,stage=m.get('stage','unknown'),created=m.get('created'),
+            limitations=list(dict.fromkeys((m.get('response') or {}).get('limitations',[]))),
+            notice='仅是当轮观察，可能过期。材料数量、参考模板、UI、采纳状态以当前任务头和快照为准；业务未知仍须核对，不能当作已解决。')
+            for n,m in enumerate(p['messages']) if (m.get('response') or {}).get('limitations')])
 
 
 def compile_plan(plan, p, kind, omitted=()):
     errors=list(jsonschema.Draft202012Validator(PLAN_SCHEMA).iter_errors(plan))
     details=[''.join('['+str(x)+']' if isinstance(x,int) else ('.' if j else '')+x for j,x in enumerate(e.absolute_path)) or '根节点' for e in errors]
-    require(not errors,'SCHEMA_INVALID','成文章节建议错误：'+'；'.join(at+' '+e.message for at,e in zip(details,errors)))
+    def error_message(e):
+        if e.validator in ('maxItems','minItems','maxLength','minLength'):
+            return f'{e.validator}={e.validator_value}，实际长度={len(e.instance)}'
+        return e.message[:400]
+    require(not errors,'SCHEMA_INVALID','成文章节建议错误：'+'；'.join(at+' '+error_message(e) for at,e in zip(details,errors)))
     items={i['id']:i for i in p['items']}
     contract=plan_contract(p)
-    sections=[]; coverage={}; discussed=set()
+    sections=[]; coverage={}; discussed=set(); placed={}; discussion_locations={}
     def section(title,blocks):
         sid=kind.upper()+'-'+digest(dict(title=title,index=len(sections)))[:12]
         sections.append(dict(section_id=sid,title=title,level=1,parent_section_id=None,blocks=blocks))
@@ -96,15 +109,26 @@ def compile_plan(plan, p, kind, omitted=()):
             at=f'sections[{n}].normative_refs[{j}]'
             require_item(r,at,p,contract['discussion_item_ids'])
             require(r in contract['normative_item_ids'],'SEMANTIC_BLOCKED',at+' '+r+' 不在本期已选规范白名单；需业务决定，不能自动采纳或改写为确定性叙述')
+            if r in coverage:
+                blocks.append(text('参见「'+placed[r]+'」中的 '+r+'，原文与依据不变。',[r]))
+                continue
             blocks.append(dict(kind=items[r]['kind'],ref_ids=[r],text=None))
             blocks.append(text(f'{r}：{items[r]["epistemic_status"]}；草稿采纳不代表业务负责人批准'+provenance(items[r]),[r]))
+            placed[r]=s['title']
         for j,r in enumerate(s['discussion_refs']):
             require_item(r,f'sections[{n}].discussion_refs[{j}]',p,contract['discussion_item_ids'])
-            blocks.append(discussion(items[r]));discussed.add(r)
+            if r in placed:
+                blocks.append(text('参见「'+placed[r]+'」中的 '+r+'，身份及原文不变。',[r]))
+            else:
+                blocks.append(discussion(items[r]));placed[r]=s['title']
+            discussed.add(r)
         if s['narration']:
             blocks.append(text('【模型讨论说明，未核实；不构成规范或批准】'+s['narration']))
         sid=section(s['title'],blocks)
-        for r in s['normative_refs']:coverage.setdefault(r,[]).append(sid)
+        for r in s['discussion_refs']:discussion_locations.setdefault(r,sid)
+        for b in blocks:
+            if b['kind'] in NORMATIVE:
+                for r in b['ref_ids']:coverage.setdefault(r,[]).append(sid)
     # Preserve omitted context and all questions independently of the model's choices.
     remaining=[discussion(i) for i in p['items'] if i['id'] not in coverage and i['id'] not in discussed]
     if remaining:section('材料陈述、未成文条目与讨论建议',remaining)
@@ -118,11 +142,16 @@ def compile_plan(plan, p, kind, omitted=()):
     if questions:section('已有回答与未决问题',questions)
     prof=profile(kind,p.get('reference_mode')=='builtin')
     limits=['讨论稿，不构成正式确认；章节语义覆盖待核对。',context(p)['D_unknowns_limits']['ui']]
-    limits+=plan['limitations']+context(p)['D_unknowns_limits']['recorded_limitations']
+    limits+=plan['limitations']
     limits+=['材料限制：'+s['id']+' '+s['parse_status']+' '+(s.get('failure_reason') or '') for s in p['sources'] if not s['excluded'] and s['parse_status']!='read']
     if omitted:limits.append('本轮未完整送入的来源片段：'+'、'.join(omitted))
     limits+=['未成文规范条目：'+i['id'] for i in p['items'] if allowed(i) and i['id'] not in coverage]
     pending=section('限制及参考维度待核对',[text(x,block_kind='open_question') for x in dict.fromkeys(limits)])
+    historical=context(p)['historical_notes']
+    if historical:
+        section('历史分析提示（非当前事实）',[
+            text('以下保留历史来源，可能已被后续材料更新；不作为本版材料数量、模板或业务确认状态。')]+[
+            text(f'第{h["round"]}轮 · {h["stage"]} · {h["created"] or "时间未记录"}\n'+'\n'.join(h['limitations'])) for h in historical])
     maps=[]
     reqs=[i['id'] for i in p['items'] if allowed(i) and i['kind']=='requirement']
     picture='PRD-4.F.1' if kind=='prd' else 'MRD-5.1.F.3'
@@ -132,6 +161,11 @@ def compile_plan(plan, p, kind, omitted=()):
             visible=bool(d['id']==picture and scope in coverage and p.get('ui') and any(scope in page['requirement_refs'] for page in p['ui']['spec']['pages']))
             maps.append(dict(profile_section_id=d['id'],scope_ref=scope,disposition='merged' if visible else 'pending',
                 output_section_ids=coverage[scope] if visible else [pending],reason='实际原型关联到已成文功能；低保真模拟。' if visible else '该内容维度的语义覆盖尚待核对；不以空章节视为覆盖。'))
+    if p.get('ui') and any(d['id']==picture for d in prof['sections']):
+        for r,sid in discussion_locations.items():
+            if items[r]['kind']=='requirement' and r not in coverage and any(r in page['requirement_refs'] for page in p['ui']['spec']['pages']):
+                maps.append(dict(profile_section_id=picture,scope_ref=r,disposition='merged',output_section_ids=[sid],
+                    reason='原型插图对应实际讨论条目原文；不表示已采纳、规范覆盖或正式确认。'))
     document=dict(document_type=kind,content_profile_id=prof['id'],content_profile_version=prof['version'],title=plan['title'],
         sections=sections,coverage=[dict(item_id=r,section_ids=list(dict.fromkeys(ids))) for r,ids in coverage.items()],reference_mapping=maps)
     incomplete=['未成文规范条目：'+i['id'] for i in p['items'] if allowed(i) and i['id'] not in coverage]

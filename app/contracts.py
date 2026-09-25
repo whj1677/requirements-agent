@@ -117,7 +117,8 @@ def validate_ui(spec, p):
         if action in ('save', 'cancel'):
             require(c['type'] == 'button' and target and target['type'] in ('form', 'panel', 'dialog', 'drawer'), 'REFERENCE_INVALID', '保存或取消必须指向表单容器')
         if action == 'filter':
-            require(c['type'] == 'button' and target and target['type'] in ('table', 'list'), 'REFERENCE_INVALID', '筛选必须指向列表')
+            require(c['type'] == 'button' and target and target['type'] in ('table', 'list'), 'REFERENCE_INVALID',
+                    f"组件 {c['component_id']}：filter 只能放在 button，当前类型 {c['type']}；target_id={c['interaction']['target_id']} 必须指向 table/list。filters 只保留输入且 action=none，另设筛选 button。")
         if action == 'switch_page':
             require(c['interaction']['target_id'] in pages, 'REFERENCE_INVALID', '导航目标必须是页面')
         if c.get('simulation'):

@@ -11,13 +11,15 @@ const controls=el('nav',null,root),content=el('main',null,root);
 const pageSelect=el('select',null,controls);pageSelect.setAttribute('aria-label','页面选择');
 for(const page of spec.pages){const option=el('option',page.title,pageSelect);option.value=page.page_id;}
 const roleSelect=el('select',null,controls);roleSelect.setAttribute('aria-label','模拟角色');
-for(const role of [...new Set(['编辑者','只读',...spec.pages.flatMap(p=>p.regions.flatMap(r=>r.components.flatMap(c=>c.simulation?.editable_roles||[])))])]){const option=el('option',role,roleSelect);option.value=role;}
-let current=spec.pages[0],role='编辑者';
+const editRoles=[...new Set(spec.pages.flatMap(p=>p.regions.flatMap(r=>r.components.flatMap(c=>c.simulation?.editable_roles||[]))))];
+for(const role of [...new Set([...(editRoles.length?editRoles:['编辑者']),'只读'])]){const option=el('option',role,roleSelect);option.value=role;}
+const failureLabel=el('label',null,controls),failure=el('input',null,failureLabel);failure.type='checkbox';failure.setAttribute('aria-label','模拟保存失败');el('span','模拟保存失败（仅演示）',failureLabel);
+let current=spec.pages[0],role=roleSelect.value;
 pageSelect.onchange=()=>render(pages.get(pageSelect.value));roleSelect.onchange=()=>{role=roleSelect.value;render(current);};
 function render(page){
   current=page;pageSelect.value=page.page_id;content.replaceChildren();el('h1',page.title,content);
   const stateBar=el('div',null,content),feedback=el('p',null,content),surface=el('div',null,content);feedback.setAttribute('role','status');
-  const blocks=new Map(),fields=new Map(),tables=new Map(),filterInputs=[];let filter='';
+  const blocks=new Map(),fields=new Map(),tables=new Map(),filterInputs=new Map(),filters=new Map();
   const setState=name=>{feedback.textContent=(labels[name]||name)+' · '+(page.state_messages[name]||'模拟状态');surface.hidden=name!=='normal';};
   for(const name of page.states){const button=el('button',labels[name],stateBar);button.onclick=()=>setState(name);}
   const tableRows=(c,block)=>{
@@ -27,7 +29,8 @@ function render(page){
     if(c.interaction.action==='edit')el('th','操作',row);
     const body=el('tbody',null,table),dataset=data.get(c.simulation?.dataset_id||c.component_id)||[];
     dataset.forEach((values,index)=>{
-      if(filter&&!values.some(value=>value.toLowerCase().includes(filter)))return;
+      const filter=filters.get(c.component_id)||[];
+      if(filter.some(([name,query])=>!String(values[c.columns.findIndex(col=>col.key===name)]||'').toLowerCase().includes(query)))return;
       const tr=el('tr',null,body);values.forEach(value=>el('td',value,tr));
       if(c.interaction.action==='edit'){const button=el('button','编辑',el('td',null,tr));button.disabled=role==='只读';button.onclick=()=>open(c.interaction.target_id,index);}
     });
@@ -36,11 +39,26 @@ function render(page){
   const open=(id,index)=>{
     const block=blocks.get(id);if(!block)return;
     if(role==='只读'){feedback.textContent='只读角色不能修改模拟数据。';return;}
-    block.hidden=false;block.dataset.editIndex=index==null?'':String(index);
+    block._returnFocus=document.activeElement;block.hidden=false;block.dataset.editIndex=index==null?'':String(index);
     const form=fields.get(id),sim=block._simulation||{},dataset=data.get(sim.dataset_id)||[];
     const table=[...tables.values()].find(c=>(c.simulation?.dataset_id||c.component_id)===sim.dataset_id),values=index==null?[]:dataset[index]||[];
     if(form)for(const [name,input] of form){const col=table?.columns.findIndex(x=>x.key===name)??-1;input.value=col>=0?values[col]||'':'';}
+    block._initial=JSON.stringify([...form||[]].map(([name,input])=>[name,input.value]));
+    block._feedback.textContent='';
+    block.querySelector('.discard-confirm')?.remove();
     form?.values().next().value?.focus();
+  };
+  const close=id=>{const block=blocks.get(id);block.hidden=true;block._returnFocus?.focus();};
+  const cancel=id=>{
+    const block=blocks.get(id),form=fields.get(id);
+    const dirty=JSON.stringify([...form||[]].map(([name,input])=>[name,input.value]))!==block._initial;
+    if(dirty&&!block.querySelector('.discard-confirm')){
+      feedback.textContent='存在未保存的修改，请选择继续编辑或放弃修改。';
+      const notice=el('div','存在未保存的修改，是否放弃？',block);notice.className='discard-confirm';notice.setAttribute('role','alert');
+      const keep=el('button','继续编辑',notice),discard=el('button','放弃修改',notice);
+      keep.onclick=()=>{notice.remove();form?.values().next().value?.focus();};
+      discard.onclick=()=>{notice.remove();close(id);feedback.textContent='已取消；未保存的修改未写入模拟数据。';};keep.focus();
+    }else if(!dirty){close(id);feedback.textContent='已取消；未保存的修改未写入模拟数据。';}
   };
   const save=id=>{
     const block=blocks.get(id),form=fields.get(id);if(!block||!form)return;
@@ -49,7 +67,8 @@ function render(page){
     if(!dataset||!table){feedback.textContent='模拟数据集引用无效，未保存。';return;}
     const values=Object.fromEntries([...form].map(([name,input])=>[name,input.value.trim()]));
     const editIndex=block.dataset.editIndex===''?null:Number(block.dataset.editIndex);
-    const fail=message=>{feedback.textContent='模拟保存失败：'+message+'；输入已保留。';};
+    const fail=message=>{feedback.textContent='模拟保存失败：'+message+'；输入已保留。';block._feedback.textContent=feedback.textContent;};
+    for(const [name,input] of form)if(input.required&&!values[name])return fail(input.getAttribute('aria-label')+'为必填');
     for(const rule of sim.rules||[]){const [a,b]=rule.field_names;
       if(rule.kind==='required'&&!values[a])return fail(a+'为必填');
       if(rule.kind==='non_negative'&&(!values[a]||!Number.isFinite(Number(values[a]))||Number(values[a])<0))return fail(a+'必须为非负数');
@@ -60,22 +79,31 @@ function render(page){
         if(dataset.some((row,i)=>i!==editIndex&&values[a]<row[bi]&&row[ai]<values[b]))return fail('区间与已有模拟数据重叠');
       }
     }
+    if(failure.checked)return fail('已启用保存失败演示，原有数据未改变');
     const row=table.columns.map(col=>values[col.key]||'');
     if(editIndex==null)dataset.push(row);else dataset[editIndex]=row;
     for(const [tableId,c] of tables)if((c.simulation?.dataset_id||c.component_id)===sim.dataset_id)tableRows(c,blocks.get(tableId));
-    block.hidden=true;feedback.textContent='模拟保存成功；仅预览环境中的数据已更新。';
+    close(id);feedback.textContent='模拟保存成功；仅预览环境中的数据已更新。';
   };
   for(const region of page.regions){const area=el('article',null,surface);area.dataset.region=region.name;
     for(const c of region.components){const block=el('section',null,area);blocks.set(c.component_id,block);block._simulation=c.simulation;
       if(['dialog','drawer','panel'].includes(c.type))block.hidden=true;
-      if(c.type==='drawer'||c.type==='dialog')block.className=c.type;
-      el('h2',c.label+(c.provisional?' · 待确认':''),block);if(c.description)el('p',c.description,block);
+      if(c.type==='drawer'||c.type==='dialog'){
+        block.className=c.type==='dialog'?'business-dialog':'drawer';block.setAttribute('role','dialog');block.setAttribute('aria-label',c.label);block.setAttribute('aria-modal','true');
+        block.onkeydown=event=>{if(event.key==='Escape'){event.preventDefault();cancel(c.component_id);}if(event.key==='Tab'){const focusable=[...block.querySelectorAll('button,input,select')].filter(x=>!x.disabled);const first=focusable[0],last=focusable.at(-1);if(event.shiftKey&&document.activeElement===first){event.preventDefault();last?.focus();}else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first?.focus();}}};
+      }
+      block.dataset.kind=c.type;
+      if(c.type!=='button')el('h2',c.label+(c.provisional?' · 待确认':''),block);
+      const showDescription=spec.schema_version==='1.0'||['notice','text','heading','status'].includes(c.type);
+      if(showDescription&&c.description)el('p',c.description,block);
       const form=new Map();for(const field of c.fields){const label=el('label',field.label+(field.required_state==='unknown'?'（必填性待确认）':''),block);
         const input=el(field.type==='select'?'select':'input',null,label);input.setAttribute('aria-label',field.label);
         if(field.type==='select')field.options.forEach(option=>el('option',option,input));else input.type=({number:'number',date:'date',time:'time'})[field.type]||'text';
         if(field.type==='read_only')input.readOnly=true;form.set(field.name,input);
+        input.required=field.required_state==='required';
       }if(form.size)fields.set(c.component_id,form);
-      if(c.type==='filters')filterInputs.push(...form.values());
+      block._feedback=el('p',null,block);block._feedback.setAttribute('aria-live','polite');
+      if(c.type==='filters')for(const [name,input] of form)filterInputs.set(name,input);
       if(c.type==='table'||c.type==='list'){tables.set(c.component_id,c);tableRows(c,block);}
       const action=c.interaction;
       if(c.type==='button'||(action.action!=='none'&&action.action!=='edit')){const button=el('button',c.label||'模拟操作',block);
@@ -85,12 +113,20 @@ function render(page){
           else if(action.action==='switch_page')render(pages.get(action.target_id));
           else if(['new','edit'].includes(action.action))open(action.target_id,null);
           else if(action.action==='save')save(action.target_id);
-          else if(['cancel','close_panel'].includes(action.action)){blocks.get(action.target_id).hidden=true;feedback.textContent='已取消；未保存的修改未写入模拟数据。';}
+          else if(action.action==='cancel')cancel(action.target_id);
+          else if(action.action==='close_panel')close(action.target_id);
           else if(action.action==='open_panel'&&blocks.has(action.target_id))blocks.get(action.target_id).hidden=false;
-          else if(action.action==='filter'){filter=filterInputs.map(input=>input.value.trim().toLowerCase()).find(Boolean)||'';const target=tables.get(action.target_id);if(target)tableRows(target,blocks.get(action.target_id));}
+          else if(action.action==='filter'){filters.set(action.target_id,[...filterInputs].map(([name,input])=>[name,input.value.trim().toLowerCase()]).filter(([,v])=>v));const target=tables.get(action.target_id);if(target)tableRows(target,blocks.get(action.target_id));}
         };
       }
-      el('small','关联 '+(c.ref_ids.join(' · ')||'装饰说明'),block);
+      const info=el('details',null,block);el('summary',c.provisional?'待确认 · 查看说明与依据':'说明与依据',info);
+      if(c.description&&!showDescription)el('p',c.description,info);
+      el('small','关联 '+(c.ref_ids.join(' · ')||'装饰说明'),info);
+    }
+  }
+  for(const region of page.regions)for(const c of region.components){
+    if(['save','cancel'].includes(c.interaction.action)){
+      const block=blocks.get(c.component_id),target=blocks.get(c.interaction.target_id);if(target&&block!==target)target.append(block);
     }
   }
   setState(page.states.includes('normal')?'normal':page.states[0]);

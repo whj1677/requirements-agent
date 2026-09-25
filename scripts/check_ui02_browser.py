@@ -6,6 +6,7 @@ import socket
 import sys
 import threading
 import uuid
+import argparse
 from pathlib import Path
 
 sys.path.insert(0,str(Path(__file__).resolve().parent.parent))
@@ -19,12 +20,20 @@ from tests.ui02_fixture import model_server
 
 
 async def main():
+    parser=argparse.ArgumentParser()
+    parser.add_argument('--web-dist',type=Path,help='Use an isolated frontend build without replacing web/dist')
+    args=parser.parse_args()
     evidence=ROOT/'evidence/runtime/ui02'/uuid.uuid4().hex[:8]
     evidence.mkdir(parents=True)
     with model_server() as model:
         provider=Provider(evidence/'absent.env')
         provider.keys[origin(model['config'])]='ui02-synthetic-key'
         app=create_app(evidence/'data',access_token='ui02-browser',provider=provider)
+        if args.web_dist:
+            from starlette.staticfiles import StaticFiles
+            assert (args.web_dist/'index.html').is_file()
+            app.router.routes[:]=[r for r in app.router.routes if not (getattr(r,'path',None)=='' and getattr(r,'name',None)=='web')]
+            app.mount('/',StaticFiles(directory=args.web_dist,html=True),name='isolated-web')
         for slot in ('model','vision'):app.state.store.setting(slot,model['config'])
         with socket.socket() as sock:
             sock.bind(('127.0.0.1',0));port=sock.getsockname()[1]
@@ -125,6 +134,9 @@ async def main():
                     task=await run_action(pid,workspace.get_by_role('button',name='生成讨论稿 PRD',exact=True))
                     assert task['status']=='succeeded',task
                     await workspace.get_by_role('heading',name=topic+'需求讨论稿',exact=True).wait_for()
+                    if args.web_dist:
+                        await workspace.get_by_role('button',name='查看讨论稿',exact=True).click()
+                        assert await workspace.get_by_role('link',name='DOCX 下载').is_visible()
                     assert await workspace.get_by_text('（尚未决定）',exact=False).count()>0
                     await page.screenshot(path=str(evidence/(topic+'-draft.png')),full_page=True)
                     if topic=='联系人':assert (await read_project(pid))['ui'] is None

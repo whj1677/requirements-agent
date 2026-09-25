@@ -90,7 +90,11 @@ async def document_files(p, kind, status='草稿／待产品经理内容确认')
                 image = image_map[page['page_id']]
                 filename = 'assets/' + hashlib.sha256(page['page_id'].encode()).hexdigest()[:16] + '.png'
                 caption = f'低保真模拟 {page["title"]} · UI 版本 {p["ui"]["spec"]["draft_revision"]} · 待确认'
-                doc.add_picture(io.BytesIO(image), width=Inches(6.4))
+                from PIL import Image
+                with Image.open(io.BytesIO(image)) as preview:
+                    width=min(6.4,8.2*preview.width/preview.height)
+                # Reserve room for its caption on one page, including tall prototypes.
+                doc.add_picture(io.BytesIO(image), width=Inches(width))
                 doc.paragraphs[-1].paragraph_format.keep_with_next = True
                 doc.add_paragraph(caption)
                 md.append(f'![{caption}]({filename})')

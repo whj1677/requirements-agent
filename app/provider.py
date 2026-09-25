@@ -5,7 +5,7 @@ import time
 from urllib.parse import urlsplit
 import httpx
 from .core import KIT, Problem, dumps, now, read_json, require
-from .contracts import SCHEMA, profile
+from .contracts import SCHEMA, WIRE, profile
 from .config import ProjectEnvironment, usable_key
 from .prd import PLAN_SCHEMA, plan_contract, context as document_context
 
@@ -88,8 +88,24 @@ class Provider:
         return value, meta
 
 
+def request_schema(stage):
+    if stage=='prd':return PLAN_SCHEMA
+    if stage!='ui':return SCHEMA
+    # The provider cannot load local $ref files. Inline the actual UI dependencies,
+    # preserving the validator's schema and its no-draft-mutation rule.
+    def expand(value):
+        if isinstance(value,list):return [expand(x) for x in value]
+        if not isinstance(value,dict):return value
+        if '$ref' in value:
+            ref=value['$ref']
+            return expand(WIRE if ref=='wireframe.schema.json' else SCHEMA['$defs'][ref.rsplit('/',1)[1]])
+        return {k:expand(v) for k,v in value.items()}
+    props={**SCHEMA['properties'],'stage':{'const':'ui'},'proposals':{'const':[]},'questions':{'const':[]},'result':SCHEMA['$defs']['uiResult']}
+    return expand(dict(type='object',properties=props,required=SCHEMA['required'],additionalProperties=False))
+
+
 def assemble(p, stage, user_message, config, folder, kind='prd', generation_target=None, pending_images_only=False):
-    header = dict(stage=stage, project_id=p['id'], current_revision=p['revision'], mode=p['mode'], schema=PLAN_SCHEMA if stage=='prd' else SCHEMA, remaining_budget=config['max_calls'])
+    header = dict(stage=stage, project_id=p['id'], current_revision=p['revision'], mode=p['mode'], schema=request_schema(stage), remaining_budget=config['max_calls'])
     if generation_target:
         header['generation_target']=generation_target
     if stage == 'prd':
