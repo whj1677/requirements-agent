@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 from .core import DATA, ROOT, Problem, brief_hash, digest, hashes, ident, now, require, ui_view_hash
 from .store import Store
-from .contracts import gate, API_CAPABILITIES, PROFILES
+from .contracts import gate, API_CAPABILITIES, PROFILES, review_target
 from .provider import Provider, DEFAULT, origin
 from .workflow import Workflow, confirm
 from .actions import Actions
@@ -22,7 +22,7 @@ from .sources import MAX_BYTES, save_source, webpage
 from .preview import prototype
 from .exports import document_files, handoff, zip_files
 from .document_reader import reader_document, export_readiness, filename
-from .product_flow import status as flow_status, checkpoint, INTAKE, SCOPE, BEHAVIOR
+from .product_flow import status as flow_status, checkpoint, INTAKE, SCOPE, BEHAVIOR, review_document, document_review_current
 from .requirements import exchange, requirement_ref, delivery_items
 
 
@@ -56,12 +56,18 @@ class RunInput(Revision):
     message: str = Field(default='',max_length=12000)
     document_type: Literal['prd','mrd'] = 'prd'
 
+class ActionTarget(Strict):
+    kind: Literal['item','question','ui','document']
+    id: str = Field(min_length=1,max_length=200)
+    section_id: str | None = None
+
 class ActionPlan(Revision):
     action: Literal['organize','explore','clarify','prototype','document','review','change']
     message: str = Field(default='',max_length=12000)
     document_type: Literal['prd','mrd'] = 'prd'
     option_id: str | None = None
     max_calls: int = Field(default=8,ge=1,le=30)
+    target: ActionTarget | None = None
 
 class ActionStart(ActionPlan):
     plan_hash: str
@@ -82,6 +88,22 @@ class OptionItems(Revision):
 
 class Answer(Revision):
     answer: str = Field(min_length=1,max_length=6000)
+
+class Answers(Revision):
+    answers: dict[str,str]
+
+class Intake(Revision):
+    text: str = Field(default='',max_length=12000)
+    platform: str = Field(default='',max_length=2000)
+    preserved: str = Field(default='',max_length=2000)
+
+class Candidate(Revision):
+    title: str = Field(min_length=1,max_length=200)
+    statement: str = Field(min_length=1,max_length=6000)
+    change_type: Literal['new','modified','preserved'] = 'new'
+
+class DocumentReview(Revision):
+    document_id: str
 
 class ContextEdit(Revision):
     values: dict[str,str]
@@ -261,7 +283,58 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
         result['document_export_readiness']={kind:export_readiness(p,kind) for kind in p['documents']}
         result['product_flow']=flow_status(p)
         result['confirmation_scope_ids']=[i['id'] for i in delivery_items(p)]
+        result['document_review_status']={k:dict(reviewed=document_review_current(p,k),record=p.get('document_reviews',{}).get(k)) for k in ('mrd','prd')}
+        result['review_status']=dict(available=bool(p.get('review')),current=bool(p.get('review') and p['review']['target_hash']==review_target(p)))
+        result['source_capabilities']=dict(max_bytes=MAX_BYTES,extensions=['.txt','.md','.docx','.pdf','.png','.jpg','.jpeg','.webp'])
         return result
+
+    @app.post('/api/projects/{pid}/intake')
+    async def save_intake(pid:str,body:Intake):
+        with store.edit(pid,body.expected_revision,'保存本次诉求（未授权模型分析）') as (p,db):
+            text='\n\n'.join(v for v in (body.text.strip(), '平台/页面：'+body.platform.strip() if body.platform.strip() else '',
+                                             '保持/不涉及：'+body.preserved.strip() if body.preserved.strip() else '') if v)
+            require(text or any(not s['excluded'] and s.get('excerpts') for s in p['sources']),
+                    'INPUT_REQUIRED','请先描述本次需求或添加相关材料')
+            if text:
+                s=save_source(store,'本次诉求.txt',text.encode('utf-8'),'goal');p['sources'].append(s)
+            p['intake']=dict(text=body.text,platform=body.platform,preserved=body.preserved,
+                source_ids=[s['id'] for s in p['sources'] if not s['excluded']],saved_at=now())
+            checkpoint(p,1,flow_status(p)[0]['content_hash'])
+            p['stage_checks']['1']['meaning']='输入已保存，尚非分析结论核对'
+        return p
+
+    @app.post('/api/projects/{pid}/items')
+    async def create_candidate(pid:str,body:Candidate):
+        with store.edit(pid,body.expected_revision,'人工新增候选需求') as (p,db):
+            require(body.title.strip() and body.statement.strip(),'INPUT_REQUIRED','名称与原文不能为空')
+            source=save_source(store,'人工新增需求.txt',body.statement.encode('utf-8'),'goal');p['sources'].append(source)
+            p['items'].append(dict(id=ident('REQ'),kind='requirement',title=body.title,statement=body.statement,
+                change_type=body.change_type,applies_to='to_be',epistemic_status='reported',selection_status='candidate',
+                source_refs=[dict(source_id=source['id'],excerpt_id=e['id']) for e in source['excerpts']],related_refs=[],revision=p['revision']))
+        return p
+
+    @app.post('/api/projects/{pid}/documents/{kind}/review')
+    async def record_document_review(pid:str,kind:str,body:DocumentReview):
+        require(kind in ('mrd','prd'),'NOT_FOUND','文档类型不存在',404)
+        with store.edit(pid,body.expected_revision,'核对 '+kind.upper()+' 指定文档') as (p,db):
+            review_document(p,kind,body.document_id)
+        return p
+
+    @app.post('/api/projects/{pid}/answers')
+    async def save_answers(pid:str,body:Answers):
+        with store.edit(pid,body.expected_revision,'保存本次问题回答') as (p,db):
+            questions={q['id']:q for q in p['questions']}
+            require(body.answers and set(body.answers)<=questions.keys(),'REFERENCE_INVALID','回答包含不存在的问题')
+            require(all(v.strip() and len(v)<=6000 for v in body.answers.values()),'INPUT_REQUIRED','回答不能为空或超过6000字符')
+            for qid,value in body.answers.items():
+                q=questions[qid]
+                source=save_source(store,'问题回答.txt',value.encode('utf-8'),'goal');p['sources'].append(source)
+                q.update(answer=value,status='answered',answered_at=now(),
+                    answer_source_refs=[dict(source_id=source['id'],excerpt_id=e['id']) for e in source['excerpts']],
+                    affected_requirements=[requirement_ref(p,i) for i in p['items'] if i['kind']=='requirement' and
+                        (i['id'] in q.get('related_refs',[]) or set(i.get('related_refs',[])) & set(q.get('related_refs',[])))],
+                    answer_effect='待核对关联需求；回答不自动改写原条款或采纳状态')
+        return p
 
     @app.post('/api/projects/{pid}/product-context')
     async def context_edit(pid:str,body:ContextEdit):

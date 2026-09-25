@@ -90,6 +90,10 @@ def test_real_http_adapter_to_confirmation_and_export(tmp_path):
             assert c.post(root+'/stage-checks/4',json=dict(expected_revision=p['revision'],expected_hash=p['product_flow'][3]['content_hash'])).status_code==200
             stage('prd');stage('prd','mrd');stage('review')
             p=c.get(root).json()
+            for kind,doc in p['documents'].items():
+                response=c.post(root+'/documents/'+kind+'/review',json=dict(expected_revision=c.get(root).json()['revision'],document_id=doc['id']))
+                assert response.status_code==200,response.text
+            p=c.get(root).json()
             assert c.post(root+'/stage-checks/5',json=dict(expected_revision=p['revision'],expected_hash=p['product_flow'][4]['content_hash'])).status_code==200
             p=c.get(root).json();assert p['confirmation_issues']==[]
             response=c.post(root+'/confirmations',json={'expected_revision':p['revision'],'expected_hashes':p['hashes'],'scope_ids':[i['id'] for i in p['items']],'idempotency_key':'http-journey'})

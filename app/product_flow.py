@@ -28,7 +28,7 @@ def fingerprint(p, step):
     context=p.get('product_context',{})
     scope=[i for i in p['items'] if i['kind']=='requirement' and i['id'] in context.get('scope_ids',[])]
     if step==1:
-        value={k:context.get(k) for k in INTAKE}
+        value=p['intake'] if 'intake' in p else {k:context.get(k) for k in INTAKE}
     elif step==2:
         value=dict(context={k:context.get(k) for k in SCOPE},scope_ids=context.get('scope_ids',[]),scope=[{k:i.get(k) for k in ('id','title','applies_to','change_type')} for i in scope])
     elif step==3:
@@ -46,7 +46,8 @@ def fingerprint(p, step):
 def missing(p, step):
     ctx=p.get('product_context',{});issues=[]
     if step==1:
-        issues += ['请说明'+label for key,label in INTAKE.items() if not str(ctx.get(key,'')).strip()]
+        if 'intake' not in p:
+            issues += ['请说明'+label for key,label in INTAKE.items() if not str(ctx.get(key,'')).strip()]
         if not any(not s['excluded'] and s.get('excerpts') for s in p['sources']):
             issues.append('请添加至少一份可读取的现状或诉求材料。')
     elif step==2:
@@ -85,6 +86,11 @@ def missing(p, step):
             covered={r for s in doc['content']['sections'] for b in s['blocks'] if b['kind'] in TRACKED for r in b['ref_ids']}
             for req in selected_requirements(p):
                 if req['id'] not in covered:issues.append(kind.upper()+' 尚未成文：'+req['id'])
+            # Honor an unchanged legacy stage check, without inventing per-document reviews.
+            legacy=p.get('stage_checks',{}).get('5',{})
+            legacy_valid=legacy and not legacy.get('contract_version') and legacy.get('content_hash')==fingerprint(p,5)
+            if not legacy_valid and not document_review_current(p,kind):
+                issues.append('请评审并核对当前 '+kind.upper()+' 文档。')
     if 2<=step<=5:
         issues += [q['question'] for q in p['questions'] if q.get('blocking') and question_open(q) and question_stage(q)<=step]
     return list(dict.fromkeys(issues))
@@ -114,6 +120,26 @@ def checkpoint(p, step, expected_hash):
         actor='authenticated_local_user',draft_revision=p['revision'],
         requirements=[requirement_ref(p,i) for i in selected_requirements(p)],
         meaning='功能表达核对，非最终UI批准' if step==4 else '阶段内容核对，非正式业务批准')
+    if step==5:p['stage_checks']['5']['contract_version']='document-review-1'
+
+
+def document_review_current(p, kind):
+    doc=p['documents'].get(kind)
+    record=p.get('document_reviews',{}).get(kind,{})
+    return bool(doc and record.get('document_id')==doc['id'] and
+                record.get('content_hash')==digest(doc['content']) and
+                record.get('brief_hash')==brief_hash(p) and
+                kind not in p.get('stale_document_kinds',[]))
+
+
+def review_document(p, kind, document_id):
+    doc=p['documents'].get(kind)
+    require(doc and doc['id']==document_id,'STALE_DOCUMENT','文档版本已变化，请重新核对',409)
+    require(status(p)[4]['available'],'STAGE_BLOCKED','请先完成草图核对',409)
+    require(doc['brief_hash']==brief_hash(p) and kind not in p.get('stale_document_kinds',[]),
+            'STALE_DOCUMENT','文档基于旧内容，请更新后评审',409)
+    p.setdefault('document_reviews',{})[kind]=dict(document_id=document_id,content_hash=digest(doc['content']),
+        brief_hash=brief_hash(p),reviewed_at=now(),actor='authenticated_local_user',meaning='文档评审核对，非正式业务批准')
 
 
 def execution_issues(p, stage, kind='prd'):

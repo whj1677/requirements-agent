@@ -14,6 +14,28 @@ STAGES = {'explore':['brainstorm'],'clarify':['clarify'],'prototype':['ui'],
 ACTIVE = ('queued','running')
 
 
+def target_context(p, target):
+    """Resolve the local helper against this snapshot, never a client supplied label."""
+    if not target:return ''
+    require(set(target)<= {'kind','id','section_id'},'TARGET_INVALID','不支持的修改对象字段')
+    kind=target.get('kind');oid=target.get('id')
+    if kind in ('item','question'):
+        item=next((x for x in p['items' if kind=='item' else 'questions'] if x['id']==oid),None)
+        require(item is not None,'TARGET_INVALID','此需求或问题已不存在',409)
+        label=item.get('title') or item.get('question')
+        return f'{oid}｜{label}（当前底稿 v{p["revision"]}）'
+    if kind=='ui':
+        require(p.get('ui') and oid==digest(p['ui']['spec']),'TARGET_INVALID','草图已变化，请重新打开局部修改',409)
+        return f'当前功能草图｜{p["ui"]["spec"]["title"]}（内容标识 {oid}）'
+    if kind=='document':
+        doc=next((d for d in p['documents'].values() if d['id']==oid),None)
+        require(doc is not None,'TARGET_INVALID','文档已变化，请重新打开章节',409)
+        section=next((s for s in doc['content']['sections'] if s['section_id']==target.get('section_id')),None)
+        require(section is not None,'TARGET_INVALID','章节不属于当前文档',409)
+        return f'{oid}｜{section["section_id"]}｜{section["title"]}（修改涉及业务含义时必须提出需求候选，不直接改文档）'
+    raise Problem('TARGET_INVALID','请选择实际需求、问题、草图或文档章节')
+
+
 class Actions:
     def __init__(self, store, workflow):
         self.store, self.workflow = store, workflow
@@ -23,6 +45,8 @@ class Actions:
         p = p or self.store.get(pid)
         require(p['revision']==body['expected_revision'],'STALE_REVISION','内容版本已变化，请保留输入并重新核对',409)
         require(body['action'] in LABELS,'ACTION_INVALID','业务动作不存在')
+        target_label=target_context(p,body.get('target'))
+        require(not target_label or body['action'] in ('clarify','change','prototype'), 'TARGET_INVALID','此动作不支持局部修改')
         active=[s for s in p['sources'] if not s['excluded']]
         images=[s for s in active if s.get('image_mime') and s['parse_status']!='read']
         stages=STAGES.get(body['action']) or (['vision'] if images else []) + ['ingest']
@@ -66,6 +90,7 @@ class Actions:
             pending_text=body['message'], context_scope='当前底稿、问题和讨论记录；排除材料不删除已经形成的讨论内容。',
             missing=list(dict.fromkeys(blockers)),generation_target=target,
             open_questions=sum(q['status']!='answered' for q in p['questions']))
+        result['target_label']=target_label
         result['plan_hash']=digest(dict(input=execution_hash(p),request=body,configs=configs))
         return result
 
@@ -123,7 +148,10 @@ class Actions:
                 config=dict(configs[stage],max_calls=min(configs[stage]['max_calls'],body['max_calls']-calls))
                 target=copy.deepcopy(task['generation_target'])
                 if target: target['input_revision']=p['revision']
-                run=self.workflow.start(pid,p['revision'],stage,body['message'],body['document_type'],
+                message=body['message']
+                if body.get('target'):
+                    message='本次局部讨论对象：'+target_context(p,body['target'])+'\n仅围绕此对象提出候选；保留其他需求、未知和采纳状态。\n用户修改意图：'+message
+                run=self.workflow.start(pid,p['revision'],stage,message,body['document_type'],
                     user_task_id=tid,config_override=config,generation_target=target)
                 ids=current['run_ids']+[run['id']]
                 self.store.update_record(pid,tid,'user_task',status='running',run_ids=ids,message='正在'+('分析图片' if stage=='vision' else LABELS[body['action']]))

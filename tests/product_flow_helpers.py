@@ -1,5 +1,5 @@
 """Explicit synthetic human checks; never called from the application or live runs."""
-from app.product_flow import INTAKE, SCOPE, BEHAVIOR, checkpoint, status
+from app.product_flow import INTAKE, SCOPE, BEHAVIOR, checkpoint, status, review_document
 from app.core import brief_hash
 from app.contracts import review_target
 
@@ -35,7 +35,10 @@ def check_prepared(store,pid,through=5):
         if p.get('ui'):p['ui']['brief_hash']=brief_hash(p)
         for d in p['documents'].values():d['brief_hash']=brief_hash(p)
         if p.get('review'):p['review']['target_hash']=review_target(p)
-        for n in range(1,through+1):checkpoint(p,n,status(p)[n-1]['content_hash'])
+        for n in range(1,through+1):
+            if n==5:
+                for kind,doc in p['documents'].items():review_document(p,kind,doc['id'])
+            checkpoint(p,n,status(p)[n-1]['content_hash'])
     return store.get(pid)
 
 

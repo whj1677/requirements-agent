@@ -2,7 +2,7 @@ export type JsonObject = Record<string, any>;
 export interface ProjectSummary { id: string; name: string; revision: number }
 export interface Run { id: string; stage: string; status: string; message: string; calls: number; error?: string; cost?: number }
 export type BusinessAction = 'organize' | 'explore' | 'clarify' | 'prototype' | 'document' | 'review' | 'change';
-export interface ActionInput { expected_revision: number; action: BusinessAction; message: string; document_type: string; option_id?: string | null; max_calls: number }
+export interface ActionInput { expected_revision: number; action: BusinessAction; message: string; document_type: string; option_id?: string | null; max_calls: number; target?: JsonObject }
 export interface ActionPlan { plan_hash: string; label: string; stages: string[]; max_calls: number; expected_revision: number; pending_text: string; context_scope: string; missing: string[]; recipients: { origin: string; model: string; needs_authorization: boolean }[]; sources: { id: string; title: string; status: string }[]; generation_target?: JsonObject }
 export interface UserTask { id: string; action: BusinessAction; label: string; status: string; message: string; calls: number; max_calls: number; run_ids: string[]; source_ids: string[]; completed_steps: number; stages: string[]; cost: number | null }
 export interface Project extends ProjectSummary {
@@ -59,4 +59,13 @@ export function categorizeError(e: unknown): ErrorCategory {
   if (e.status === 409) return 'conflict';
   if (e.status >= 500) return 'server';
   return 'unknown';
+}
+
+export async function downloadFile(url:string,fallback:string){
+ const r=await fetch(url,{credentials:'same-origin',headers:{'X-CSRF-Token':csrf}});
+ if(!r.ok){const data=await r.json().catch(()=>null);throw new ApiError(r.status,data?.code||'DOWNLOAD_FAILED',data?.message||`下载未完成（HTTP ${r.status}）`);}
+ const blob=await r.blob(),href=URL.createObjectURL(blob),a=document.createElement('a');
+ const disposition=r.headers.get('content-disposition')||'';
+ const encoded=disposition.match(/filename\*=UTF-8''([^;]+)/i);
+ a.href=href;a.download=encoded?decodeURIComponent(encoded[1]):fallback;a.click();setTimeout(()=>URL.revokeObjectURL(href),1000);
 }

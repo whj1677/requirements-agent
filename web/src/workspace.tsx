@@ -1,29 +1,41 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { api, ApiError, categorizeError, ErrorCategory, ActionInput, ActionPlan, BusinessAction, Project, Run, UserTask } from './api';
-import { ConversationPanel, ArtifactTabs, PrototypeCanvas } from './workbench';
+import { ArtifactTabs, PrototypeCanvas } from './workbench';
 import { SourcePanel, VersionHistory, ConfirmationPanel, DocumentStudio } from './panels';
 import { useDialog } from './shell';
-import { ProductCheckpoint } from './product-flow';
+import { ProductCheckpoint, QuestionList } from './product-flow';
+import { useDirty, useNavigation } from './editing';
 import { phases, TaskStatus, ActionDialog, OptionDecision } from './guided';
 type Obj = Record<string, any>;
 export type Compat = { status: 'ok' | 'incompatible' | 'unverified'; missing: string[] };
 const categoryText: Record<ErrorCategory, string> = { 'not-found': '项目不存在或已被删除', 'route-missing': '所需接口缺失，前后端版本可能不兼容', network: '无法连接服务', 'non-json': '服务返回了无法识别的内容', session: '登录已失效，请重新登录', forbidden: '访问被拒绝', conflict: '内容版本已变化', server: '暂时无法加载此项目', unknown: '暂时无法加载此项目' };
 
 export function Workspace({ id, active, models, onProjectsChanged, compat, onExit, onReLogin }: { id: string; active: boolean; models: Obj; onProjectsChanged: () => Promise<void>; compat: Compat; onExit: () => void; onReLogin: () => void }) {
-  const [p, setP] = useState<Project | null>(null), [phase, setPhase] = useState(0), [runs, setRuns] = useState<Run[]>([]), [tasks, setTasks] = useState<UserTask[]>([]);
-  const [message, setMessage] = useState(''), [lastSent, setLastSent] = useState(''), [error, setError] = useState(''), [busy, setBusy] = useState(false);
+  const [p, setP] = useState<Project | null>(null), [phase, setPhase] = useState(()=>{const n=Number(sessionStorage.getItem('ra-phase-'+id));return n>=0&&n<6?n:0;}), [runs, setRuns] = useState<Run[]>([]), [tasks, setTasks] = useState<UserTask[]>([]);
+  const [error,setError]=useState(''),[busy,setBusy]=useState(false);
   const [sourcesOpen, setSourcesOpen] = useState(false), [sourceText, setSourceText] = useState(''), [url, setUrl] = useState(''), [purpose, setPurpose] = useState('goal'), [dynamic, setDynamic] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false), [history, setHistory] = useState<Obj[]>([]), [artifacts, setArtifacts] = useState<Obj>({ document_artifact: [] });
   const [docType, setDocType] = useState('prd'), [selectedDocId, setSelectedDocId] = useState(''), [rename, setRename] = useState(''), [renameOpen, setRenameOpen] = useState(false);
-  const [showAll, setShowAll] = useState(false), [showAdvanced, setShowAdvanced] = useState(false), [stage, setStage] = useState('ingest'), [mobilePane, setMobilePane] = useState('content'), [expanded, setExpanded] = useState(false);
+  const [, setShowAdvanced]=useState(false),[,setStage]=useState('ingest');
   const [pending, setPending] = useState<{ plan: ActionPlan; input: ActionInput; key: string } | null>(null), [actionError, setActionError] = useState('');
-  const [optionDecision, setOptionDecision] = useState<Obj | null>(null), [previewOption, setPreviewOption] = useState<Obj | null>(null), [prototypeOpen, setPrototypeOpen] = useState(false);
-  const [budget, setBudget] = useState(8), [checkedScope, setCheckedScope] = useState(false), [focusRefs, setFocusRefs] = useState<Obj[]>([]);
+  const [optionDecision, setOptionDecision] = useState<Obj | null>(null), [previewOption, setPreviewOption] = useState<Obj | null>(null);
+  const [budget, setBudget] = useState(8), [focusRefs, setFocusRefs] = useState<Obj[]>([]);
   const [fatal, setFatal] = useState<ApiError | null>(null), [stale, setStale] = useState<string[]>([]), [staleNotice, setStaleNotice] = useState(''), [tasksLoaded, setTasksLoaded] = useState(false), [compatDismissed, setCompatDismissed] = useState(false);
+  const [help,setHelp]=useState<Obj|null>(null),[helpText,setHelpText]=useState(''),[candidateOpen,setCandidateOpen]=useState(false),[candidateTitle,setCandidateTitle]=useState(''),[candidateText,setCandidateText]=useState('');
+  const guard=useNavigation();
+  function go(n:number){guard(()=>{setPhase(n);sessionStorage.setItem('ra-phase-'+id,String(n));});}
+  const projectRef=useRef<Project|null>(null);
   const serial = useRef(0), root = '/projects/' + id;
   const mainScroll = useRef<HTMLElement | null>(null), scrollPositions = useRef<Record<number, number>>({});
   useEffect(() => { if (mainScroll.current) mainScroll.current.scrollTop = scrollPositions.current[phase] || 0; }, [phase]);
-  useDialog(sourcesOpen, () => setSourcesOpen(false));
+  useDialog(sourcesOpen, () => guard(()=>setSourcesOpen(false)));
+  useDialog(!!help,()=>guard(()=>setHelp(null)));
+  useDialog(candidateOpen,()=>guard(()=>setCandidateOpen(false)));
+  async function saveSourceDraft(){if(sourceText.trim()) {await mutate('/sources/text',{text:sourceText,purpose});setSourceText('');}if(url.trim()){await mutate('/sources/url',{url,dynamic,authorized_public:true,purpose});setUrl('');}}
+  useDirty(id+'-sources',Boolean(sourceText.trim()||url.trim()),'项目资料',saveSourceDraft,()=>{setSourceText('');setUrl('');});
+  useDirty(id+'-help',Boolean(helpText.trim()),'对象讨论输入',async()=>{await mutate('/sources/text',{text:help?.label+'\n'+helpText,purpose:'goal'});setHelpText('');},()=>setHelpText(''));
+  async function saveCandidate(){await mutate('/items',{title:candidateTitle,statement:candidateText,change_type:'new'});setCandidateTitle('');setCandidateText('');setCandidateOpen(false);}
+  useDirty(id+'-candidate',Boolean(candidateTitle||candidateText),'候选需求',saveCandidate,()=>{setCandidateTitle('');setCandidateText('');});
   useDialog(historyOpen, () => setHistoryOpen(false));
   useDialog(renameOpen, () => setRenameOpen(false));
   async function refresh() {
@@ -32,15 +44,11 @@ export function Workspace({ id, active, models, onProjectsChanged, compat, onExi
     try { project = await api<Project>(root); }
     catch (e) { if (n === serial.current) setFatal(e as ApiError); throw e; }
     if (n !== serial.current) return;
-    setFatal(null); setStaleNotice(''); setP(project);
+    projectRef.current=project; setFatal(null); setStaleNotice(''); setP(project);
     const failed: string[] = [];
-    const auxiliaries: [string, () => Promise<void>][] = [
-      ['运行记录', async () => { setRuns(await api<Run[]>(root + '/runs')); }],
-      ['任务列表', async () => { setTasks(await api<UserTask[]>(root + '/actions')); setTasksLoaded(true); }],
-      ['产物记录', async () => { setArtifacts(await api<Obj>(root + '/artifacts')); }],
-    ];
-    await Promise.all(auxiliaries.map(async ([label, load]) => { try { await load(); } catch { failed.push(label); } }));
-    if (n !== serial.current) return;
+    const responses=await Promise.allSettled([api<Run[]>(root+'/runs'),api<UserTask[]>(root+'/actions'),api<Obj>(root+'/artifacts')]);
+    if(n!==serial.current)return;
+    responses.forEach((result,index)=>{if(result.status==='rejected'){failed.push(['运行记录','任务列表','产物记录'][index]);return;}if(index===0)setRuns(result.value as Run[]);if(index===1){setTasks(result.value as UserTask[]);setTasksLoaded(true);}if(index===2)setArtifacts(result.value as Obj);});
     setStale(failed);
   }
   function onRefreshFail(e: unknown) { setStaleNotice(categoryText[categorizeError(e)]); }
@@ -52,13 +60,13 @@ export function Workspace({ id, active, models, onProjectsChanged, compat, onExi
   useEffect(() => {
     if (!sourcesOpen || !focusRefs.length) return;
     const timer = setTimeout(() => { const el = document.getElementById('excerpt-' + focusRefs[0].excerpt_id); const details = el?.closest('details'); if (details) details.open = true; el?.scrollIntoView({ block: 'center' }); el?.classList.add('source-highlight'); }, 50);
-    return () => clearTimeout(timer);
+    return () => {clearTimeout(timer);document.querySelectorAll('.source-highlight').forEach(el=>el.classList.remove('source-highlight'));};
   }, [sourcesOpen, focusRefs]);
-  async function mutate(path: string, body: Obj, method = 'POST') { await api(root + path, method, { expected_revision: p?.revision, ...body }); await refresh(); }
-  async function planAction(action: BusinessAction, optionId?: string) {
+  async function mutate(path: string, body: Obj, method = 'POST') { try{await api(root + path, method, { expected_revision: projectRef.current?.revision, ...body });await refresh();}catch(e){if(e instanceof ApiError&&e.status===409)await refresh().catch(onRefreshFail);throw e;} }
+  async function planAction(action: BusinessAction, optionId?: string, target?: Obj, text = '') {
     if (!p) return;
     if (actionBlockReason) { setError(actionBlockReason); return; }
-    const input: ActionInput = { expected_revision: p.revision, action, message: message !== lastSent ? message : '', document_type: docType, option_id: optionId || null, max_calls: budget };
+    const input: ActionInput = { expected_revision: p.revision, action, message: text, document_type: docType, option_id: optionId || null, max_calls: budget, ...(target?{target:{kind:target.kind,id:target.id,...(target.section_id?{section_id:target.section_id}:{})}}:{}) };
     const plan = await api<ActionPlan>(root + '/actions/plan', 'POST', input);
     setActionError(''); setPending({ input, plan, key: crypto.randomUUID() });
   }
@@ -66,10 +74,11 @@ export function Workspace({ id, active, models, onProjectsChanged, compat, onExi
     if (!pending) return;
     if (actionBlockReason) { setActionError(actionBlockReason); return; }
     setBusy(true); setActionError('');
-    try { await api(root + '/actions', 'POST', { ...pending.input, plan_hash: pending.plan.plan_hash, idempotency_key: pending.key, authorize: pending.plan.recipients.some(r => r.needs_authorization) }); if (pending.input.message) setLastSent(pending.input.message); setPending(null); await refresh(); }
+    try { await api(root + '/actions', 'POST', { ...pending.input, plan_hash: pending.plan.plan_hash, idempotency_key: pending.key, authorize: pending.plan.recipients.some(r => r.needs_authorization) }); setPending(null); if(pending.input.target){setHelpText('');setHelp(null);} await refresh(); }
     catch(e) { setActionError((e as Error).message); } finally { setBusy(false); }
   }
-  function navigate(tab: string) { if (tab === 'documents') setPhase(4); else if (tab === 'prototype') { setPhase(3); setPrototypeOpen(true); } else if (tab === 'sources') setSourcesOpen(true); else { setPhase(2); setShowAll(true); if(tab === 'clarification') { setExpanded(false); setMobilePane('assistant'); requestAnimationFrame(() => { const card = mainScroll.current?.closest('.project-workspace')?.querySelector('.decision-card'); card?.scrollIntoView({ block: 'start' }); (card?.querySelector('textarea') as HTMLTextAreaElement | null)?.focus({ preventScroll: true }); }); } } }
+  function navigate(tab:string){if(tab==='sources'){setSourcesOpen(true);return;}go(tab==='documents'?4:tab==='prototype'?3:tab==='scope'?1:2);}
+  function openHelp(target:Obj){guard(()=>{setHelp(target);setHelpText('');});}
   function stageAction(s: string) { const action: Record<string, BusinessAction> = { ingest: 'organize', vision: 'organize', brainstorm: 'explore', clarify: 'clarify', ui: 'prototype', prd: 'document', review: 'review', change: 'change' }; act(() => planAction(action[s] || 'organize')); }
   const actionBlockReason = compat.status === 'incompatible' ? '后端缺少必需接口能力（' + compat.missing.join('、') + '），发起动作已暂停；请重启服务并重新加载本标签页' : stale.includes('任务列表') ? (tasksLoaded ? '任务状态读取失败，当前状态待刷新；页面显示的是此前取得的任务记录，发起动作已暂停，请重试刷新' : '任务状态尚未取得，发起动作已暂停；请先重试刷新') : '';
   if (!p) {
@@ -84,39 +93,52 @@ export function Workspace({ id, active, models, onProjectsChanged, compat, onExi
     }
     return <div hidden={!active} className="workspace"><p>正在读取项目内容…</p></div>;
   }
-  const open = p.questions.filter(q => q.status !== 'answered' && !q.out_of_scope_reason), selected = p.items.filter(i => i.selection_status === 'selected');
-  const failed = p.sources.filter(s => !s.excluded && ['failed','partial','awaiting_vision'].includes(s.parse_status));
   const direction = p.options.find(o => o.direction_status === 'selected');
-  const latest = tasks[tasks.length - 1];
-  const primary = ['整理当前信息','探索可选方案','根据回答更新理解','生成功能草图',p.documents[docType]?'更新 '+docType.toUpperCase()+' 评审稿':'生成 '+docType.toUpperCase()+' 评审稿','核对正式确认条件'][phase];
-  const primaryAction = () => phase === 5 ? document.getElementById('confirmation-' + id)?.scrollIntoView() : act(() => planAction((['organize','explore','clarify','prototype','document'] as BusinessAction[])[phase]));
+  const phaseActions=[['organize'],['organize','explore'],['clarify','change'],['prototype','change'],['document','review'],['review']][phase];
+  const latest=tasks.filter(t=>phaseActions.includes(t.action)).slice(-1)[0];
   const shared = { busy, project: p, setTab: () => {}, onOption: (option: Obj, action: string) => setOptionDecision({ option, action }), onItem: (item: Obj, status: string) => act(() => mutate('/items/' + item.id, { selection_status: status })), onEditItem: (item: Obj, statement: string, fields: Obj = {}) => mutate('/items/' + item.id, { selection_status: item.selection_status, statement, ...fields }), onStage: stageAction, onActivate: (cid: string) => act(() => mutate('/ui-candidates/' + cid + '/activate', {})), onReject: (cid: string) => act(() => mutate('/ui-candidates/' + cid + '/reject', {})), onNavigate: navigate, previewUrl: '/api' + root + '/prototype', runs, models, onCancel: (rid: string) => act(async () => { await api(root + '/runs/' + rid + '/cancel', 'POST'); await refresh(); }), onResume: (rid: string) => stageAction(runs.find(r => r.id === rid)?.stage || 'ingest'), embedded: true, onSource: (refs: Obj[]) => { setFocusRefs(refs); setSourcesOpen(true); }, onPreviewOption: setPreviewOption };
   const currentPreviewOption = previewOption && (p.options.find(o => o.id === previewOption.id) || previewOption);
   const optionArtifact = previewOption && [p.ui, ...((p as Obj).ui_candidates || []).filter((c: Obj) => c.status !== 'rejected')].find(a => a?.generation_target?.option_id === previewOption.id);
   return <div hidden={!active} className="project-workspace">
-    <header className="project-bar"><div><h1>{p.name}</h1><small>内容草稿 v{p.revision} · {p.active_baseline_id ? '有历史确认基线，当前内容仍须核对' : '尚无正式确认基线'}</small></div><div className="toolbar"><button onClick={() => { setError(''); setFocusRefs([]); setSourcesOpen(true); }}>项目资料 · {p.sources.length}</button><button onClick={() => act(async () => { setHistory(await api<Obj[]>(root + '/history')); setHistoryOpen(true); })}>历史版本</button><button onClick={() => { setRename(p.name); setRenameOpen(true); }}>重命名</button></div></header>
-    <nav className="phase-nav" aria-label="需求工作阶段">{phases.map((name, n) => <button key={name} aria-current={phase === n ? 'step' : undefined} onClick={() => setPhase(n)}><span>{n + 1}</span>{name}<small>{p.product_flow?.[n]?.complete ? '已核对' : p.product_flow?.[n]?.needs_recheck ? '需重新核对' : '待核对'}</small></button>)}</nav>
+    <header className="project-bar"><div><h1>{p.name}</h1><small>内容草稿 v{p.revision} · {p.product_flow?.[5]?.complete?'当前版本已建立确认基线':p.active_baseline_id?'有历史确认基线，当前草稿须重新核对':'尚无正式确认基线'}</small></div><div className="toolbar"><button onClick={() => { setError(''); setFocusRefs([]); setSourcesOpen(true); }}>项目资料 · {p.sources.length}</button><button onClick={() => act(async () => { setHistory(await api<Obj[]>(root + '/history')); setHistoryOpen(true); })}>历史版本</button><button onClick={() => { setRename(p.name); setRenameOpen(true); }}>重命名</button></div></header>
+    <nav className="phase-nav" aria-label="需求工作阶段">{phases.map((name, n) => <button key={name} data-complete={p.product_flow?.[n]?.complete} aria-current={phase === n ? 'step' : undefined} onClick={() => go(n)}><span>{phase===n?n+1:p.product_flow?.[n]?.complete?'✓':n+1}</span><b>{name}</b><small>{p.product_flow?.[n]?.complete ? (n===0?'已提供':'已核对') : p.product_flow?.[n]?.needs_recheck ? '需重新核对' : '待核对'}</small></button>)}</nav>
     {compat.status === 'incompatible' && <div className="error banner" role="alert">后端缺少必需接口能力（{compat.missing.join('、')}），前后端版本可能不兼容；请重启服务并重新加载本标签页。发起动作已暂停，查看与返回不受影响。</div>}
     {compat.status === 'unverified' && !compatDismissed && <div className="notice banner" role="status">后端未提供能力信息，兼容性未核实；如遇功能异常，后端代码变更后需重启服务、标签页需重新加载。<button onClick={() => setCompatDismissed(true)}>知道了</button></div>}
     {staleNotice && <div className="error banner" role="alert">最新状态尚未取得：{staleNotice}<button onClick={retry}>重试</button><button onClick={() => setStaleNotice('')}>关闭</button></div>}
     {!staleNotice && stale.length > 0 && <div className="notice banner" role="status">部分状态未能更新（{stale.join('、')}）；页面显示的是已取得的最近内容。<button onClick={retry}>重试</button></div>}
     {error && <div className="error banner" role="alert">{error}<button onClick={() => act(refresh)}>刷新内容并保留输入</button><button onClick={() => setError('')}>关闭</button></div>}
-    <div className="guided-mobile-switch"><button onClick={() => setMobilePane('content')}>任务内容</button><button onClick={() => setMobilePane('assistant')}>需求助手</button></div>
-    <div className={'guided-grid ' + mobilePane + (expanded ? ' expanded-work' : '')}>
-      <section className="guided-main" ref={mainScroll} onScroll={e => { scrollPositions.current[phase] = e.currentTarget.scrollTop; }}><div className="task-guide"><div><small>当前任务</small><h2>{phases[phase]}</h2><p>{p.items.length ? `已有 ${p.items.length} 条内容，其中 ${selected.length} 条已采纳。` : '先描述要解决的问题，资料可随时补充。'}{p.options.length ? `已有 ${p.options.length} 个方案，${direction ? '当前讨论方向：' + direction.name : '方向尚未选择'}。` : ''}</p><p>{open.length ? `仍有 ${open.length} 个问题未决定，可以继续讨论，正式确认另有门禁。` : '请核对当前内容与实际业务是否一致。'}{failed.length ? ` ${failed.length} 项资料尚有读取或图片分析限制。` : ''}</p></div><div className="toolbar"><button className="primary" disabled={busy || running || !!actionBlockReason} onClick={primaryAction}>{primary}</button><button onClick={() => setSourcesOpen(true)}>添加资料</button><button onClick={() => setExpanded(!expanded)}>{expanded ? '恢复助手与导航' : '展开成果阅读'}</button></div>{actionBlockReason && <p className="notice">{actionBlockReason}</p>}</div>
-        <TaskStatus task={latest} onCancel={() => act(async () => { await api(root + '/actions/' + latest.id + '/cancel', 'POST'); await refresh(); })} onRetry={() => act(() => planAction(latest.action))} onViewResult={latest && ((latest.action === 'document' && p.documents[docType]) || (latest.action === 'prototype' && p.ui)) ? () => { const doc=latest.action==='document'; setPhase(doc?4:3); setMobilePane('content'); if(!doc)setPrototypeOpen(true); requestAnimationFrame(() => document.getElementById((doc?'document-result-':'prototype-result-')+id)?.scrollIntoView({block:'start'})); } : undefined} />
-        {phases.slice(0,5).map((_,n)=><div key={n} hidden={phase!==n}><ProductCheckpoint p={p} phase={n} busy={busy||running} mutate={mutate} go={setPhase}/></div>)}
-        <section hidden={phase !== 0}><article className="card"><h2>目前理解</h2>{p.messages.filter(m => m.role === 'assistant' && ['ingest','clarify'].includes(m.stage)).slice(-2).map((m, i) => <p key={i} className="preserve-lines">{m.text}</p>)}{!p.messages.length && <p>先添加现有平台的页面、流程或规则资料，再描述本次改动。现状与目标材料可分别标记；缺少的信息可以保留待定。</p>}<p>资料：{p.sources.filter(s => !s.excluded && s.parse_status === 'read').length} 项已读取 · {failed.length} 项待处理或有限制</p><div className="toolbar"><button onClick={() => { setPhase(2); setShowAll(true); }}>查看内容与待定问题</button><button onClick={() => setPhase(1)}>查看方案方向</button></div></article></section>
-        <section hidden={phase !== 1}><ArtifactTabs {...shared} tab="options" />{currentPreviewOption && <article className="card"><h3>{currentPreviewOption.name} · 对应原型</h3>{optionArtifact ? <><p>生成对象：{optionArtifact.generation_target.name} · 输入底稿 v{optionArtifact.input_revision} · {optionArtifact.generation_run_id}</p><iframe key={optionArtifact.id || p.hashes.ui_spec_hash} title="方案对应原型" sandbox="allow-scripts" className="prototype" src={'/api' + root + (optionArtifact.id ? '/ui-candidates/' + optionArtifact.id + '/prototype' : '/prototype')} /></> : <><p className="notice">此方案尚无原型。当前功能草图不会被当作此方案的原型。</p><p>本批仅支持为当前讨论方向或项目内容生成；为未选方案独立生成暂不支持。</p>{currentPreviewOption.direction_status === 'selected' && <button onClick={() => act(() => planAction('prototype', currentPreviewOption.id))}>生成此方向讨论原型</button>}</>}<button onClick={() => setPreviewOption(null)}>收起方案预览</button></article>}</section>
-        <section hidden={phase !== 3}><p className="notice">需求草图，非最终 UI 设计。只核对本次增量范围与操作意图。</p><details><summary>原页面参考</summary>{p.sources.filter(s=>s.purpose==='current'&&s.image_mime&&!s.excluded).map(s=><figure key={s.id}><img style={{maxWidth:'100%'}} src={'/api'+root+'/sources/'+s.id+'/image'} alt={s.title}/><figcaption>{s.title} · {s.parse_status==='read'?'已分析，仍需核对':s.parse_status==='partial'?'已分析，部分内容需核对':'视觉尚未分析'}</figcaption></figure>)}</details><div className="toolbar"><button onClick={() => setPrototypeOpen(!prototypeOpen)}>{prototypeOpen ? '收起当前功能草图' : '查看当前功能草图'}</button><button disabled={running || busy || !!actionBlockReason} onClick={() => act(() => planAction('prototype'))}>生成功能草图</button><button onClick={() => act(() => planAction('change'))}>讨论修改方案</button></div><div id={'prototype-result-'+id} hidden={!prototypeOpen}><PrototypeCanvas project={p} url={'/api' + root + '/prototype'} onStage={stageAction} onActivate={shared.onActivate} onReject={shared.onReject} /></div></section>
-        <section hidden={phase !== 2}>{checkedScope && <p className="notice">请逐项核对原文、来源、属性与采纳状态。此处核对不创建正式确认。</p>}<ArtifactTabs {...shared} tab="summary" /><button onClick={() => act(() => planAction('clarify'))}>根据回答更新理解</button></section>
-        <section id={'document-result-'+id} hidden={phase !== 4}><p className="notice">评审稿保留必要未决项，未澄清的本期事项会阻止下载。当前 {open.length} 项未决定；{p.ui ? '已有项目原型，请核对对应版本。' : '尚无原型，文档不会编造原型图片。'}</p><DocumentStudio p={p} docType={docType} setDocType={setDocType} selectedDocId={selectedDocId} setSelectedDocId={setSelectedDocId} artifacts={artifacts} setStage={setStage} setShowAdvanced={setShowAdvanced} setTab={navigate} setOutcome={() => {}} root={root} act={act} mutate={mutate} onGenerate={() => act(() => planAction('document'))} /><button disabled={busy || running || !!actionBlockReason} onClick={() => act(() => planAction('review'))}>审查当前内容</button></section>
-        <section hidden={phase !== 5} id={'confirmation-' + id}><ConfirmationPanel p={p} busy={busy} setBusy={setBusy} setError={setError} setTab={navigate} setStage={setStage} setShowAdvanced={setShowAdvanced} root={root} act={act} refresh={refresh} onReview={() => act(() => planAction('review'))} /></section>
+    <div className="workflow-grid">
+      <section className="workflow-main" ref={mainScroll} onScroll={e=>{scrollPositions.current[phase]=e.currentTarget.scrollTop;}}>
+        <div className="workflow-heading"><div className="task-icon" aria-hidden="true">▤</div><p className="eyebrow">当前任务 · 第 {phase+1} / 6 步</p><h2>{phases[phase]}</h2><p className="muted">{['提供已有页面与本次诉求，系统整理后由你核对。','纠正理解偏差，确定这次改什么、保留什么。','回答会影响业务行为的问题，未知不会被自动补齐。','对照原页面，核对本次增量与操作意图。','分别阅读并核对 MRD、PRD 的当前版本。','复核范围与交付版本，再由服务端建立确认基线。'][phase]}</p></div>
+        {latest&&(!p.product_flow?.[phase]?.complete||running)&&<TaskStatus task={latest} onCancel={()=>act(async()=>{await api(root+'/actions/'+latest.id+'/cancel','POST');await refresh();})} onRetry={()=>act(()=>planAction(latest.action))} onViewResult={['succeeded','partial'].includes(latest.status)?()=>go(latest.action==='organize'?1:latest.action==='prototype'?3:latest.action==='document'?4:phase):undefined}/>}
+        <div hidden={phase!==0}><ProductCheckpoint p={p} phase={0} busy={busy||running} mutate={mutate} go={go} onSources={()=>setSourcesOpen(true)} onAnalyze={()=>act(()=>planAction('organize'))}/></div>
+        <div hidden={phase!==1}>
+          <ProductCheckpoint p={p} phase={1} busy={busy||running} mutate={mutate} go={go}/>
+          <article className="card"><div className="section-heading"><h3>本期需求条目</h3><button onClick={()=>setCandidateOpen(true)}>＋ 补充候选需求</button></div><p>编号随版本保留；范围选择与条目采纳是两项独立决定。</p>{p.items.filter(i=>i.kind==='requirement').map(i=><div className="requirement-link" key={i.id}><span><b>{i.title}</b><small>{i.id} · v{i.content_version||1} · {i.selection_status==='selected'?'已采纳':'待决定'} · {({reported:'材料陈述',inferred:'推断',proposed:'建议'} as Obj)[i.epistemic_status]||i.epistemic_status}</small></span><button onClick={()=>shared.onSource(i.source_refs||[])}>查看来源</button><button onClick={()=>openHelp({kind:'item',id:i.id,label:i.title})}>帮助澄清</button></div>)}</article>
+          <details className="card"><summary>按需比较方案方向（不是必选步骤）</summary><p>当前方向：{direction?.name||'尚未选择'}。方向不会自动采纳关联假设。</p><button disabled={busy||running||!!actionBlockReason} onClick={()=>act(()=>planAction('explore'))}>探索可选方案</button><ArtifactTabs {...shared} tab="options"/>{currentPreviewOption&&<article><h3>{currentPreviewOption.name}</h3>{optionArtifact?<iframe title="方案对应原型" sandbox="allow-scripts" className="prototype" src={'/api'+root+(optionArtifact.id?'/ui-candidates/'+optionArtifact.id+'/prototype':'/prototype')}/>:<p>此方向尚未生成草图。</p>}<button onClick={()=>setPreviewOption(null)}>收起预览</button></article>}</details>
+        </div>
+        <div hidden={phase!==2}>
+          <QuestionList p={p} mutate={mutate} busy={busy||running} onHelp={openHelp}/>
+          <div className="toolbar"><button disabled={busy||running||!!actionBlockReason} onClick={()=>act(()=>planAction('clarify'))}>根据已保存回答更新理解</button><small>明确的模型任务，发送前核对范围。</small></div>
+          <ArtifactTabs {...shared} tab="summary"/>
+          <ProductCheckpoint p={p} phase={2} busy={busy||running} mutate={mutate} go={go}/>
+        </div>
+        <div hidden={phase!==3} id={'prototype-result-'+id}>
+          <div className="toolbar"><span className="notice">需求草图，非最终 UI 设计 · 模拟数据，不连接业务系统</span><button disabled={busy||running||!!actionBlockReason} onClick={()=>act(()=>planAction('prototype'))}>{p.ui?'更新功能草图':'生成功能草图'}</button>{p.ui&&<button onClick={()=>openHelp({kind:'ui',id:p.hashes.ui_spec_hash,label:'当前功能草图'})}>提出局部修改</button>}</div>
+          <div className="sketch-comparison"><article className="card"><h3>原页面参考</h3>{p.sources.filter(s=>s.purpose==='current'&&s.image_mime&&!s.excluded).map(s=><figure key={s.id}><img src={'/api'+root+'/sources/'+s.id+'/image'} alt={s.title}/><figcaption>{s.title} · {s.parse_status==='read'?'已分析，仍需核对':'存在读取或视觉分析限制'}</figcaption></figure>)}{!p.sources.some(s=>s.purpose==='current'&&s.image_mime&&!s.excluded)&&<div className="empty"><p>尚无原页面截图。不以草图冒充现状。</p><button onClick={()=>setSourcesOpen(true)}>补充现状资料</button></div>}</article><article className="card"><h3>本次功能草图</h3>{p.ui&&p.ui.brief_hash!==p.hashes.brief_hash&&<p className="notice">基于旧需求，只读参考。请更新后核对。</p>}<PrototypeCanvas project={p} url={'/api'+root+'/prototype'} onStage={stageAction} onActivate={shared.onActivate} onReject={shared.onReject}/></article></div>
+          <ProductCheckpoint p={p} phase={3} busy={busy||running} mutate={mutate} go={go}/>
+        </div>
+        <div hidden={phase!==4} id={'document-result-'+id}>
+          <DocumentStudio p={p} docType={docType} setDocType={setDocType} selectedDocId={selectedDocId} setSelectedDocId={setSelectedDocId} artifacts={artifacts} setStage={setStage} setShowAdvanced={setShowAdvanced} setTab={navigate} setOutcome={()=>{}} root={root} act={act} mutate={mutate} busy={busy||running} onHelp={openHelp} onGenerate={()=>act(()=>planAction('document'))}/>
+          <ProductCheckpoint p={p} phase={4} busy={busy||running} mutate={mutate} go={go}/>
+        </div>
+        <section hidden={phase!==5} id={'confirmation-'+id}><ConfirmationPanel p={p} busy={busy} setBusy={setBusy} setError={setError} setTab={navigate} setStage={setStage} setShowAdvanced={setShowAdvanced} root={root} act={act} refresh={refresh} onReview={()=>act(()=>planAction('review'))}/></section>
       </section>
-      <aside className="guided-assistant"><div className="assistant-status"><strong>需求助手</strong><small>{message && message !== lastSent ? '输入未发送（仅保留在当前会话）' : lastSent ? '本轮输入已保存为项目来源' : '可随时补充目标与约束'}</small></div><ConversationPanel project={p} message={message} setMessage={setMessage} stage={stage} setStage={setStage} docType={docType} setDocType={setDocType} onRun={() => act(() => planAction('organize'))} runActive={running} busy={busy} onAnswer={(qid, answer) => act(() => mutate('/questions/' + qid, { answer }))} showAdvanced={showAdvanced} setShowAdvanced={setShowAdvanced} showAllQuestions={showAll} setShowAllQuestions={setShowAll} guided onUnknown={() => { setPhase(1); setMobilePane('content'); }} onAddSource={() => setSourcesOpen(true)} /><details className="engineering-controls"><summary>工程诊断与任务预算</summary><label>本次总请求上限<input type="number" min="1" max="30" value={budget} onChange={e => setBudget(Number(e.target.value))} /></label><label>诊断用途<select value={stage} onChange={e => setStage(e.target.value)}>{[['ingest','理解'],['brainstorm','方案'],['clarify','澄清'],['ui','原型'],['prd','文档'],['review','审查'],['change','变更']].map(([v,n]) => <option key={v} value={v}>{n}</option>)}</select></label><button onClick={() => stageAction(stage)}>核对并运行诊断任务</button></details></aside>
     </div>
-    {sourcesOpen && <div className="drawer-backdrop"><section className="source-drawer" role="dialog" aria-modal="true" aria-label="项目资料"><button onClick={() => setSourcesOpen(false)}>关闭项目资料</button><SourcePanel p={p} models={models} purpose={purpose} setPurpose={setPurpose} sourceText={sourceText} setSourceText={setSourceText} url={url} setUrl={setUrl} dynamic={dynamic} setDynamic={setDynamic} busy={busy} act={act} error={error} mutate={mutate} refresh={refresh} root={root} pendingGrant={null} setPendingGrant={() => {}} guided /></section></div>}
-    {historyOpen && <div className="drawer-backdrop"><section className="source-drawer" role="dialog" aria-modal="true" aria-label="历史版本"><button onClick={() => setHistoryOpen(false)}>返回当前任务</button><VersionHistory history={history} /></section></div>}
+    {help&&<div className="drawer-backdrop"><section className="source-drawer context-help" role="dialog" aria-modal="true" aria-label="当前对象的 AI 帮助"><button onClick={()=>guard(()=>setHelp(null))}>关闭帮助</button><p className="eyebrow">只围绕当前对象</p><h2>{help.label}</h2><small>{help.id}{help.section_id?' · '+help.section_id:''}</small><p>建议形成后仍需核对，不会自动回答问题或采纳条目。</p><label>希望怎样调整或澄清<textarea rows={5} value={helpText} onChange={e=>setHelpText(e.target.value)}/></label><button className="primary" disabled={busy||running||!helpText.trim()} onClick={()=>act(()=>planAction(help.kind==='ui'?'change':'clarify',undefined,help,helpText))}>核对本次讨论任务</button><details><summary>任务预算</summary><label>本次最多请求数<input type="number" min="1" max="30" value={budget} onChange={e=>setBudget(Number(e.target.value))}/></label></details><details><summary>已保存的讨论历史 · {p.messages.length}</summary>{p.messages.map((m,n)=><article key={n}><b>{m.role==='user'?'用户输入':'助手建议'} · {m.stage}</b><p>{m.text}</p></article>)}</details></section></div>}
+    {candidateOpen&&<div className="modal-backdrop"><form className="modal" role="dialog" aria-modal="true" aria-label="补充候选需求" onSubmit={e=>{e.preventDefault();act(saveCandidate);}}><h2>补充一条候选需求</h2><p>保留你的原文和来源；保存不会自动采纳。</p><label>需求名称<input required maxLength={200} value={candidateTitle} onChange={e=>setCandidateTitle(e.target.value)}/></label><label>需求原文<textarea required maxLength={6000} value={candidateText} onChange={e=>setCandidateText(e.target.value)}/></label>{error&&<p role="alert">{error}</p>}<div className="toolbar"><button type="button" onClick={()=>guard(()=>setCandidateOpen(false))}>取消</button><button disabled={busy} className="primary">保存候选</button></div></form></div>}
+    {sourcesOpen && <div className="drawer-backdrop"><section className="source-drawer" role="dialog" aria-modal="true" aria-label="项目资料"><button onClick={() => guard(()=>setSourcesOpen(false))}>关闭项目资料</button><SourcePanel p={p} models={models} purpose={purpose} setPurpose={setPurpose} sourceText={sourceText} setSourceText={setSourceText} url={url} setUrl={setUrl} dynamic={dynamic} setDynamic={setDynamic} busy={busy} act={act} error={error} mutate={mutate} refresh={refresh} root={root} pendingGrant={null} setPendingGrant={() => {}} guided /></section></div>}
+    {historyOpen && <div className="drawer-backdrop"><section className="source-drawer" role="dialog" aria-modal="true" aria-label="历史版本"><button onClick={() => setHistoryOpen(false)}>返回当前任务</button><VersionHistory history={history} /><details><summary>完整讨论记录 · {p.messages.length}</summary>{p.messages.map((m,n)=><article className="card" key={n}><b>{m.role==='user'?'用户输入':'助手建议'} · {m.stage}</b><p>{m.text}</p></article>)}</details></section></div>}
     {renameOpen && <div className="modal-backdrop"><form className="modal" role="dialog" aria-label="重命名项目" onSubmit={e => { e.preventDefault(); if (!rename.trim()) return; act(async () => { await mutate('', { name: rename.trim() }, 'PATCH'); setRenameOpen(false); await onProjectsChanged(); }); }}><h2>重命名项目</h2><label>项目名称<input value={rename} onChange={e => setRename(e.target.value)} /></label><button type="button" onClick={() => setRenameOpen(false)}>取消</button><button disabled={!rename.trim() || busy}>保存</button></form></div>}
     {pending && <ActionDialog plan={pending.plan} input={pending.input} error={actionError} busy={busy} onClose={() => setPending(null)} onSubmit={startAction} />}
     {optionDecision && <OptionDecision option={optionDecision.option} action={optionDecision.action} p={p} submit={mutate} onClose={() => setOptionDecision(null)} />}
