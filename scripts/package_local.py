@@ -14,6 +14,7 @@ def main():
     parser.add_argument('--web-dist',type=Path,required=True)
     parser.add_argument('--output',type=Path,required=True)
     args=parser.parse_args()
+    args.output=args.output.resolve()
     assert (args.web_dist/'index.html').is_file(), 'Build frontend first'
     target=args.output.resolve()/'requirements-agent'
     target.mkdir(parents=True,exist_ok=False)
