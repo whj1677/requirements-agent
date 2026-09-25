@@ -15,8 +15,11 @@ from docx import Document
 from PIL import Image
 from pypdf import PdfReader
 from .core import ROOT, Problem, ident, now, require
+from .office import OFFICE_EXTENSIONS, extract_office
+from .office_formats import check_package, parse_workbook, parse_presentation
 
 MAX_BYTES = 12 * 1024 * 1024
+SOURCE_EXTENSIONS = ['.txt', '.md', '.docx', '.doc', '.xlsx', '.xls', '.pptx', '.ppt', '.pdf', '.png', '.jpg', '.jpeg', '.webp']
 
 
 def public_target(url):
@@ -107,14 +110,18 @@ def parse_bytes(title, data):
         text = data.decode('utf-8-sig')
         rows = [(f'行 {n}', t) for n, t in enumerate(text.splitlines(), 1) if t.strip()]
     elif ext == '.docx':
-        with zipfile.ZipFile(io.BytesIO(data)) as z:
-            require(sum(i.file_size for i in z.infolist()) <= 40 * 1024 * 1024, 'SOURCE_FAILED', 'DOCX 展开大小超限')
-            require(not any('vbaproject' in x.lower() or '/embeddings/' in x.lower() for x in z.namelist()), 'SOURCE_FAILED', '拒绝宏或嵌入对象')
+        check_package(data)
         doc = Document(io.BytesIO(data))
         rows = [(f'段落 {i}', p.text) for i, p in enumerate(doc.paragraphs, 1) if p.text.strip()]
         rows += [(f'表格 {t} 行 {r}', ' | '.join(c.text for c in row.cells)) for t, table in enumerate(doc.tables, 1) for r, row in enumerate(table.rows, 1)]
         if len(doc.inline_shapes):
             status, reason = 'partial', '已提取正文/表格；内嵌图片未作视觉分析'
+    elif ext == '.xlsx':
+        rows, status, reason, image_mime = parse_workbook(data)
+    elif ext == '.pptx':
+        rows, status, reason, image_mime = parse_presentation(data)
+    elif ext in ('.doc', '.xls', '.ppt'):
+        raise Problem('OFFICE_REQUIRED', '旧版 Office 文件需要本机 Office 读取')
     elif ext == '.pdf':
         reader = PdfReader(io.BytesIO(data))
         require(len(reader.pages) <= 200, 'SOURCE_FAILED', 'PDF 超过 200 页')
@@ -135,8 +142,12 @@ def parse_bytes(title, data):
         rows = [('整图', '图片原始像素；尚未视觉分析')]
         status = 'awaiting_vision'
     else:
-        raise Problem('SOURCE_FAILED', '支持 TXT、MD、DOCX、PDF、PNG、JPEG、WebP')
+        raise Problem('SOURCE_FAILED', '支持 Word、Excel、PowerPoint、TXT、MD、PDF、PNG、JPEG、WebP')
     require(rows, 'SOURCE_FAILED', '没有可读取内容；请提供可提取文本或截图')
+    require(sum(len(text) for _, text in rows) <= 2000000 and len(rows) <= 20000,
+            'SOURCE_LIMIT', '提取内容超过上限，请拆分材料')
+    require(not any('\ufffd' in text or '\x00' in text for _, text in rows),
+            'SOURCE_FAILED', '提取文本含无法识别的字符，尚不能标记为已读取')
     return rows, status, reason, image_mime
 
 
@@ -147,8 +158,13 @@ def parse_bounded(title,data):
         result=subprocess.run([sys.executable,'-m','app.parse_worker',Path(title).suffix.lower()],input=data,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=30,cwd=ROOT,creationflags=subprocess.CREATE_NO_WINDOW if sys.platform=='win32' else 0)
     except subprocess.TimeoutExpired:
         raise Problem('SOURCE_FAILED','文件解析超过 30 秒，解析子进程已终止')
-    require(result.returncode==0,'SOURCE_FAILED','文件解析失败；原件已保留，可重新读取')
     import json
+    if result.returncode != 0:
+        try:
+            failure = json.loads(result.stdout.decode('utf8'))
+        except (ValueError, UnicodeError):
+            failure = {}
+        raise Problem(failure.get('code','SOURCE_FAILED'), failure.get('message','当前读取方式无法解析；原件已保留，可重新读取'))
     return json.loads(result.stdout.decode('utf8'))
 
 
@@ -161,12 +177,28 @@ def save_source(store, title, data, purpose='current', uri=None, parsed=None):
     path.write_bytes(data)
     source = dict(id=sid, title=title, purpose=purpose, uri=uri, sha256=sha, created=now(), version=1, excluded=False, excerpts=[], parse_status='failed', failure_reason='', image_mime=None)
     try:
-        rows, status, reason, mime = parsed or parse_bounded(title, data)
+        reading = dict(method='standard-parser', visual_review='not_run', manual_open='not_verified')
+        try:
+            rows, status, reason, mime = parsed or parse_bounded(title, data)
+        except Exception as error:
+            if Path(title).suffix.lower() not in OFFICE_EXTENSIONS or (isinstance(error, Problem) and error.code in ('SOURCE_UNSAFE','SOURCE_LIMIT')):
+                raise
+            result = extract_office(title, data, rawdir)
+            rows, status, reason, mime = result.get('rows', []), result['status'], result['reason'], None
+            reading.update({key:value for key,value in result.items() if key not in ('rows','status','reason')})
+            reading.update(method='local-office', standard_parser='failed')
+            require(isinstance(rows,list) and all(isinstance(r,(list,tuple)) and len(r)==2 and all(isinstance(x,str) for x in r) for r in rows), 'SOURCE_FAILED', '本机 Office 返回无效摘录')
+            if status in ('read','partial'):
+                require(any(text.strip() for _,text in rows), 'SOURCE_FAILED', '本机 Office 没有返回可读取正文')
+                require(not any('\ufffd' in text or '\x00' in text for _,text in rows), 'SOURCE_FAILED', '本机 Office 提取文本含无法识别的字符')
+        source['reading'] = reading
         source.update(parse_status=status, failure_reason=reason, image_mime=mime)
         for locator, text in rows:
             # Bound each excerpt while retaining exact source positions.
             for offset in range(0, len(text), 5000):
-                source['excerpts'].append(dict(id=ident('EX'), source_id=sid, source_hash=sha, locator=f'{locator} / 字符 {offset}', text=text[offset:offset+5000], method='image' if mime else 'extracted'))
+                source['excerpts'].append(dict(id=ident('EX'), source_id=sid, source_hash=sha, locator=f'{locator} / 字符 {offset}', text=text[offset:offset+5000], method='image' if mime else ('local-office' if reading['method']=='local-office' else 'extracted')))
     except Exception as e:
-        source['failure_reason'] = e.message if isinstance(e, Problem) else '文件解析失败：' + type(e).__name__
+        source['parse_status']='failed'
+        source['excerpts']=[]
+        source['failure_reason'] = e.message if isinstance(e, Problem) else '当前读取方式无法解析；原件已保留'
     return source

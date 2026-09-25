@@ -236,7 +236,7 @@ class Workflow:
                 usages=[a.get('usage') for a in attempts if a.get('usage')]
                 if usages and len(usages)==len(attempts) and all(u and 'prompt_tokens' in u and 'completion_tokens' in u for u in usages):
                     cost=sum((u['prompt_tokens']*config['input_price']+u['completion_tokens']*config['output_price'])/1000000 for u in usages)
-            status = 'partial' if omitted or value['limitations'] or any(s['parse_status'] in ('failed','partial') for s in p['sources'] if not s['excluded']) else ('awaiting_user' if value['questions'] else 'succeeded')
+            status = 'partial' if omitted or value['limitations'] or any(s['parse_status'] in ('failed','partial','office_required','permission_denied') for s in p['sources'] if not s['excluded']) else ('awaiting_user' if value['questions'] else 'succeeded')
             self.store.update_run(pid, rid, status=status, calls=calls, attempts=attempts, completed=now(), response=value, result_applied=True, cost=cost, repair_count=repair_count, output_state_hash=execution_hash(output_state), events=events + [dict(time=now(),phase='校验并保存')])
         except Exception as e:
             error = e if isinstance(e, Problem) else Problem('INTERNAL_ERROR', '处理失败：' + type(e).__name__)

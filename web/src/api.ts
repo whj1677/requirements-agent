@@ -69,3 +69,5 @@ export async function downloadFile(url:string,fallback:string){
  const encoded=disposition.match(/filename\*=UTF-8''([^;]+)/i);
  a.href=href;a.download=encoded?decodeURIComponent(encoded[1]):fallback;a.click();setTimeout(()=>URL.revokeObjectURL(href),1000);
 }
+
+export const sourceStatusNames: JsonObject = { added: '已添加', reading: '读取中', read: '已读取', awaiting_vision: '待视觉分析', partial: '部分读取', failed: '读取失败', office_required: '需要本机 Office 处理', permission_denied: '权限受限' };

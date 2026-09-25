@@ -18,7 +18,7 @@ from .contracts import gate, API_CAPABILITIES, PROFILES, review_target
 from .provider import Provider, DEFAULT, origin
 from .workflow import Workflow, confirm
 from .actions import Actions
-from .sources import MAX_BYTES, save_source, webpage
+from .sources import MAX_BYTES, SOURCE_EXTENSIONS, save_source, webpage
 from .preview import prototype
 from .exports import document_files, handoff, zip_files
 from .document_reader import reader_document, export_readiness, filename
@@ -285,7 +285,7 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
         result['confirmation_scope_ids']=[i['id'] for i in delivery_items(p)]
         result['document_review_status']={k:dict(reviewed=document_review_current(p,k),record=p.get('document_reviews',{}).get(k)) for k in ('mrd','prd')}
         result['review_status']=dict(available=bool(p.get('review')),current=bool(p.get('review') and p['review']['target_hash']==review_target(p)))
-        result['source_capabilities']=dict(max_bytes=MAX_BYTES,extensions=['.txt','.md','.docx','.pdf','.png','.jpg','.jpeg','.webp'])
+        result['source_capabilities']=dict(max_bytes=MAX_BYTES,extensions=SOURCE_EXTENSIONS,office_fallback='local-read-only')
         return result
 
     @app.post('/api/projects/{pid}/intake')
@@ -469,6 +469,7 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
     @app.post('/api/projects/{pid}/sources/{sid}/retry')
     async def retry_source(pid:str,sid:str,body:Revision):
         p=store.get(pid)
+        require(p['revision']==body.expected_revision,'STALE_REVISION','页面已过期',409)
         old=next((x for x in p['sources'] if x['id']==sid),None)
         require(old is not None,'NOT_FOUND','材料不存在',404)
         if old.get('uri'):
@@ -478,7 +479,7 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
             except Exception:
                 raise Problem('SOURCE_FAILED','网页重试失败；原失败记录保留')
         else:
-            s=save_source(store,old['title'],(store.folder/'sources'/old['id']).read_bytes(),old['purpose'])
+            s=await asyncio.to_thread(save_source,store,old['title'],(store.folder/'sources'/old['id']).read_bytes(),old['purpose'])
         s['version']=old['version']+1
         s['parent_source_id']=old['id']
         with store.edit(pid,body.expected_revision,'重新读取材料，保留原记录') as (p,db):p['sources'].append(s)

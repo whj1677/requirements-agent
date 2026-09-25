@@ -165,7 +165,7 @@ class Actions:
                 expected=result['output_state_hash']
                 self.store.update_record(pid,tid,'user_task',completed_steps=completed)
             p=self.store.get(pid)
-            problems=[s for s in p['sources'] if not s['excluded'] and s['parse_status'] in ('failed','partial','awaiting_vision')]
+            problems=[s for s in p['sources'] if not s['excluded'] and s['parse_status']!='read']
             runs=[self.store.get_record(pid,rid,'run') for rid in ids]
             partial=bool(problems) or any(r['status']=='partial' for r in runs)
             self.store.update_record(pid,tid,'user_task',status='partial' if partial else 'succeeded',completed=now(),
