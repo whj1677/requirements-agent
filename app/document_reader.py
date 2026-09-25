@@ -4,6 +4,61 @@ import re
 
 from .core import brief_hash
 
+PRESENTATION_VERSION = 'document-reading-2'
+
+
+def reading_structure(content, items, source_snapshot=()):
+    """Project explicit section/ref/behavior structure; never infer headings from prose.
+
+    This is a versioned read view, not a migration of the signed content object.
+    Model-planned parallel topics remain parallel. Only stored parent links and
+    an item's placement in a block establish containment.
+    """
+    outline, numbers, child_counts = [], {}, {}
+    source_names = {s['id']:s.get('title') for s in source_snapshot}
+
+    def heading(node_id, title, level, parent, **extra):
+        child_counts[parent] = child_counts.get(parent, 0) + 1
+        number = (numbers[parent] + '.' if parent in numbers else '') + str(child_counts[parent])
+        numbers[node_id] = number
+        node = dict(kind='heading', id=node_id, text=title, level=level,
+                    parent_id=parent, number=number, **extra)
+        outline.append(node)
+        return node
+
+    for section in content['sections']:
+        sid, level = section['section_id'], section['level']
+        nodes = [heading(sid, section['title'], level, section['parent_section_id'])]
+        for index, block in enumerate(section['blocks']):
+            if block['kind'] not in ('requirement', 'rule', 'acceptance'):
+                nodes.append(dict(kind='paragraph', text=block.get('text') or '', block_kind=block['kind']))
+                continue
+            for position, ref in enumerate(block['ref_ids']):
+                item = items.get(ref)
+                if not item:
+                    nodes.append(dict(kind='paragraph', text=ref+'：历史条款原文未保存，无法还原。'))
+                    continue
+                node_id = f'{sid}-item-{index}-{position}'
+                nodes.append(heading(node_id, item['title'], level+1, sid, item_id=ref, item_kind=item['kind']))
+                nodes.append(dict(kind='metadata', text=f'{ref} · v{item.get("content_version",1)}', item_id=ref))
+                nodes.append(dict(kind='paragraph', text=item['statement'], block_kind=item['kind']))
+                if item['kind'] == 'requirement':
+                    from .product_flow import BEHAVIOR
+                    for key, label in BEHAVIOR.items():
+                        value = item.get('behavior', {}).get(key)
+                        if value:
+                            nodes.append(heading(node_id+'-'+key, label, level+2, node_id))
+                            nodes.append(dict(kind='paragraph', text=value, block_kind='behavior'))
+                refs = item.get('source_refs', [])
+                sources = '、'.join(dict.fromkeys(source_names.get(r['source_id']) or '历史材料名称未保存（见条目来源记录）' for r in refs)) or '未提供'
+                identity = {'reported':'材料陈述','inferred':'推断，待核对','proposed':'建议，非已定事实'}.get(item.get('epistemic_status'), item.get('epistemic_status','未记录'))
+                selection = '草稿已采纳，不代表业务负责人批准' if item.get('selection_status')=='selected' else '尚未采纳'
+                nodes.append(dict(kind='metadata', text=f'{identity}；{selection}；来源：{sources}', source_refs=copy.deepcopy(refs)))
+        section['reading_nodes'] = nodes
+    content['outline'] = outline
+    content['presentation_version'] = PRESENTATION_VERSION
+    return content
+
 
 def document_name(artifact):
     return artifact.get('requirement_name') or artifact['content']['title']
@@ -86,12 +141,12 @@ def reader_document(artifact):
                     text = '尚未编入正文：'+items.get(iid,{}).get('statement','存在尚未编入正文的需求。')
             if not any(b['text']==text for b in blocks):
                 blocks.append(dict(block, text=text))
-        if blocks:
+        if blocks or any(s.get('parent_section_id')==section['section_id'] for s in content['sections']):
             titles = {'材料陈述、未成文条目与讨论建议':'补充背景与讨论建议',
                       '已有回答与未决问题':'当前决定与未决事项', '限制及参考维度待核对':'文档边界与补充说明'}
             sections.append(dict(section, title=titles.get(section['title'],section['title']), blocks=blocks))
     content['sections'] = sections
-    return content
+    return reading_structure(content, items, artifact.get('source_snapshot', []))
 
 
 def export_readiness(p, kind):

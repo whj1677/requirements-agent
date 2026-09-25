@@ -48,21 +48,53 @@ export function PrototypeCanvas({ project, url, onStage, onActivate, onReject, c
 }
 
 const readingPositions=new Map<string,{top:number;selected:string}>();
+function ReadingNode({node, documentId, help}:{node:Obj;documentId:string;help?:()=>void}) {
+  if(node.kind==='heading') {
+    const depth=node.level+1;
+    const title=<><span className="chapter-number">{node.number ? node.number+' ' : ''}</span>{node.text}</>;
+    const props={id:documentId+'-'+node.id,className:'reading-heading reading-level-'+Math.min(node.level,3),'data-outline-id':node.id,'data-item-kind':node.item_kind};
+    return <div className="reading-heading-row">{depth<=6 ? React.createElement('h'+depth,props,title) : <div {...props} role="heading" aria-level={depth}>{title}</div>}{help&&<button onClick={help}>讨论此章节</button>}</div>;
+  }
+  return <p className={node.kind==='metadata'?'reading-meta':'reading-paragraph'} data-item-id={node.item_id} data-block-kind={node.block_kind}>{node.text}</p>;
+}
 export function DocumentViewer({ document, items, currentRevision, currentBriefHash, updateNeeded = false, historical = false, downloadRoot, readiness, onClarify, onHelp }: { onHelp?:(section:Obj)=>void; document: Obj; items: Obj[]; currentRevision: number; currentBriefHash: string; updateNeeded?: boolean; historical?: boolean; downloadRoot: string; readiness?: Obj; onClarify?: () => void }) {
   const [downloadError,setDownloadError]=useState(''),[downloading,setDownloading]=useState(false);
   const content = document.reader || document.content;
-  const [selected, setSelected] = useState(readingPositions.get(document.id)?.selected||content.sections[0]?.section_id);
+  const outline:Obj[]=content.outline || content.sections.map((s:Obj)=>({id:s.section_id,text:s.title,level:s.level}));
+  const [selected, setSelected] = useState(readingPositions.get(document.id)?.selected||outline[0]?.id);
   const readerRoot=useRef<HTMLDivElement|null>(null),selectedRef=useRef(selected);selectedRef.current=selected;
-  useEffect(()=>{const scroller=readerRoot.current?.querySelector('.document-reader');if(!scroller)return;const saved=readingPositions.get(document.id);if(saved&&readerRoot.current?.offsetParent!==null){scroller.scrollTop=saved.top;if(saved.selected!==content.sections[0]?.section_id)requestAnimationFrame(()=>globalThis.document.getElementById(document.id+'-'+saved.selected)?.scrollIntoView({block:'nearest'}));}const save=()=>readingPositions.set(document.id,{top:scroller.scrollTop,selected:selectedRef.current});scroller.addEventListener('scroll',save);return()=>{scroller.removeEventListener('scroll',save);};},[document.id]);
+  useEffect(()=>{
+    const scroller=readerRoot.current?.querySelector('.document-reader');if(!scroller)return;
+    const saved=readingPositions.get(document.id);if(saved)scroller.scrollTop=saved.top;
+    const save=()=>{
+      const headings=Array.from(scroller.querySelectorAll<HTMLElement>('[data-outline-id]'));
+      const top=scroller.getBoundingClientRect().top+48;
+      const active=headings.filter(h=>h.getBoundingClientRect().top<=top).at(-1)||headings[0];
+      if(active){selectedRef.current=active.dataset.outlineId!;setSelected(selectedRef.current);}
+      readingPositions.set(document.id,{top:scroller.scrollTop,selected:selectedRef.current});
+    };
+    scroller.addEventListener('scroll',save);return()=>scroller.removeEventListener('scroll',save);
+  },[document.id]);
+  const jump=(id:string)=>{
+    const scroller=readerRoot.current?.querySelector('.document-reader');
+    const target=globalThis.document.getElementById(document.id+'-'+id);
+    if(scroller&&target){scroller.scrollTop+=target.getBoundingClientRect().top-scroller.getBoundingClientRect().top-16;}
+    selectedRef.current=id;setSelected(id);readingPositions.set(document.id,{top:scroller?.scrollTop||0,selected:id});
+  };
   const stale = document.brief_hash !== currentBriefHash || updateNeeded;
   const snapshot: Obj[] = document.item_snapshot || (stale || historical ? [] : items);
   const questions: Obj[] = (readiness?.issues || []).filter((i: Obj) => i.code === 'CLARIFICATION_REQUIRED');
   const downloadable = !historical && !stale && readiness?.ready === true;
-  return <>
-    <div ref={readerRoot} className="document-layout"><nav aria-label="文档目录"><h3>文档目录</h3>{content.sections.map((section: Obj) => <button key={section.section_id} className={selected === section.section_id ? 'active' : ''} onClick={() => { setSelected(section.section_id); selectedRef.current=section.section_id;readingPositions.set(document.id,{top:readerRoot.current?.querySelector('.document-reader')?.scrollTop||0,selected:section.section_id}); globalThis.document.getElementById(document.id+'-'+section.section_id)?.scrollIntoView({block:'nearest'}); }}>{section.title}</button>)}</nav><div className="document-reader"><div className="document-controls">    <p className={stale || historical ? 'notice' : 'muted'}>{historical ? '历史文档只读 · ' : stale ? '基于旧版本 · ' : ''}版本 v{document.draft_revision} · 需求名称：{document.requirement_name || document.content.title}</p>
+  return <div ref={readerRoot} className="document-layout" data-presentation-version={content.presentation_version||'legacy'}>
+    <nav aria-label="文档目录"><h3>文档目录</h3>{outline.map(node=><button key={node.id} style={{paddingInlineStart:10+(node.level-1)*16}} className={selected===node.id?'active':''} aria-current={selected===node.id?'location':undefined} onClick={()=>jump(node.id)}>{node.number ? node.number+' ' : ''}{node.text}</button>)}</nav>
+    <article className="document-reader" aria-label={content.document_type.toUpperCase()+' 正文'}><div className="document-controls">
+    <p className={stale || historical ? 'notice' : 'muted'}>{historical ? '历史文档只读 · ' : stale ? '基于旧版本 · ' : ''}版本 v{document.draft_revision} · 需求名称：{document.requirement_name || document.content.title}</p>
     {!historical && questions.length > 0 && <aside className="notice" aria-label="下载前待澄清事项"><strong>还有 {questions.length} 项未澄清，暂不能下载</strong><p>请先回答以下问题，再更新文档。当前草稿仍可阅读。</p><ul>{questions.map(q => <li key={q.question_id}>{q.message}</li>)}</ul>{onClarify && <button onClick={onClarify}>去澄清这些问题</button>}</aside>}
     {!historical && stale && <p className="notice">需求或页面已更新，请使用“更新讨论稿”生成对应版本后下载。</p>}
     {downloadable && <div className="toolbar">{['docx', 'md', 'zip'].map(format => <button key={format} disabled={downloading} onClick={async()=>{setDownloading(true);setDownloadError('');try{await downloadFile(downloadRoot+'/documents/'+content.document_type+'/'+format+'?document_id='+encodeURIComponent(document.id),(document.requirement_name||content.title)+'.'+format);}catch(e){setDownloadError((e as Error).message);}finally{setDownloading(false);}}}>{format.toUpperCase()} 下载</button>)}</div>}
-    {downloadError&&<p role="alert" className="error">{downloadError} · 原文档仍可阅读，核对后可重试下载。</p>}</div><h2>{content.title}</h2><p className="muted">需求评审稿 · 本文下载不代表已完成正式确认</p>{content.sections.map((section: Obj) => <section key={section.section_id} id={document.id+'-'+section.section_id} className="document-section"><div className="section-heading"><h3>{section.title}</h3>{onHelp&&<button onClick={()=>onHelp(section)}>讨论此章节</button>}</div>{section.blocks.map((block: Obj, index: number) => <p key={index}>{block.text || block.ref_ids.map((id: string) => { const source = snapshot.find((i: Obj) => i.id === id); return source ? source.statement : '旧版原文不可用'; }).join('\n')}</p>)}</section>)}</div></div>
-  </>;
+    {downloadError&&<p role="alert" className="error">{downloadError} · 原文档仍可阅读，核对后可重试下载。</p>}</div><h1 className="reading-title">{content.title}</h1><p className="reading-meta">需求评审稿 · 本文下载不代表已完成正式确认</p>
+    {content.sections.map((section:Obj)=>{
+      const nodes:Obj[]=section.reading_nodes || [{kind:'heading',id:section.section_id,text:section.title,level:section.level},...section.blocks.map((block:Obj)=>({kind:'paragraph',text:block.text||block.ref_ids.map((id:string)=>snapshot.find((i:Obj)=>i.id===id)?.statement||'旧版原文不可用').join('\n')}))];
+      return <section key={section.section_id} className="document-section">{nodes.map((node,index)=><ReadingNode key={node.id||index} node={node} documentId={document.id} help={node.id===section.section_id&&onHelp?()=>onHelp(section):undefined}/>)}</section>;
+    })}</article></div>;
 }

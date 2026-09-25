@@ -216,22 +216,30 @@ small { font-size:13px; }
 .document-options>summary { cursor:pointer; }
 .document-review-surface { flex:1; min-height:260px; overflow:hidden; display:grid; grid-template-columns:minmax(0,1fr) 360px; gap:0; align-items:start; }
 .document-reading-area { min-width:0; height:100%; overflow:hidden; background:#fff; }
-.document-layout { height:100%; display:grid; grid-template-columns:290px minmax(0,1fr); gap:0; align-items:start; }
+.document-layout { --document-font:"Noto Sans SC","Microsoft YaHei",sans-serif; font-family:var(--document-font); height:100%; display:grid; grid-template-columns:290px minmax(0,1fr); gap:0; align-items:start; }
 .document-layout>nav { display:flex; flex-direction:column; gap:3px; position:sticky; top:0; height:100%; max-height:none; overflow:auto; padding:10px 14px; border:1px solid var(--line); border-radius:8px 0 0 8px; }
-.document-layout>nav button { padding:6px 10px; font-size:14px; white-space:normal; text-align:left; }
+.document-layout>nav button { padding:6px 10px; font:400 14px/22px var(--document-font); white-space:normal; text-align:left; overflow-wrap:anywhere; }
+.document-layout>nav button.active { font-weight:600; font-variation-settings:"wght" 600; }
 .document-reader { height:100%; overflow:auto; max-width:none; min-width:0; border:0; border-radius:0; padding:22px 26px; line-height:1.8; }
-.document-controls { font-size:12px; margin:-14px 0 14px; }
-.document-controls>p { font-size:12px; margin:0 0 6px; }
+.document-controls { font-size:13px; line-height:20px; margin:-14px 0 14px; }
+.document-controls>p { font-size:13px; line-height:20px; font-weight:400; margin:0 0 6px; }
 .document-controls .toolbar { justify-content:flex-end; }
 .document-controls button { font-size:13px; min-height:30px; padding:3px 8px; }
 .document-layout>nav h3 { font-size:16px; margin:4px 0 10px; }
 .workflow-page[data-phase="4"]>.workflow-heading { min-height:110px; padding-top:14px; padding-bottom:14px; margin-bottom:0; }
 .workflow-page[data-phase="4"] .step-actions>.primary { order:1; margin-left:auto; }
-.document-reader h2 { font-size:23px; }
-.document-reader h3 { font-size:21px; }
-.document-reader p { font-size:15px; }
-.document-section { margin:20px 0 0; padding:0; border:0; scroll-margin-top:12px; }
-.document-section .section-heading button { font-size:12px; padding:3px 7px; min-height:28px; }
+.document-reader { font-family:var(--document-font); font-synthesis:none; font-variation-settings:"wght" 400; color:#35423d; }
+.document-reader .reading-title { font:700 28px/40px var(--document-font); font-variation-settings:"wght" 700; color:#202d29; margin:0 0 12px; overflow-wrap:anywhere; }
+.document-reader .reading-heading { color:#202d29; margin:24px 0 10px; overflow-wrap:anywhere; scroll-margin-top:16px; }
+.document-reader .reading-level-1 { font:600 22px/32px var(--document-font); font-variation-settings:"wght" 600; margin-top:32px; }
+.document-reader .reading-level-2 { font:600 18px/28px var(--document-font); font-variation-settings:"wght" 600; }
+.document-reader .reading-level-3 { font:600 16px/26px var(--document-font); font-variation-settings:"wght" 600; }
+.document-reader .reading-paragraph { font:400 16px/28px var(--document-font); color:#35423d; margin:0 0 12px; white-space:pre-wrap; overflow-wrap:anywhere; }
+.document-reader .reading-meta { font:400 13px/20px var(--document-font); color:#64736b; margin:0 0 12px; overflow-wrap:anywhere; user-select:text; }
+.document-section { margin:0; padding:0; border:0; }
+.reading-heading-row { display:flex; align-items:baseline; gap:12px; }
+.reading-heading-row .reading-heading { flex:1; min-width:0; }
+.reading-heading-row>button { flex:none; font-size:12px; padding:3px 7px; min-height:28px; }
 .review-sidebar { height:100%; overflow:auto; position:relative; top:0; font-size:14px; padding:18px!important; margin:0!important; border-radius:0 8px 8px 0; }
 .review-sidebar h3 { font-size:18px; margin:0 0 10px; }
 .review-sidebar p { font-size:14px; }

@@ -71,7 +71,7 @@ async def document_files(p, kind, status='草稿／待产品经理内容确认',
     section.page_width, section.page_height = Inches(8.5), Inches(11)
     section.top_margin = section.bottom_margin = Inches(.7)
     section.left_margin = section.right_margin = Inches(.75)
-    for style_name in ('Normal','Title','Heading 1','Heading 2','Heading 3','Heading 4','Heading 5'):
+    for style_name in ('Normal','Title',*[f'Heading {n}' for n in range(1,10)]):
         st = doc.styles[style_name]
         st.font.name = 'Microsoft YaHei'
         st.font.color.rgb = RGBColor(0,0,0)
@@ -84,8 +84,27 @@ async def document_files(p, kind, status='草稿／待产品经理内容确认',
             st.font.size = Pt(11)
             st.font.bold = False
             st.paragraph_format.space_after = Pt(7)
+            st.paragraph_format.line_spacing = 1.5
+        elif style_name == 'Title':
+            st.font.size = Pt(22)
+            st.font.bold = True
+            st.paragraph_format.space_after = Pt(12)
+            st.paragraph_format.keep_with_next = True
+        else:
+            depth = int(style_name.split()[-1])
+            st.font.size = Pt({1:16,2:14}.get(depth,12))
+            st.font.bold = True
+            st.paragraph_format.space_before = Pt(20 if depth==1 else 14)
+            st.paragraph_format.space_after = Pt(7)
+            st.paragraph_format.keep_with_next = True
+    from docx.enum.style import WD_STYLE_TYPE
+    metadata_style = doc.styles.add_style('Document Metadata', WD_STYLE_TYPE.PARAGRAPH)
+    metadata_style.base_style = doc.styles['Normal']
+    metadata_style.font.size = Pt(9)
+    metadata_style.font.color.rgb = RGBColor(100,115,107)
+    metadata_style.paragraph_format.space_after = Pt(7)
     doc.add_paragraph(content['title'], 'Title')
-    doc.add_paragraph(meta)
+    doc.add_paragraph(meta, 'Document Metadata')
     doc.add_paragraph(md[2])
     ui_current = bool(sketches_included and p.get('ui') and p['ui']['brief_hash'] == brief_hash(p))
     images = await capture(p['ui']['spec']) if ui_current else []
@@ -97,11 +116,24 @@ async def document_files(p, kind, status='草稿／待产品经理内容确认',
         md.append(notice)
         doc.add_paragraph(notice)
     for s, texts in rendered:
-        md.append('#'*(s['level']+1) + ' ' + s['title'])
-        doc.add_heading(s['title'], s['level'])
-        for text in texts:
-            md.append(text)
-            doc.add_paragraph(text)
+        if reader:
+            for node in s['reading_nodes']:
+                if node['kind']=='heading':
+                    title=node['number']+' '+node['text']
+                    md.append('#'*(node['level']+1)+' '+title)
+                    doc.add_heading(title, node['level'])
+                else:
+                    md.append(node['text'])
+                    paragraph = doc.add_paragraph(node['text'], 'Document Metadata' if node['kind']=='metadata' else 'Normal')
+                    if node['kind']=='metadata' and node.get('item_id'):
+                        # Keep the heading and full identifier with the actual clause.
+                        paragraph.paragraph_format.keep_with_next = True
+        else:
+            md.append('#'*(s['level']+1) + ' ' + s['title'])
+            doc.add_heading(s['title'], s['level'])
+            for text in texts:
+                md.append(text)
+                doc.add_paragraph(text)
         picture_dimension = 'PRD-4.F.1' if kind == 'prd' else 'MRD-5.1.F.3'
         maps = [m for m in content['reference_mapping'] if s['section_id'] in m['output_section_ids'] and m['profile_section_id'] == picture_dimension and m['disposition'] in ('included','merged')]
         if maps and images:

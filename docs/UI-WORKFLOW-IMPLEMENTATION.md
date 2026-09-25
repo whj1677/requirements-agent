@@ -298,3 +298,74 @@ P01 为正常入口创建的隔离空项目；P02/P03 为既有联系人隔离�
 - 采用系统字体与固定SVG图标，细节与原图不是逐像素复刻。未实现的搜索/全屏按钮没有做成空壳；实际支持的三种下载和明确更新操作保留。
 - 截图右侧9px的采集限制如上；严格全幅像素检查仍未完成，不用相似度分数冒充验收。
 - 当前交付为可审查的实现与证据，设计接受度由用户核对；日常8765仍提供上一构建，本轮未扩大维护权限替换它。
+
+## 15. UI-TYPE-01 任务卡
+
+起点 `35cd93f45f9f7abd95f43d553b90e72ad119c3d6`；仅修正文档阅读结构、目录、文字排版与必要导出映射。并列主题不推断父子关系，使用已有章节关系、条目引用和 behavior 字段建立版本化阅读视图；不改原文、编号、历史快照或业务状态。五步流程不变，无草图恢复、DSH或写作引擎重构。本轮模型调用为0。
+
+采用一致性隔离副本与临时8771、隔离构建；先取同产物修正前截图，再改代码、回归及取完整修正后截图。已有MRD/PRD用于实际阅读验证，独立层级夹具只验证结构边界。停止在共同目录/正文/导出结构与实际字体、完整页面证据形成；不替换8765、不合并PR。
+
+## 16. UI-TYPE-01 实施与功能验证（2026-09-25）
+
+本轮为同分支增量；无模型调用，无业务数据改写，无正式确认、合并或部署。代码变更集中在 `app/document_reader.py`、`app/exports.py`、`web/src/workbench.tsx`、`web/src/workflow.css`；`app/prd.py` 仅说明并列章节关系不应由标题猜测，`style.css` 核对后未改，避免全局标题样式回归。新增层级回归与只读浏览器检查脚本，更新现有导出一致性断言。
+
+### 结构与历史兼容
+
+- 新的 `document-reading-2` 是读取呈现版本，不是修改已保存文档或生成新的业务版本。章节已有 level/parent 保留；模型章节建议目前没有父子字段，因此并列主题仍为并列。
+- 同一读取结构生成正文和目录：章 → 被该块实际引用的需求/规则/验收条目 → requirement.behavior 的说明标题。名称为标题，完整 ID 与内容版本独立元信息；原文、来源引用和未知身份保留。不按短句或 REQ 字样猜标题。
+- 章节编号独立于需求编号；Markdown 输出真实标题标记，Word 使用 Heading 样式。没有可靠列表/表格结构的原文仍按原段落保留，不推断业务结构。
+- Word 增加标题、编号与后续正文同页约束；既有 Word 图片归属和旧图保留。新文档继续遵守已取消草图范围。
+- 原始项目快照哈希与隔离副本一致，原有88条记录逐条不变；新增8条均为实际下载产生的 document_export 记录。原库、旧文件与基线未覆盖。
+
+### 实际命令与退出码
+
+工作目录均为 `D:\01_AI工程\01_工程项目\pm-req`。pytest 使用 `RA_DATA_DIR=evidence/ui-type-01/pytest-data`；临时应用使用独立数据、无模型配置并阻止模型任务入口。
+
+| 命令 | 结果 |
+| --- | --- |
+| `.venv/Scripts/python.exe -m pytest tests/test_document_typography.py tests/test_document_publication.py tests/test_exports.py tests/test_prd_pipeline_fixes.py tests/test_sketch_retirement.py -q` | 22项，退出0；最终分页小改后又运行下列完整回归 |
+| `.venv/Scripts/python.exe -m pytest tests -q` | 最终200项，2条依赖弃用警告，185.27秒，退出0 |
+| `npm --prefix web run build -- --outDir ../evidence/ui-type-01/dist` | TypeScript/Vite隔离构建，退出0 |
+| `.venv/Scripts/python.exe scripts/check_document_typography_browser.py --url http://127.0.0.1:8771/ --project '个人分诊备注｜公开页面与合成需求' --output evidence/ui-type-01/verified` | 真实Chromium字体、目录定位、阅读位置、三档宽度检查，退出0 |
+| 同脚本，`--project '层级排版夹具（非模型产物）' --output evidence/ui-type-01/fixture-verified` | 独立合成长标题/长编号/显式子章检查，退出0 |
+| `& ./scripts/render_word.ps1 -DocumentPath evidence/ui-type-01/exports-final/PRD-reading-2.docx -OutputDirectory evidence/ui-type-01/word-final-prd` | 原生Word渲染10页，退出0 |
+| 同Word命令，MRD输入和 `word-final-mrd` 输出 | 原生Word渲染11页，退出0 |
+
+新增回归核对显式层级、普通短句不升级、缺失历史快照不套当前原文、完整长ID、未决问题、条款原文和Word/Markdown/网页同结构。完整回归包含逐文档核对、旧文档下载身份、409门禁、版本与导出保护等已有测试。浏览器另实际查看同底稿不同历史PRD，历史只读且无错误下载入口；未在本轮浏览器重新执行正式确认409或交接写入，不将上一轮操作算作本轮执行。
+
+过程失败保留：早期目标测试检出旧平铺格式断言及来源ID噪声，前者按新语义逐节点断言，后者修成实际来源名称；原噪声断言未删除。官方文档渲染脚本因缺LibreOffice退出1；Windows子PowerShell调用Word脚本受执行策略限制退出1，后用当前PowerShell直接执行既有脚本，无策略修改。额外PDF检查得到无法解析的文件，未作为有效PDF交付，也未影响Word打开与分页检查。首次整体记录哈希检查因正常新增导出记录失败；随后核对全部旧记录未变，明确区分新增导出记录，没有宣称记录总数不变。
+
+## 17. UI-TYPE-01 实际阅读效果与证据
+
+隔离地址为 `http://127.0.0.1:8771/`；资源为 `index-TCb_jmlG.js`、`index-DCG-AM1Q.css`。使用既有MRD/PRD快照（底稿v36、文档v2），不是手写新业务文档；输入身份和导出哈希详见本机 `source-document-identities.json` 与 `exports-final/manifest.json`。独立层级夹具显式标记非模型产物，不代表真人业务验收。
+
+### 字体与版面实测
+
+通过 Chromium `CSS.getPlatformFontsForNode` 查询实际字形字体，非仅抄CSS：中文标题、中文正文、混合英文数字和完整需求编号均使用本机 **Noto Sans SC**，无网络字体或安装操作。字体文件 `NotoSansSC-VF.ttf` 的 wght 轴为100–900；标题显式700/600，正文400，禁用合成字体。CDP标题PostScript名称带Bold，变量轴实际600/700已另核对，不用名称推断成固定700。没有声称识别原设计图的生成字体。
+
+| 角色 | 实测CSS字号/行高/字重 |
+| --- | --- |
+| 文档标题 | 28/40/700 |
+| 一级章标题 | 22/32/600 |
+| 二级需求标题 | 18/28/600 |
+| 三级说明标题 | 16/26/600 |
+| 正文 | 16/28/400 |
+| 元信息、完整编号 | 13/20/400 |
+| 当前目录项 | 14/22/600 |
+
+Word原生读取字体属性为微软雅黑，正文11pt非粗体，标题22pt，Heading1/2/3分别16/14/12pt。PRD10页和MRD11页已逐页查看中文、层级、编号及分页；修正了标题和编号孤留页尾的情况。EMF转PNG存在锯齿和视觉偏重，不能当作精确抗锯齿证据；未发现内容裁切。样例没有原生业务表格，表格呈现仍属本轮未覆盖；未为验证虚构新业务表格。
+
+1672×941、DPR1、100%缩放下重新取得完整右缘截图，没有灰条补边。1440/1280/1024时正文仍为16/28，阅读区实测宽654/620/613px，无横向溢出；1024辅助检查区下移，使用纵向滚动，没有缩小正文。MRD/PRD保留各自位置；目录和正文顺序逐项相等，点击目标距阅读区顶部约16px。
+
+### 本机查看入口（均忽略，不公开上传）
+
+`evidence/ui-type-01/comparison-gallery.html` 集中展示：
+
+- `compare-PRD-first.png`、`compare-MRD-first.png`：原设计/修复前/修复后首屏；源图未修改。
+- `compare-PRD-detail.png`、`compare-MRD-detail.png`：同一功能主题前后。MRD旧版目录跳转偏差如实保留，不移图造对齐。
+- `verified/after-PRD-detail.png`、`verified/after-MRD-detail.png`：含完整编号、需求和行为子标题的实际正文。
+- `verified/` 三档宽度完整截图及 `browser-typography.json`；`fixture-verified/` 独立夹具。
+- `exports-final/` 同对象导出的Markdown和Word；`word-final-prd/`、`word-final-mrd/` 最终分页图；`immutability.json` 原快照和旧记录不变核对。
+- `pytest-target-final.txt`、`pytest-full-final.txt`、`build.txt` 实际命令输出；失败尝试日志保留。
+
+仍需用户核对：目录展开到行为说明后的阅读体验和视觉接受度。已有正文重复、原业务未知或草图历史陈述没有在本轮改写；它们不能借排版整改静默修成新业务内容。原设计示例内容、旧六步标签与当前五步有意不同。真实模型验证、真人首审、本轮浏览器正式确认/交接写入均未执行；不宣称产品整体验收通过。8765及其dist未替换，本轮临时实例检查结束后关闭。

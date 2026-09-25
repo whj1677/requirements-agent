@@ -92,9 +92,16 @@ def test_named_export_after_answers_and_regeneration_matches_reader_and_snapshot
         paragraphs = '\n'.join(x.text for x in Document(io.BytesIO(word.content)).paragraphs)
         reader = client.get(root).json()['documents']['prd']['reader']
         for s in reader['sections']:
-            for b in s['blocks']:
-                assert b['text'] in md.text and b['text'] in paragraphs
-        assert 'REQ-0001｜' in paragraphs and 'REQ-0001｜' in md.text
+            # The reader now exposes semantic headings and metadata separately.
+            # Check every rendered node in both exports, not the retired flat
+            # concatenation of title, ID and statement in block.text.
+            for node in s['reading_nodes']:
+                text = node['number']+' '+node['text'] if node['kind']=='heading' else node['text']
+                assert text in md.text and text in paragraphs
+                if node['kind']=='heading':
+                    assert '#'*(node['level']+1)+' '+text in md.text
+        assert 'REQ-0001 · v1' in paragraphs and 'REQ-0001 · v1' in md.text
+        assert any(n['text']=='电价时段维护' and n['kind']=='heading' for s in reader['sections'] for n in s['reading_nodes'])
         for noise in ('内容哈希', '参考维度处置', 'reported', 'SRC-0001'):
             assert noise not in paragraphs and noise not in md.text
         assert '相接边界允许。' in paragraphs

@@ -111,6 +111,9 @@ def compile_plan(plan, p, kind, omitted=(), *, include_sketch=True):
     sections=[]; coverage={}; discussed=set(); placed={}; discussion_locations={}
     def section(title,blocks):
         sid=kind.upper()+'-'+digest(dict(title=title,index=len(sections)))[:12]
+        # The plan contract supplies parallel topics, not parent relationships.
+        # The shared reader projects referenced items/behavior into subheadings;
+        # do not guess hierarchy from the model's title text or rewrite snapshots.
         sections.append(dict(section_id=sid,title=title,level=1,parent_section_id=None,blocks=blocks))
         return sid
     def text(value,refs=None,block_kind='narrative'):
