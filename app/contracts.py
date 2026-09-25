@@ -105,6 +105,11 @@ def validate_ui(spec, p):
     by_id = {c['component_id']: c for c in components}
     datasets={c['simulation']['dataset_id']:c for c in components if c['type'] in ('table','list') and c.get('simulation')}
     for c in components:
+        for field in c['fields']:
+            if 'filter_all_option' in field:
+                require(spec['schema_version']=='1.1' and c['type']=='filters' and field['type']=='select'
+                    and field['filter_all_option'] in field['options'], 'REFERENCE_INVALID',
+                    f"组件 {c['component_id']} 字段 {field['name']}：filter_all_option 仅用于 1.1 filters/select 且必须是 options 中的值")
         require(c['ref_ids'] or c['type'] in ('text', 'heading', 'notice'), 'REFERENCE_INVALID', '功能性组件缺少需求关联')
         require(not c['interaction']['target_id'] or c['interaction']['target_id'] in ids + pages, 'REFERENCE_INVALID', '交互目标不存在')
         require(all(len(row) == len(c['columns']) for row in c['rows']), 'SCHEMA_INVALID', '表格行列不一致')

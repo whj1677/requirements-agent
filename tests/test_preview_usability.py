@@ -63,3 +63,30 @@ async def exercise():
 
 def test_contact_modal_failure_cancel_focus_filter_and_role():
     asyncio.run(exercise())
+
+
+def test_select_filter_all_option_and_readonly_restore():
+    async def run():
+        spec=contacts_spec()
+        c=spec['pages'][0]['regions'][0]['components']
+        c[0]['fields'][0].update(type='select',options=['不限姓名','小周','小'],filter_all_option='不限姓名')
+        original=[row[:] for row in c[2]['rows']]
+        async with async_playwright() as p:
+            browser=await p.chromium.launch();page=await browser.new_page()
+            try:
+                await page.set_content(prototype(spec))
+                await page.get_by_role('button',name='筛选',exact=True).click()
+                assert await page.locator('tbody tr').count()==len(original)
+                await page.get_by_label('查找姓名').select_option('小周')
+                await page.get_by_role('button',name='筛选',exact=True).click()
+                assert await page.locator('tbody tr').count()==1
+                await page.get_by_label('查找姓名').select_option('小')
+                await page.get_by_role('button',name='筛选',exact=True).click()
+                assert await page.locator('tbody tr').count()==0
+                await page.get_by_label('模拟角色').select_option('只读')
+                await page.get_by_label('查找姓名').select_option('不限姓名')
+                await page.get_by_role('button',name='筛选',exact=True).click()
+                assert await page.locator('tbody tr').count()==len(original)
+                assert c[2]['rows']==original
+            finally:await browser.close()
+    asyncio.run(run())

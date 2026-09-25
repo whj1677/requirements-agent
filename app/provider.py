@@ -83,6 +83,8 @@ class Provider:
         # Never persist hidden reasoning; only final response is processed.
         try:
             value = json.loads(content, parse_constant=lambda x: (_ for _ in ()).throw(ValueError(x)))
+        except json.JSONDecodeError as error:
+            raise Problem('SCHEMA_INVALID', f'模型最终内容不是完整 JSON：第 {error.lineno} 行，第 {error.colno} 列，字符偏移 {error.pos}；{error.msg}。请检查该位置的引号、逗号与括号配对，重新输出完整对象；不得删除业务内容。')
         except ValueError:
             raise Problem('SCHEMA_INVALID', '模型最终内容不是完整 JSON')
         return value, meta
@@ -104,12 +106,23 @@ def request_schema(stage):
     return expand(dict(type='object',properties=props,required=SCHEMA['required'],additionalProperties=False))
 
 
+def ui_structure_example():
+    # Structural illustration only, never used as a model failure fallback.
+    component=dict(component_id='EXAMPLE-TEXT',type='text',label='结构占位，不是项目内容',description='',
+        ref_ids=[],fields=[],columns=[],rows=[],interaction=dict(action='none',target_id=None,target_state=None),provisional=True)
+    page=dict(page_id='EXAMPLE-PAGE',title='结构示例',requirement_refs=[],regions=[dict(name='main',components=[component])],
+        states=['normal'],state_messages=dict(normal='结构示例',loading=None,empty=None,error=None,forbidden=None),not_applicable_states=[])
+    return dict(schema_version='1.1',stage='ui',summary='仅演示数组与对象嵌套，不能作为项目产物',proposals=[],questions=[],findings=[],used_source_refs=[],limitations=[],
+        result=dict(spec=dict(schema_version='1.1',title='结构示例',draft_revision=0,design_intent='仅演示协议结构',demo_data_label='模拟数据，仅用于原型演示',pages=[page])))
+
+
 def assemble(p, stage, user_message, config, folder, kind='prd', generation_target=None, pending_images_only=False):
     header = dict(stage=stage, project_id=p['id'], current_revision=p['revision'], mode=p['mode'], schema=request_schema(stage), remaining_budget=config['max_calls'])
     if generation_target:
         header['generation_target']=generation_target
     if stage == 'prd':
         header.update(document_type=kind, content_profile=profile(kind,p.get('reference_mode')=='builtin'),plan_contract=plan_contract(p))
+    if stage == 'ui':header['structure_example']=ui_structure_example()
     base = (KIT / 'prompts/00_system.md').read_text('utf-8')
     if stage=='prd':base=base.split('## 输出')[0]
     system = base + '\n' + (KIT / 'prompts' / STAGES[stage]).read_text('utf-8') + '\n可信任务头：' + dumps(header)
@@ -119,6 +132,10 @@ def assemble(p, stage, user_message, config, folder, kind='prd', generation_targ
     context['direction_semantics'] = 'direction_status仅记录讨论方向；关联proposed_item_refs不代表条目已采纳，以各条目的selection_status和epistemic_status为准。旧selection_status是历史整包操作。'
     context['user_message'] = user_message
     context['recent_messages'] = p['messages'][-8:]
+    if stage=='ui':
+        context['document_status']={kind:{k:doc.get(k) for k in ('id','draft_revision','brief_hash')} for kind,doc in context.pop('documents').items() if doc}
+        context['recent_messages']=[{k:m.get(k) for k in ('role','stage','text','created')} for m in p['messages'][-8:]]
+        context['context_notice']='本次生成页面：当前条目、问答、方案、活动原型及材料完整保留；文档仅提供版本信息，历史结构化输出不重复发送。历史摘要可能过期，以当前快照及材料为准。'
     active_sources={s['id'] for s in p['sources'] if not s['excluded']}
     context['vision_observations']=[m['response'] for m in p['messages'] if m.get('stage')=='vision'
         and m.get('response') and all(r['source_id'] in active_sources for r in m['response']['used_source_refs'])]

@@ -147,6 +147,11 @@
                                 "unknown"
                               ]
                             },
+                            "filter_all_option": {
+                              "type": "string",
+                              "maxLength": 200,
+                              "description": "仅 filters 的 select 字段：此 options 值表示不限制该字段，其它选项按列值精确匹配；缺省不推断任何全部选项。"
+                            },
                             "options": {
                               "type": "array",
                               "items": {

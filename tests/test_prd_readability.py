@@ -39,6 +39,22 @@ def test_count_error_does_not_echo_entire_response(tmp_path):
     assert 'PRIVATE-LONG-BODY' not in e.value.message
 
 
+def test_existing_platform_is_context_not_new_scope(tmp_path):
+    from app.prd import plan_contract
+    _,p=state(tmp_path)
+    p['items'][0].update(applies_to='as_is', selection_status='selected',
+        statement='现有平台的工单列表已支持查看；本次不重建列表。')
+    old=copy.deepcopy(p)
+    assert p['items'][0]['id'] not in plan_contract(p)['normative_item_ids']
+    with pytest.raises(Problem) as e:
+        compile_plan(plan([p['items'][0]['id']]),p,'prd')
+    assert e.value.code=='SEMANTIC_BLOCKED'
+    result=compile_plan(plan(discussion=[p['items'][0]['id']]),p,'prd')
+    assert p==old
+    assert p['items'][0]['statement'] in dumps(result)
+    assert 'as_is' in dumps(result) and result['result']['coverage']==[]
+
+
 def test_current_ui_context_and_discussion_image_without_adoption(tmp_path):
     import asyncio,json
     from app.core import brief_hash

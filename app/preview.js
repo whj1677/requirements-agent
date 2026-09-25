@@ -30,7 +30,7 @@ function render(page){
     const body=el('tbody',null,table),dataset=data.get(c.simulation?.dataset_id||c.component_id)||[];
     dataset.forEach((values,index)=>{
       const filter=filters.get(c.component_id)||[];
-      if(filter.some(([name,query])=>!String(values[c.columns.findIndex(col=>col.key===name)]||'').toLowerCase().includes(query)))return;
+      if(filter.some(([name,query,exact])=>{const value=String(values[c.columns.findIndex(col=>col.key===name)]??'').toLowerCase();return exact?value!==query:!value.includes(query);}))return;
       const tr=el('tr',null,body);values.forEach(value=>el('td',value,tr));
       if(c.interaction.action==='edit'){const button=el('button','编辑',el('td',null,tr));button.disabled=role==='只读';button.onclick=()=>open(c.interaction.target_id,index);}
     });
@@ -99,6 +99,7 @@ function render(page){
       const form=new Map();for(const field of c.fields){const label=el('label',field.label+(field.required_state==='unknown'?'（必填性待确认）':''),block);
         const input=el(field.type==='select'?'select':'input',null,label);input.setAttribute('aria-label',field.label);
         if(field.type==='select')field.options.forEach(option=>el('option',option,input));else input.type=({number:'number',date:'date',time:'time'})[field.type]||'text';
+        if(c.type==='filters'&&field.filter_all_option!==undefined)input._filterAllOption=field.filter_all_option;
         if(field.type==='read_only')input.readOnly=true;form.set(field.name,input);
         input.required=field.required_state==='required';
       }if(form.size)fields.set(c.component_id,form);
@@ -116,7 +117,7 @@ function render(page){
           else if(action.action==='cancel')cancel(action.target_id);
           else if(action.action==='close_panel')close(action.target_id);
           else if(action.action==='open_panel'&&blocks.has(action.target_id))blocks.get(action.target_id).hidden=false;
-          else if(action.action==='filter'){filters.set(action.target_id,[...filterInputs].map(([name,input])=>[name,input.value.trim().toLowerCase()]).filter(([,v])=>v));const target=tables.get(action.target_id);if(target)tableRows(target,blocks.get(action.target_id));}
+          else if(action.action==='filter'){filters.set(action.target_id,[...filterInputs].filter(([,input])=>input.value!==input._filterAllOption).map(([name,input])=>[name,input.value.trim().toLowerCase(),input.tagName==='SELECT']).filter(([,v])=>v));const target=tables.get(action.target_id);if(target)tableRows(target,blocks.get(action.target_id));}
         };
       }
       const info=el('details',null,block);el('summary',c.provisional?'待确认 · 查看说明与依据':'说明与依据',info);

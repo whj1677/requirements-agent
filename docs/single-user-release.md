@@ -2,6 +2,8 @@
 
 定位：给一位产品经理在 Windows 本机整理材料、讨论方案、审阅原型和导出需求讨论稿。保留现有 React/FastAPI/SQLite 工程。原型是交互演示，不连接真实业务系统。
 
+主要使用场景是已有平台上增加或修改功能：先提供平台现状材料，再描述本次改动、明确保持不变及不涉及的范围。摘要分别显示现状与目标；生成局部原型和增量 PRD，避免将旧模块算成本期新建。真实验证与剩余限制见 [增量场景验证](test-results-incremental-20260925.md)。
+
 ## 使用
 
 本机交付使用独立目录、独立 data 和 8766 端口。原 8765、原数据库及历史试跑保持不变。双击交付目录的 `start-local.cmd`，或运行 `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start.ps1 -Port 8766 -NoAuth`。

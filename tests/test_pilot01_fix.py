@@ -1,4 +1,5 @@
 import asyncio
+import copy
 import json
 import pytest
 
@@ -103,11 +104,13 @@ def test_provider_preserves_failed_raw_before_repair_and_redacts_key(tmp_path, m
              'truncated':json.dumps(empty_ingest())}[failure]
     second = json.dumps(empty_ingest(), ensure_ascii=False)
     outputs = iter([(first, 'length' if failure=='truncated' else 'stop'), (second,'stop')])
+    requests=[]
     class FakeAsyncClient:
         def __init__(self, **kwargs): pass
         async def __aenter__(self): return self
         async def __aexit__(self, *args): pass
         async def post(self, *args, **kwargs):
+            requests.append(copy.deepcopy(kwargs['json']))
             content, reason = next(outputs)
             return httpx.Response(200, json={'model':'offline','choices':[{'message':{'content':content, 'reasoning_content':'hidden synthetic secret'},'finish_reason':reason}], 'usage':{'prompt_tokens':2,'completion_tokens':3}})
     monkeypatch.setattr(httpx, 'AsyncClient', FakeAsyncClient)
@@ -125,6 +128,9 @@ def test_provider_preserves_failed_raw_before_repair_and_redacts_key(tmp_path, m
     assert result['status']=='succeeded' and result['calls']==2, result
     assert len(result['attempts'])==2
     assert result['attempts'][0]['error']==expected
+    if failure=='invalid_json':
+        repair=requests[1]['messages'][-1]['content']
+        assert '第 1 行' in repair and '第 2 列' in repair and '字符偏移 1' in repair
     files=list((tmp_path/'evidence'/'model-calls').glob('*.json'))
     assert len(files)==2
     payloads=[json.loads(f.read_text('utf-8')) for f in files]

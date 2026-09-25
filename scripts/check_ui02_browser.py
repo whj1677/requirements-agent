@@ -122,8 +122,21 @@ async def main():
                         await options.nth(1).get_by_role('button',name='查看对应原型').click()
                         assert await workspace.get_by_text('此方案尚无原型。',exact=False).is_visible()
                     await workspace.get_by_role('button',name='明确需求',exact=False).click()
-                    for _ in range(3):
+                    for index in range(3):
+                        if args.web_dist and index==0:
+                            pending_item=asyncio.Event();release_item=asyncio.Event();continued_item=asyncio.Event()
+                            async def hold_item(route):
+                                pending_item.set();await release_item.wait();await route.continue_();continued_item.set()
+                            await page.route('**/items/*',hold_item)
                         await workspace.locator('.artifact-panel:visible').get_by_role('button',name='采纳',exact=True).first.click()
+                        if args.web_dist and index==0:
+                            try:
+                                await asyncio.wait_for(pending_item.wait(),5)
+                                assert await workspace.locator('.artifact-panel:visible').get_by_role('button',name='采纳',exact=True).last.is_disabled()
+                                assert await workspace.locator('.artifact-panel:visible select').first.is_disabled()
+                            finally:release_item.set()
+                            await asyncio.wait_for(continued_item.wait(),5)
+                            await page.unroute('**/items/*',hold_item)
                         await page.wait_for_timeout(150)
                     p=await read_project(pid);assert sum(i['selection_status']=='selected' for i in p['items'])==3
                     await workspace.get_by_role('button',name='查看来源',exact=True).first.click()
