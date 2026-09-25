@@ -1,0 +1,243 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Requirement exchange v1; relationships are not test results",
+  "type": "object",
+  "required": [
+    "exchange_version",
+    "source_system",
+    "projects",
+    "requirements",
+    "relations",
+    "artifacts",
+    "baseline_id",
+    "sources",
+    "decisions",
+    "downstream_status",
+    "test_executions"
+  ],
+  "properties": {
+    "exchange_version": {
+      "const": "requirements-exchange-1"
+    },
+    "source_system": {
+      "const": "requirements-agent"
+    },
+    "projects": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "namespace",
+          "draft_revision"
+        ]
+      }
+    },
+    "requirements": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "type",
+          "namespace",
+          "id",
+          "version",
+          "project_id",
+          "title",
+          "statement",
+          "status",
+          "content",
+          "content_hash",
+          "version_origin",
+          "change_type",
+          "source_refs"
+        ],
+        "properties": {
+          "type": {
+            "enum": [
+              "requirement",
+              "rule",
+              "acceptance"
+            ]
+          },
+          "namespace": {
+            "type": "string",
+            "minLength": 1
+          },
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "project_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1
+          },
+          "statement": {
+            "type": "string",
+            "minLength": 1
+          },
+          "status": {
+            "enum": [
+              "candidate",
+              "selected",
+              "deferred",
+              "rejected"
+            ]
+          },
+          "content": {
+            "type": "object",
+            "required": [
+              "statement",
+              "title",
+              "kind"
+            ]
+          },
+          "content_hash": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "version_origin": {
+            "enum": [
+              "recorded",
+              "legacy_v1"
+            ]
+          },
+          "change_type": {
+            "enum": [
+              "new",
+              "modified",
+              "preserved",
+              "existing",
+              "unspecified"
+            ]
+          },
+          "source_refs": {
+            "type": "array"
+          }
+        }
+      }
+    },
+    "relations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "type",
+          "source",
+          "target",
+          "evidence_status",
+          "validity"
+        ],
+        "properties": {
+          "type": {
+            "enum": [
+              "parent_of",
+              "refines",
+              "replaces",
+              "depends_on",
+              "implements",
+              "verifies"
+            ]
+          },
+          "source": {
+            "type": "object",
+            "required": [
+              "type",
+              "id",
+              "version"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "minLength": 1
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "namespace": {
+                "type": "string",
+                "minLength": 1
+              },
+              "version": {
+                "type": "integer",
+                "minimum": 1
+              }
+            },
+            "additionalProperties": false
+          },
+          "target": {
+            "type": "object",
+            "required": [
+              "type",
+              "id",
+              "version"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "minLength": 1
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "namespace": {
+                "type": "string",
+                "minLength": 1
+              },
+              "version": {
+                "type": "integer",
+                "minimum": 1
+              }
+            },
+            "additionalProperties": false
+          },
+          "evidence_status": {
+            "const": "linked_only"
+          },
+          "validity": {
+            "enum": [
+              "current",
+              "needs_review"
+            ]
+          }
+        }
+      }
+    },
+    "artifacts": {
+      "type": "array"
+    },
+    "baseline_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "sources": {
+      "type": "array"
+    },
+    "decisions": {
+      "type": "object"
+    },
+    "downstream_status": {
+      "type": "object"
+    },
+    "test_executions": {
+      "const": []
+    },
+    "change_records": {
+      "type": "array"
+    }
+  }
+}

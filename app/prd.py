@@ -3,6 +3,7 @@ import copy
 import jsonschema
 from .core import digest, dumps, require
 from .contracts import profile
+from .requirements import delivery_items, item_content
 
 NORMATIVE = ('requirement', 'rule', 'acceptance')
 REFS = dict(type='array', items=dict(type='string', minLength=1, maxLength=120), maxItems=100, uniqueItems=True)
@@ -20,8 +21,15 @@ PLAN_SCHEMA = {
                 'narration':dict(type='string',maxLength=1200)}})}}
 
 
-def allowed(item):
-    return item['kind'] in NORMATIVE and item['selection_status']=='selected' and item['applies_to']=='to_be'
+def allowed(item,p=None):
+    return item['kind'] in NORMATIVE and item['selection_status']=='selected' and item['applies_to']=='to_be' and (p is None or any(i['id']==item['id'] for i in delivery_items(p)))
+
+
+def represented_revision(item, items, placed):
+    target=items.get(item.get('target_item_id'))
+    # Content deduplication only: no inference that a historical candidate was approved.
+    return bool(target and target['id'] in placed and target['selection_status']=='selected'
+        and item_content(item)==item_content(target))
 
 
 def plan_contract(p):
@@ -29,7 +37,7 @@ def plan_contract(p):
         normative_refs=[],discussion_refs=[],narration='')],limitations=[])
     jsonschema.Draft202012Validator(PLAN_SCHEMA).validate(example)
     return dict(version='prd-plan-contract-2',example=example,
-        normative_item_ids=[i['id'] for i in p['items'] if allowed(i)],
+        normative_item_ids=[i['id'] for i in p['items'] if allowed(i,p)],
         discussion_item_ids=[i['id'] for i in p['items']],
         rules='根节点只有且必须包含 plan_version、title、sections、limitations。'
         '所有 sections 元素只有且必须包含 title、normative_refs、discussion_refs、narration。'
@@ -60,11 +68,13 @@ def require_item(ref,at,p,ids):
 
 def context(p):
     return dict(
-        A_normative={kind:[copy.deepcopy(i) for i in p['items'] if allowed(i) and i['kind']==kind] for kind in NORMATIVE},
-        B_statements_answers=dict(items=[copy.deepcopy(i) for i in p['items'] if not allowed(i) and i['selection_status']=='selected' and i['epistemic_status'] not in ('proposed','inferred')],
+        incremental_context=copy.deepcopy(p.get('product_context',{})),
+        sketch_check=copy.deepcopy(p.get('sketch_review',{})),
+        A_normative={kind:[copy.deepcopy(i) for i in p['items'] if allowed(i,p) and i['kind']==kind] for kind in NORMATIVE},
+        B_statements_answers=dict(items=[copy.deepcopy(i) for i in p['items'] if not allowed(i,p) and i['selection_status']=='selected' and i['epistemic_status'] not in ('proposed','inferred')],
             answers=[copy.deepcopy(q) for q in p['questions'] if q['status']=='answered'],
             notice='selected仅为当前草稿采纳，不代表业务负责人批准；原条目和后续回答可能存在差异，必须并列保留。'),
-        C_discussion=dict(items=[copy.deepcopy(i) for i in p['items'] if not allowed(i) and (i['selection_status']!='selected' or i['epistemic_status'] in ('proposed','inferred'))],
+        C_discussion=dict(items=[copy.deepcopy(i) for i in p['items'] if not allowed(i,p) and (i['selection_status']!='selected' or i['epistemic_status'] in ('proposed','inferred'))],
             options=copy.deepcopy(p['options']), notice='讨论方向不等于采纳条目；建议和假设不成为规范。'),
         D_unknowns_limits=dict(questions=[copy.deepcopy(q) for q in p['questions'] if q['status']!='answered'],
             source_status=[{k:s.get(k) for k in ('id','title','purpose','parse_status','failure_reason','excluded')} for s in p['sources']],
@@ -102,6 +112,7 @@ def compile_plan(plan, p, kind, omitted=()):
         return '；来源：'+ ('、'.join(r['source_id']+'/'+r['excerpt_id'] for r in i.get('source_refs',[])) or '未提供')
     def discussion(i):
         status='未采纳' if i['selection_status']!='selected' else '已在草稿采纳，不代表业务负责人批准'
+        if i['kind'] in NORMATIVE and i['selection_status']=='selected' and not allowed(i,p):status='已草稿采纳但不在本期规范范围'
         return text(f'【{status}；{i["epistemic_status"]}；{i["applies_to"]}】{i["id"]} — {i["statement"]}'+provenance(i),[i['id']])
     for n,s in enumerate(plan['sections']):
         blocks=[]
@@ -130,7 +141,8 @@ def compile_plan(plan, p, kind, omitted=()):
             if b['kind'] in NORMATIVE:
                 for r in b['ref_ids']:coverage.setdefault(r,[]).append(sid)
     # Preserve omitted context and all questions independently of the model's choices.
-    remaining=[discussion(i) for i in p['items'] if i['id'] not in coverage and i['id'] not in discussed]
+    remaining=[discussion(i) for i in p['items'] if i['id'] not in coverage and i['id'] not in discussed
+               and not represented_revision(i,items,set(coverage)|discussed)]
     if remaining:section('材料陈述、未成文条目与讨论建议',remaining)
     questions=[]
     for q in p['questions']:
@@ -143,9 +155,9 @@ def compile_plan(plan, p, kind, omitted=()):
     prof=profile(kind,p.get('reference_mode')=='builtin')
     limits=['讨论稿，不构成正式确认；章节语义覆盖待核对。',context(p)['D_unknowns_limits']['ui']]
     limits+=plan['limitations']
-    limits+=['材料限制：'+s['id']+' '+s['parse_status']+' '+(s.get('failure_reason') or '') for s in p['sources'] if not s['excluded'] and s['parse_status']!='read']
+    limits+=['材料「'+s['title']+'」尚有读取限制：'+(s.get('failure_reason') or '需核对未读取或不清晰的内容') for s in p['sources'] if not s['excluded'] and s['parse_status']!='read']
     if omitted:limits.append('本轮未完整送入的来源片段：'+'、'.join(omitted))
-    limits+=['未成文规范条目：'+i['id'] for i in p['items'] if allowed(i) and i['id'] not in coverage]
+    limits+=['未成文规范条目：'+i['id'] for i in p['items'] if allowed(i,p) and i['id'] not in coverage]
     pending=section('限制及参考维度待核对',[text(x,block_kind='open_question') for x in dict.fromkeys(limits)])
     historical=context(p)['historical_notes']
     if historical:
@@ -153,7 +165,7 @@ def compile_plan(plan, p, kind, omitted=()):
             text('以下保留历史来源，可能已被后续材料更新；不作为本版材料数量、模板或业务确认状态。')]+[
             text(f'第{h["round"]}轮 · {h["stage"]} · {h["created"] or "时间未记录"}\n'+'\n'.join(h['limitations'])) for h in historical])
     maps=[]
-    reqs=[i['id'] for i in p['items'] if allowed(i) and i['kind']=='requirement']
+    reqs=[i['id'] for i in p['items'] if allowed(i,p) and i['kind']=='requirement']
     picture='PRD-4.F.1' if kind=='prd' else 'MRD-5.1.F.3'
     for d in prof['sections']:
         if not d['mapping_required']:continue
@@ -168,5 +180,5 @@ def compile_plan(plan, p, kind, omitted=()):
                     reason='原型插图对应实际讨论条目原文；不表示已采纳、规范覆盖或正式确认。'))
     document=dict(document_type=kind,content_profile_id=prof['id'],content_profile_version=prof['version'],title=plan['title'],
         sections=sections,coverage=[dict(item_id=r,section_ids=list(dict.fromkeys(ids))) for r,ids in coverage.items()],reference_mapping=maps)
-    incomplete=['未成文规范条目：'+i['id'] for i in p['items'] if allowed(i) and i['id'] not in coverage]
+    incomplete=['未成文规范条目：'+i['id'] for i in p['items'] if allowed(i,p) and i['id'] not in coverage]
     return dict(schema_version='1.1',stage='prd',summary='已组装需求讨论稿；请核对规范原文、回答与未知。',proposals=[],questions=[],findings=[],used_source_refs=[],limitations=plan['limitations']+incomplete,result=document)

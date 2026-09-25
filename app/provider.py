@@ -16,6 +16,26 @@ DEFAULT = dict(name='DeepSeek 官方', base_url='https://api.deepseek.com', mode
 STAGES = read_json(KIT / 'prompts/registry.json')['stage_files']
 
 
+def delimiter_hint(content):
+    """Diagnose bracket mismatches without repairing or accepting invalid output."""
+    stack=[];quoted=False;escaped=False
+    for pos,char in enumerate(content):
+        if quoted:
+            if escaped:escaped=False
+            elif char=='\\':escaped=True
+            elif char=='"':quoted=False
+            continue
+        if char=='"':quoted=True
+        elif char in '[{':stack.append((char,pos))
+        elif char in ']}':
+            if not stack:return f'字符偏移 {pos} 的 {char} 没有对应开括号。'
+            opener,start=stack[-1];expected=']' if opener=='[' else '}'
+            if char!=expected:return f'括号层级错误：字符偏移 {start} 的 {opener} 尚未关闭；偏移 {pos} 处应先用 {expected} 关闭它，实际却为 {char}。不要只在结尾增加大括号。'
+            stack.pop()
+    if stack:return '输出结束时仍有未关闭容器：'+str(stack[-4:])+'；按从内到外次序关闭数组与对象。'
+    return ''
+
+
 def origin(config):
     u = urlsplit(config['base_url'])
     require(u.scheme in ('https', 'http') and u.hostname and not u.username and not u.password and not u.query and not u.fragment, 'CONFIG_INVALID', '模型地址无效')
@@ -84,7 +104,7 @@ class Provider:
         try:
             value = json.loads(content, parse_constant=lambda x: (_ for _ in ()).throw(ValueError(x)))
         except json.JSONDecodeError as error:
-            raise Problem('SCHEMA_INVALID', f'模型最终内容不是完整 JSON：第 {error.lineno} 行，第 {error.colno} 列，字符偏移 {error.pos}；{error.msg}。请检查该位置的引号、逗号与括号配对，重新输出完整对象；不得删除业务内容。')
+            raise Problem('SCHEMA_INVALID', f'模型最终内容不是完整 JSON：第 {error.lineno} 行，第 {error.colno} 列，字符偏移 {error.pos}；{error.msg}。'+delimiter_hint(content)+'请检查该位置的引号、逗号与括号配对，重新输出完整对象；不得删除业务内容。')
         except ValueError:
             raise Problem('SCHEMA_INVALID', '模型最终内容不是完整 JSON')
         return value, meta
@@ -92,6 +112,12 @@ class Provider:
 
 def request_schema(stage):
     if stage=='prd':return PLAN_SCHEMA
+    if stage=='ingest':
+        # Current requests need editable scope suggestions. Historical envelopes remain readable.
+        schema=json.loads(dumps(SCHEMA))
+        schema['required']=SCHEMA['required']+['product_context_proposal']
+        schema['properties']['product_context_proposal']['required']=list(schema['properties']['product_context_proposal']['properties'])
+        return schema
     if stage!='ui':return SCHEMA
     # The provider cannot load local $ref files. Inline the actual UI dependencies,
     # preserving the validator's schema and its no-draft-mutation rule.
@@ -118,6 +144,7 @@ def ui_structure_example():
 
 def assemble(p, stage, user_message, config, folder, kind='prd', generation_target=None, pending_images_only=False):
     header = dict(stage=stage, project_id=p['id'], current_revision=p['revision'], mode=p['mode'], schema=request_schema(stage), remaining_budget=config['max_calls'])
+    if stage=='ingest':header['context_contract']='整理后必须输出 product_context_proposal 的全部字段，供用户核对，未知值填空字符串；不自动采纳或批准。已有条目仅因信息实质变化才提出修订，不重复建同义候选。'
     if generation_target:
         header['generation_target']=generation_target
     if stage == 'prd':
@@ -131,7 +158,17 @@ def assemble(p, stage, user_message, config, folder, kind='prd', generation_targ
                                        for o in p['options'] if o.get('direction_status')]
     context['direction_semantics'] = 'direction_status仅记录讨论方向；关联proposed_item_refs不代表条目已采纳，以各条目的selection_status和epistemic_status为准。旧selection_status是历史整包操作。'
     context['user_message'] = user_message
+    context['product_context']=p.get('product_context',{})
+    context['sketch_review']=p.get('sketch_review',{})
+    context['requirement_relations']=p.get('requirement_relations',[])
     context['recent_messages'] = p['messages'][-8:]
+    if stage=='clarify':
+        from .product_flow import missing
+        context['stage_focus']=dict(content_gaps=missing(p,3),
+            deferred_questions=[dict(id=q['id'],reason=q['out_of_scope_reason']) for q in p['questions'] if q.get('out_of_scope_reason')],
+            instruction='优先用现有材料整理本步实际缺项，提出保留原编号的修订候选；已知规则通过 behavior 和 related_refs 关联需求，不要求用户重复回答。只有材料确实没有答案才提问。缺少结构关联不等于缺少业务决定。移出范围的问题仍未知，不再次当成本期前提。')
+        context['recent_messages']=[{k:m.get(k) for k in ('role','stage','text','created')} for m in p['messages'][-8:]]
+        context['context_notice']='当前条目、问题、范围理由和实际材料优先；历史摘要可能过期，旧结构化输出不重复发送。'
     if stage=='ui':
         context['document_status']={kind:{k:doc.get(k) for k in ('id','draft_revision','brief_hash')} for kind,doc in context.pop('documents').items() if doc}
         context['recent_messages']=[{k:m.get(k) for k in ('role','stage','text','created')} for m in p['messages'][-8:]]

@@ -65,6 +65,25 @@ def test_contact_modal_failure_cancel_focus_filter_and_role():
     asyncio.run(exercise())
 
 
+def test_static_sketch_does_not_offer_fake_simulation_controls():
+    async def run():
+        spec=contacts_spec()
+        for region in spec['pages'][0]['regions']:
+            for c in region['components']:
+                c.pop('simulation',None)
+                c['interaction']={'action':'none','target_id':None,'target_state':None}
+        async with async_playwright() as p:
+            browser=await p.chromium.launch();page=await browser.new_page()
+            try:
+                await page.set_content(prototype(spec))
+                assert not await page.get_by_label('模拟角色').is_visible()
+                assert not await page.get_by_label('模拟保存失败').is_visible()
+                assert await page.get_by_label('页面选择').is_visible()
+                assert '静态需求草图' in await page.locator('#app > header').inner_text()
+            finally:await browser.close()
+    asyncio.run(run())
+
+
 def test_select_filter_all_option_and_readonly_restore():
     async def run():
         spec=contacts_spec()

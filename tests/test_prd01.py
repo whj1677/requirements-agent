@@ -83,7 +83,9 @@ def test_draft_assembly_preserves_answers_unknowns_and_exports(tmp_path):
     assert all(c['item_id']!='REQ-CANDIDATE' for c in r['result']['coverage'])
 
 
-def test_truncation_never_increases_approved_budget(tmp_path):
+def test_truncation_never_increases_approved_budget(tmp_path,monkeypatch):
+    # Budget engine contract; candidate/unknown input is blocked by the new product path.
+    monkeypatch.setattr('app.workflow.execution_issues',lambda *a:[])
     async def run():
         store,p=state(tmp_path)
         class Capture(FakeProvider):
@@ -129,6 +131,8 @@ def test_empty_section_is_not_coverage_and_source_limit_stays_visible(tmp_path):
 
 def prepare_http(case):
     c,app,model,root=case
+    from tests.product_flow_helpers import isolate_legacy_engine
+    isolate_legacy_engine(app)
     body,preview=action_plan(c,root)
     assert start(c,root,body,preview).status_code==200
     assert finished(c,root)['status']=='succeeded'

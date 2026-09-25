@@ -69,6 +69,8 @@ def test_authorization_budget_idempotency_and_vision_context(case):
     ctx=json.loads(model['requests'][-1]['messages'][1]['content'][0]['text'])
     assert ctx['vision_observations'][0]['result']['observations'][0]['observation']=='合成图中可见列表和新增按钮'
     assert any(s['title']=='对话输入.txt' for s in c.get(root).json()['sources'])
+    from tests.product_flow_helpers import http_check
+    http_check(c,root,through=1)
     body,preview=plan(c,root,'explore','')
     assert not any(r['needs_authorization'] for r in preview['recipients'])
     assert start(c,root,body,preview,False).status_code==200
@@ -120,6 +122,10 @@ def test_external_edit_stops_pipeline_and_keeps_call_evidence(case):
 @pytest.mark.parametrize('topic',['联系人','电价时段'])
 def test_draft_with_unknowns_direct_document_and_option_identity(case,topic):
     c,app,model,root=case
+    # Legacy candidate-only engine behavior remains supported below PRODUCT-01 navigation.
+    # It is no longer an executable normal-workbench shortcut; see product_flow_http.
+    from tests.product_flow_helpers import isolate_legacy_engine
+    isolate_legacy_engine(app)
     body,preview=plan(c,root,message=f'维护{topic}列表，只读角色不能修改。')
     assert start(c,root,body,preview).status_code==200
     assert finished(c,root)['status']=='succeeded'

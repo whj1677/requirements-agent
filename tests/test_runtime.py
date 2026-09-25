@@ -102,7 +102,8 @@ def execute_run(tmp_path,results,max_calls=8,cancel=False):
     return asyncio.run(scenario())
 
 def empty_ingest():
-    return dict(schema_version='1.1',stage='ingest',summary='离线合成响应',proposals=[],questions=[],findings=[],used_source_refs=[],limitations=[],result={'understanding':'合成验证','material_limits':[]})
+    from app.product_flow import INTAKE, SCOPE
+    return dict(schema_version='1.1',stage='ingest',summary='离线合成响应',proposals=[],questions=[],findings=[],used_source_refs=[],limitations=[],result={'understanding':'合成验证','material_limits':[]},product_context_proposal={k:'' for k in {**INTAKE,**SCOPE}})
 
 def test_bounded_retry_then_success(tmp_path):
     r,p,provider=execute_run(tmp_path,[Problem('RATE_LIMITED','429'),empty_ingest()])

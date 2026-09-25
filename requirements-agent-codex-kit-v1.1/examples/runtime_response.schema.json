@@ -70,6 +70,52 @@
     },
     "result": {
       "type": "object"
+    },
+    "product_context_proposal": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "product": {
+          "type": "string",
+          "maxLength": 6000
+        },
+        "module": {
+          "type": "string",
+          "maxLength": 6000
+        },
+        "intent": {
+          "type": "string",
+          "maxLength": 6000
+        },
+        "current_state": {
+          "type": "string",
+          "maxLength": 6000
+        },
+        "users": {
+          "type": "string",
+          "maxLength": 6000
+        },
+        "value": {
+          "type": "string",
+          "maxLength": 6000
+        },
+        "change_scope": {
+          "type": "string",
+          "maxLength": 6000
+        },
+        "preserve_scope": {
+          "type": "string",
+          "maxLength": 6000
+        },
+        "out_of_scope": {
+          "type": "string",
+          "maxLength": 6000
+        },
+        "priority": {
+          "type": "string",
+          "maxLength": 6000
+        }
+      }
     }
   },
   "required": [
@@ -302,6 +348,48 @@
           },
           "minItems": 0,
           "maxItems": 100
+        },
+        "behavior": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "actor": {
+              "type": "string",
+              "maxLength": 6000
+            },
+            "entry": {
+              "type": "string",
+              "maxLength": 6000
+            },
+            "flow": {
+              "type": "string",
+              "maxLength": 6000
+            },
+            "data": {
+              "type": "string",
+              "maxLength": 6000
+            },
+            "permissions": {
+              "type": "string",
+              "maxLength": 6000
+            },
+            "result": {
+              "type": "string",
+              "maxLength": 6000
+            },
+            "exceptions": {
+              "type": "string",
+              "maxLength": 6000
+            }
+          }
+        },
+        "change_type": {
+          "enum": [
+            "new",
+            "modified",
+            "preserved",
+            "existing"
+          ]
         }
       },
       "required": [
@@ -388,6 +476,11 @@
           },
           "minItems": 0,
           "maxItems": 50
+        },
+        "blocking_stage": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 5
         }
       },
       "required": [

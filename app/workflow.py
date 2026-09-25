@@ -1,11 +1,15 @@
 import asyncio
 import copy
 import time
+import re
 from .core import KIT, Problem, brief_hash, digest, dumps, hashes, ident, now, require, ui_view_hash, execution_hash
 from .contracts import gate, review_target, validate_response, PROFILES
-from .provider import DEFAULT, STAGES, assemble, origin, input_metrics
+from .provider import DEFAULT, STAGES, assemble, origin, input_metrics, request_schema
 from .model_evidence import ModelCallEvidence
 from .prd import compile_plan, repair_instruction
+from .requirements import TRACKED, namespace, requirement_ref, delivery_items
+from .product_flow import execution_issues
+import jsonschema
 
 PREFIX = {'requirement':'REQ','rule':'RULE','acceptance':'AC','ui_decision':'UID','goal':'GOAL','actor':'ROLE'}
 
@@ -17,7 +21,10 @@ def next_output_budget(current, floor=16384, ceiling=32768):
 
 def replace_refs(value, mapping):
     if isinstance(value, str):
-        return mapping.get(value, value)
+        if value in mapping:return mapping[value]
+        if not mapping:return value
+        pattern=r'(?<![\w-])(?:'+'|'.join(re.escape(k) for k in sorted(mapping,key=len,reverse=True))+r')(?![\w-])'
+        return re.sub(pattern,lambda m:mapping[m.group()],value)
     if isinstance(value, list):
         return [replace_refs(v, mapping) for v in value]
     if isinstance(value, dict):
@@ -29,9 +36,12 @@ def apply_response(p, response):
     mapping = {x['temp_id']:ident(PREFIX.get(x['kind'], 'ITEM')) for x in response['proposals']}
     mapping.update({q['temp_id']:ident('Q') for q in response['questions']})
     r = replace_refs(response, mapping)
+    if r.get('product_context_proposal'):
+        p['product_context_proposal']=r['product_context_proposal']
     for item in r['proposals']:
         # A proposed revision is a separate candidate, never an overwrite.
-        p['items'].append(dict(id=item['temp_id'], **{k:v for k,v in item.items() if k != 'temp_id'}, selection_status='candidate', revision=p['revision']+1))
+        identity=dict(content_version=1,source_namespace=namespace(p)) if item['kind'] in TRACKED else {}
+        p['items'].append(dict(id=item['temp_id'], **{k:v for k,v in item.items() if k != 'temp_id'}, **identity, selection_status='candidate', revision=p['revision']+1))
     for q in r['questions']:
         prior = next((x for x in p['questions'] if x['topic_key'] == q['topic_key']), None)
         if prior:
@@ -42,7 +52,8 @@ def apply_response(p, response):
         for option in r['result']['options']:
             p['options'].append(dict(option, id=ident('OPT'), selection_status='candidate'))
     if stage == 'ui':
-        next_ui = dict(spec=r['result']['spec'], brief_hash=brief_hash(p), created=now())
+        next_ui = dict(spec=r['result']['spec'], brief_hash=brief_hash(p), created=now(),
+            requirement_versions=[requirement_ref(p,i) for i in p['items'] if i['kind'] in TRACKED])
         if p['ui'] and ui_view_hash(p['ui']['spec']) != ui_view_hash(next_ui['spec']):
             p.setdefault('ui_candidates', []).append(dict(id=ident('UIC'), **next_ui,
                 base_ui_hash=digest(p['ui']['spec']), status='candidate'))
@@ -51,11 +62,17 @@ def apply_response(p, response):
         elif p['ui']['brief_hash'] != next_ui['brief_hash']:
             # A regenerated identical view verifies the new brief without replacing its visual version.
             p['ui']['brief_hash'] = next_ui['brief_hash']
+            p['ui']['requirement_versions']=next_ui['requirement_versions']
             p['ui']['verification'] = dict(brief_hash=next_ui['brief_hash'],
                 draft_revision=p['revision'], generated_spec_hash=digest(next_ui['spec']), created=next_ui['created'])
     if stage == 'prd':
         kind = r['result']['document_type']
+        document_version=p['documents'].get(kind,{}).get('document_version',0)+1
         p['documents'][kind] = dict(id=ident('DOC'), content=r['result'], requirement_name=p['name'], question_snapshot=copy.deepcopy(p['questions']), brief_hash=brief_hash(p), draft_revision=p['revision'], item_snapshot=copy.deepcopy(p['items']), created=now(), style_version='1', generator_version='1.1', reference_hashes={s['reference_id']:s['sha256'] for s in PROFILES['sources']} if p.get('reference_mode')!='builtin' else {}, limitations=r['limitations'])
+        p['documents'][kind]['source_snapshot']=[{k:s.get(k) for k in ('id','title','parse_status','failure_reason')} for s in p['sources']]
+        p['documents'][kind].update(document_version=document_version,document_family_id=p['id']+':'+kind,
+            delivery_item_ids=[i['id'] for i in delivery_items(p)],
+            requirement_versions=[requirement_ref(p,i) for i in p['items'] if i['kind'] in TRACKED])
     if stage == 'review':
         p['review'] = dict(target_hash=review_target(p), response=r, created=now())
     p['messages'].append(dict(role='assistant', stage=stage, text=r['summary'], response=r, created=now()))
@@ -76,6 +93,8 @@ class Workflow:
         require(not any(t['status'] in ('queued','running') for t in self.store.records(pid,'run')), 'PROJECT_BUSY','当前项目已有模型任务',409)
         p = self.store.get(pid)
         require(p['revision'] == revision, 'STALE_REVISION', '页面已过期', 409)
+        issues=execution_issues(p,stage,kind)
+        require(not issues,'STAGE_BLOCKED','；'.join(issues),409)
         run = dict(stage=stage, status='queued', revision=revision, message=message, document_type=kind, calls=0, attempts=[], events=[], created=now(), error=None, resumed_from=resumed_from, provider={k:v for k,v in config.items() if k not in ('proxy',)}, prompt_version='1.1', cost=None)
         rid = self.store.record(pid, 'run', run)
         self.store.update_run(pid,rid,user_task_id=user_task_id,generation_target=generation_target,input_state_hash=execution_hash(p))
@@ -134,6 +153,10 @@ class Workflow:
                     if run['stage']=='prd':
                         value=compile_plan(value,p,run['document_type'],omitted)
                     validate_response(value, run['stage'], p, excerpts, run['document_type'])
+                    if run['stage']=='ingest':
+                        context_schema=request_schema('ingest')['properties']['product_context_proposal']
+                        errors=list(jsonschema.Draft202012Validator(context_schema).iter_errors(value.get('product_context_proposal')))
+                        require(not errors,'SCHEMA_INVALID','product_context_proposal 必须包含本次契约的全部核对字段，未知填空字符串：'+'；'.join(e.message[:200] for e in errors))
                     evidence.finish('accepted', round(time.monotonic()-call_started, 3))
                     attempt['validation_result']='accepted'
                     attempt['evidence_limitations']=evidence.limitations[:]
@@ -205,8 +228,8 @@ class Workflow:
                             s['parse_status']='partial' if limited else 'read'
                             s['failure_reason']='图像内容存在不可辨认部分或没有可靠观察，请核对' if limited else ''
                             s['vision_run_id']=rid
-                output_state=copy.deepcopy(current)
-                output_state['revision']+=int(bool(value['proposals'] or value['questions']))
+            # Store.edit finalizes requirement versions and project revision before hashing.
+            output_state=copy.deepcopy(current)
             cost=None
             if config.get('input_price') is not None and config.get('output_price') is not None:
                 usages=[a.get('usage') for a in attempts if a.get('usage')]
@@ -232,13 +255,14 @@ def confirm(store, pid, body):
         require(p['revision'] == body['expected_revision'] and hashes(p) == body['expected_hashes'], 'STALE_REVISION', '版本或内容已改变，请重新检查', 409)
         issues = gate(p)
         require(not issues, 'SEMANTIC_BLOCKED', '；'.join(issues))
-        selected = {i['id'] for i in p['items'] if i['selection_status'] == 'selected' and i['applies_to'] == 'to_be'}
+        selected = {i['id'] for i in delivery_items(p)}
         require(set(body['scope_ids']) == selected, 'SCOPE_CONFLICT', '确认范围与当前已选目标不一致')
         cid, bid = ident('CONF'), ident('BASE')
         confirmation = dict(baseline_id=bid, revision=p['revision'], **hashes(p), scope_ids=sorted(selected), actor='authenticated_local_user', created=now(), idempotency_key=body['idempotency_key'], request_hash=request_hash)
         store.record(pid, 'confirmation', confirmation, cid, db)
         store.record(pid, 'baseline', dict(project=copy.deepcopy(p), confirmation_id=cid, hashes=hashes(p), parent_baseline_id=p['active_baseline_id']), bid, db)
         p['active_baseline_id'] = bid
+        p['confirmed_hashes']=hashes(p)
         db.execute('UPDATE projects SET payload=? WHERE id=?', (dumps(p), pid))
         store.record(pid, 'audit', dict(actor='authenticated_local_user', action='确认指定 PRD 内容版本', confirmation_id=cid, baseline_id=bid), db=db)
         return dict(id=cid, **confirmation)

@@ -14,6 +14,9 @@ const roleSelect=el('select',null,controls);roleSelect.setAttribute('aria-label'
 const editRoles=[...new Set(spec.pages.flatMap(p=>p.regions.flatMap(r=>r.components.flatMap(c=>c.simulation?.editable_roles||[]))))];
 for(const role of [...new Set([...(editRoles.length?editRoles:['编辑者']),'只读'])]){const option=el('option',role,roleSelect);option.value=role;}
 const failureLabel=el('label',null,controls),failure=el('input',null,failureLabel);failure.type='checkbox';failure.setAttribute('aria-label','模拟保存失败');el('span','模拟保存失败（仅演示）',failureLabel);
+const hasSimulation=spec.pages.some(p=>p.regions.some(r=>r.components.some(c=>c.simulation)));
+roleSelect.hidden=!hasSimulation;failureLabel.hidden=!hasSimulation;
+if(!hasSimulation)head.querySelector('small').textContent='静态需求草图 · 示例内容 · 不连接业务系统 · UI v'+spec.draft_revision;
 let current=spec.pages[0],role=roleSelect.value;
 pageSelect.onchange=()=>render(pages.get(pageSelect.value));roleSelect.onchange=()=>{role=roleSelect.value;render(current);};
 function render(page){

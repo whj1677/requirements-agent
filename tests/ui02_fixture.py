@@ -37,6 +37,8 @@ def model_server():
                 value['used_source_refs']=[image_ref]
                 value['result']=dict(observations=[dict(source_ref=image_ref,region='中央',observation='合成图中可见列表和新增按钮',uncertain=False)],unobservable=['保存效果未知'],unreadable=[])
             elif stage=='ingest':
+                from app.product_flow import INTAKE, SCOPE
+                value['product_context_proposal']={k:'合成上下文 '+label for k,label in {**INTAKE,**SCOPE}.items()}
                 for tid,kind,text in [('TMP-R','requirement',f'管理员维护{topic}列表。'),('TMP-RULE','rule','只读角色不能修改。'),('TMP-AC','acceptance','只读角色进入列表，不允许修改。')]:
                     value['proposals'].append(dict(temp_id=tid,action='add',target_item_id=None,kind=kind,title=text,statement=text,applies_to='to_be',epistemic_status='reported',source_refs=ref,related_refs=['TMP-R'] if kind!='requirement' else ['TMP-RULE','TMP-AC']))
                 question='联系人重复姓名如何处理？' if contact else '时段端点相接如何处理？'

@@ -5,9 +5,10 @@ import copy
 from .core import Problem, digest, dumps, execution_hash, ident, now, require
 from .provider import origin
 from .sources import save_source
+from .product_flow import execution_issues
 
 LABELS = {'organize':'整理当前信息','explore':'探索可选方案','clarify':'根据回答更新理解',
-          'prototype':'生成讨论原型','document':'生成讨论稿','review':'审查当前内容','change':'讨论修改方案'}
+          'prototype':'生成功能草图','document':'生成评审稿','review':'审查当前内容','change':'讨论修改方案'}
 STAGES = {'explore':['brainstorm'],'clarify':['clarify'],'prototype':['ui'],
           'document':['prd'],'review':['review'],'change':['change']}
 ACTIVE = ('queued','running')
@@ -24,11 +25,13 @@ class Actions:
         require(body['action'] in LABELS,'ACTION_INVALID','业务动作不存在')
         active=[s for s in p['sources'] if not s['excluded']]
         images=[s for s in active if s.get('image_mime') and s['parse_status']!='read']
-        stages=STAGES.get(body['action']) or (['vision'] if images else []) + ['clarify' if p['items'] else 'ingest']
+        stages=STAGES.get(body['action']) or (['vision'] if images else []) + ['ingest']
         configs={s:self.workflow.config(s) for s in stages}
         if config_snapshot is not None:
             config_snapshot.update(copy.deepcopy(configs))
         blockers=[]
+        for stage in stages:
+            blockers.extend(execution_issues(p,stage,body['document_type']))
         if not any(s['excerpts'] for s in active) and not p['items'] and not body['message'].strip():
             blockers.append('请先描述目标或添加项目资料。')
         if body['action'] in ('prototype','document','review') and not p['items']:

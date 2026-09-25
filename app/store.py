@@ -1,3 +1,4 @@
+import copy
 import json
 import sqlite3
 from contextlib import contextmanager
@@ -68,7 +69,18 @@ class Store:
             db.execute('BEGIN IMMEDIATE')
             p = self.get(pid, db)
             require(p['revision'] == revision, 'STALE_REVISION', '页面版本已过期，请查看最新内容及差异', 409)
+            before = copy.deepcopy(p)
             yield p, db
+            from .requirements import reconcile_items
+            changes = reconcile_items(before, p)
+            fresh={c['requirement_id'] for c in changes if c['before'] is None}
+            if fresh:
+                for row in db.execute('SELECT payload FROM projects WHERE id<>?',(pid,)):
+                    other=json.loads(row['payload'])
+                    collision=fresh & {i['id'] for i in other['items']}
+                    require(not collision,'IDENTITY_CONFLICT','其他项目已存在相同编号，未创建重复需求：'+'、'.join(sorted(collision)),409)
+            for change in changes:
+                self.record(pid, 'requirement_change', change, db=db)
             if bump:
                 p['revision'] += 1
             db.execute('UPDATE projects SET revision=?,payload=? WHERE id=?', (p['revision'], dumps(p), pid))

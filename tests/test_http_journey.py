@@ -27,6 +27,8 @@ def test_real_http_adapter_to_confirmation_and_export(tmp_path):
             stage=header['stage']
             value=dict(schema_version='1.1',stage=stage,summary='明确标记的 HTTP 合成测试响应',proposals=[],questions=[],findings=[],used_source_refs=[],limitations=[],result={})
             if stage=='ingest':
+                from app.product_flow import INTAKE, SCOPE
+                value['product_context_proposal']={k:'合成上下文 '+label for k,label in {**INTAKE,**SCOPE}.items()}
                 ex=ctx['excerpts'][0]
                 refs=[{'source_id':ex['source_id'],'excerpt_id':ex['id']}]
                 value['used_source_refs']=refs
@@ -78,7 +80,17 @@ def test_real_http_adapter_to_confirmation_and_export(tmp_path):
             for i in p['items']:
                 current=c.get(root).json()
                 assert c.post(root+'/items/'+i['id'],json={'expected_revision':current['revision'],'selection_status':'selected'}).status_code==200
-            stage('ui');stage('prd');stage('prd','mrd');stage('review')
+            from tests.product_flow_helpers import http_check
+            http_check(c,root,through=3)
+            stage('ui')
+            p=c.get(root).json()
+            assert c.post(root+'/sketch-review',json=dict(expected_revision=p['revision'],applicable=True,
+                changes='本期维护区域',preserved='未改导航',behavior='重叠拒绝，原数据不变')).status_code==200
+            p=c.get(root).json()
+            assert c.post(root+'/stage-checks/4',json=dict(expected_revision=p['revision'],expected_hash=p['product_flow'][3]['content_hash'])).status_code==200
+            stage('prd');stage('prd','mrd');stage('review')
+            p=c.get(root).json()
+            assert c.post(root+'/stage-checks/5',json=dict(expected_revision=p['revision'],expected_hash=p['product_flow'][4]['content_hash'])).status_code==200
             p=c.get(root).json();assert p['confirmation_issues']==[]
             response=c.post(root+'/confirmations',json={'expected_revision':p['revision'],'expected_hashes':p['hashes'],'scope_ids':[i['id'] for i in p['items']],'idempotency_key':'http-journey'})
             assert response.status_code==200,response.text

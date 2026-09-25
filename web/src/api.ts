@@ -6,6 +6,9 @@ export interface ActionInput { expected_revision: number; action: BusinessAction
 export interface ActionPlan { plan_hash: string; label: string; stages: string[]; max_calls: number; expected_revision: number; pending_text: string; context_scope: string; missing: string[]; recipients: { origin: string; model: string; needs_authorization: boolean }[]; sources: { id: string; title: string; status: string }[]; generation_target?: JsonObject }
 export interface UserTask { id: string; action: BusinessAction; label: string; status: string; message: string; calls: number; max_calls: number; run_ids: string[]; source_ids: string[]; completed_steps: number; stages: string[]; cost: number | null }
 export interface Project extends ProjectSummary {
+  product_flow?: {step:number;title:string;content_hash:string;complete:boolean;available:boolean;missing:string[];needs_recheck:boolean}[];
+  product_context?: JsonObject; product_context_proposal?: JsonObject; sketch_review?: JsonObject;
+  requirement_relations?: JsonObject[];
   mode: string; reference_mode: string; sources: JsonObject[]; items: JsonObject[]; options: JsonObject[];
   questions: JsonObject[]; messages: JsonObject[]; documents: Record<string, JsonObject>;
   ui?: JsonObject; hashes: Record<string, string | null>; confirmation_issues: string[];

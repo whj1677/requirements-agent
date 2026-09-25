@@ -22,6 +22,8 @@ from .sources import MAX_BYTES, save_source, webpage
 from .preview import prototype
 from .exports import document_files, handoff, zip_files
 from .document_reader import reader_document, export_readiness, filename
+from .product_flow import status as flow_status, checkpoint, INTAKE, SCOPE, BEHAVIOR
+from .requirements import exchange, requirement_ref, delivery_items
 
 
 class Strict(BaseModel):
@@ -69,6 +71,8 @@ class ActionStart(ActionPlan):
 class Decision(Revision):
     selection_status: Literal['candidate','selected','rejected','deferred']
     statement: str | None = Field(default=None,min_length=1,max_length=6000)
+    title: str | None = Field(default=None,min_length=1,max_length=200)
+    change_type: Literal['new','modified','preserved','existing'] | None = None
 
 class DirectionDecision(Revision):
     direction_status: Literal['selected','deferred','rejected']
@@ -78,6 +82,32 @@ class OptionItems(Revision):
 
 class Answer(Revision):
     answer: str = Field(min_length=1,max_length=6000)
+
+class ContextEdit(Revision):
+    values: dict[str,str]
+    scope_ids: list[str] | None = None
+
+class BehaviorEdit(Revision):
+    values: dict[str,str]
+    change_type: Literal['new','modified','preserved','existing']
+
+class StageCheck(Revision):
+    expected_hash: str
+
+class SketchReview(Revision):
+    applicable: bool
+    reason: str = Field(default='',max_length=6000)
+    changes: str = Field(default='',max_length=6000)
+    preserved: str = Field(default='',max_length=6000)
+    behavior: str = Field(default='',max_length=6000)
+
+class QuestionScope(Revision):
+    out_of_scope_reason: str = Field(max_length=6000)
+
+class RequirementRelation(Revision):
+    relation: Literal['parent_of','refines','replaces','depends_on']
+    source_id: str
+    target_id: str
 
 class Confirmation(Revision):
     expected_hashes: dict
@@ -148,7 +178,7 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
                          'capabilities': list(API_CAPABILITIES)}
 
     def attach_document_snapshot(pid, artifact):
-        if any(k not in artifact for k in ('item_snapshot','question_snapshot','requirement_name')):
+        if any(k not in artifact for k in ('item_snapshot','question_snapshot','requirement_name','source_snapshot')):
             with store.connect() as db:
                 row=db.execute('SELECT payload FROM revisions WHERE project_id=? AND revision=?',
                                (pid,artifact['draft_revision'])).fetchone()
@@ -157,6 +187,7 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
                 artifact.setdefault('item_snapshot',snapshot['items'])
                 artifact.setdefault('question_snapshot',snapshot['questions'])
                 artifact.setdefault('requirement_name',snapshot['name'])
+                artifact.setdefault('source_snapshot',[{k:s.get(k) for k in ('id','title','parse_status','failure_reason')} for s in snapshot['sources']])
         artifact['reader']=reader_document(artifact)
         return artifact
 
@@ -228,7 +259,70 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
         for artifact in result['documents'].values():
             attach_document_snapshot(pid,artifact)
         result['document_export_readiness']={kind:export_readiness(p,kind) for kind in p['documents']}
+        result['product_flow']=flow_status(p)
+        result['confirmation_scope_ids']=[i['id'] for i in delivery_items(p)]
         return result
+
+    @app.post('/api/projects/{pid}/product-context')
+    async def context_edit(pid:str,body:ContextEdit):
+        require(set(body.values)<=(INTAKE.keys()|SCOPE.keys()),'CONTEXT_INVALID','未知核对字段')
+        require(all(len(v)<=6000 for v in body.values.values()),'CONTEXT_INVALID','核对说明过长')
+        with store.edit(pid,body.expected_revision,'核对产品现状与增量范围') as (p,db):
+            if body.scope_ids is not None:
+                valid={i['id'] for i in p['items'] if i['kind']=='requirement' and i['applies_to']=='to_be'}
+                require(set(body.scope_ids)<=valid,'REFERENCE_INVALID','本期范围只能引用实际目标需求')
+                p.setdefault('product_context',{})['scope_ids']=list(dict.fromkeys(body.scope_ids))
+            p.setdefault('product_context',{}).update(body.values)
+        return p
+
+    @app.post('/api/projects/{pid}/items/{iid}/behavior')
+    async def behavior_edit(pid:str,iid:str,body:BehaviorEdit):
+        require(set(body.values)<=BEHAVIOR.keys(),'CONTEXT_INVALID','未知行为字段')
+        require(all(len(v)<=6000 for v in body.values.values()),'CONTEXT_INVALID','行为说明过长')
+        with store.edit(pid,body.expected_revision,'核对需求行为与改动性质') as (p,db):
+            item=next((i for i in p['items'] if i['id']==iid and i['kind']=='requirement'),None)
+            require(item is not None,'NOT_FOUND','需求不存在',404)
+            item.setdefault('behavior',{}).update(body.values)
+            item['change_type']=body.change_type
+        return p
+
+    @app.post('/api/projects/{pid}/sketch-review')
+    async def sketch_review(pid:str,body:SketchReview):
+        with store.edit(pid,body.expected_revision,'保存功能草图核对说明') as (p,db):
+            p['sketch_review']=body.model_dump(exclude={'expected_revision'})
+        return p
+
+    @app.post('/api/projects/{pid}/stage-checks/{step}')
+    async def check_stage(pid:str,step:int,body:StageCheck):
+        with store.edit(pid,body.expected_revision,'核对第 '+str(step)+' 步内容') as (p,db):
+            checkpoint(p,step,body.expected_hash)
+        return flow_status(p)
+
+    @app.get('/api/projects/{pid}/requirements-exchange')
+    async def export_requirements(pid:str):
+        value=exchange(store.get(pid))
+        value['change_records']=store.records(pid,'requirement_change')
+        return value
+
+    @app.post('/api/projects/{pid}/requirement-relations')
+    async def relate_requirements(pid:str,body:RequirementRelation):
+        with store.edit(pid,body.expected_revision,'记录独立需求之间的关系') as (p,db):
+            items={i['id']:i for i in p['items'] if i['kind']=='requirement'}
+            require(body.source_id in items and body.target_id in items and body.source_id!=body.target_id,
+                    'REFERENCE_INVALID','请选择两个不同的实际需求编号')
+            relation=dict(type=body.relation,source=requirement_ref(p,items[body.source_id]),target=requirement_ref(p,items[body.target_id]))
+            relations=p.setdefault('requirement_relations',[])
+            if relation not in relations:relations.append(relation)
+        return p
+
+    @app.post('/api/projects/{pid}/questions/{qid}/scope')
+    async def scope_question(pid:str,qid:str,body:QuestionScope):
+        with store.edit(pid,body.expected_revision,'明确问题是否属于本期范围') as (p,db):
+            q=next((q for q in p['questions'] if q['id']==qid),None)
+            require(q is not None,'NOT_FOUND','问题不存在',404)
+            q['out_of_scope_reason']=body.out_of_scope_reason.strip()
+            q['scope_decided_at']=now()
+        return p
 
     @app.patch('/api/projects/{pid}')
     async def edit_project(pid:str, body:ProjectEdit):
@@ -322,6 +416,8 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
         with store.edit(pid,body.expected_revision,'人工编辑或采纳条目') as (p,db):
             i=next((x for x in p['items'] if x['id']==iid),None)
             require(i is not None,'NOT_FOUND','条目不存在',404)
+            if body.title is not None:i['title']=body.title
+            if body.change_type is not None:i['change_type']=body.change_type
             if body.statement:
                 if body.statement != i['statement']:
                     s=save_source(store,'人工修订.txt',body.statement.encode('utf-8'),'goal')
@@ -333,6 +429,8 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
                 # Preserve stable business identity for a selected revision.
                 for key in ('title','statement','applies_to','epistemic_status','source_refs','related_refs'):
                     target[key]=copy.deepcopy(i[key])
+                for key in ('behavior','change_type'):
+                    if key in i:target[key]=copy.deepcopy(i[key])
                 target['selection_status']='selected'
                 i['selection_status']='deferred'
                 for linked in p['items']+p['questions']:
@@ -385,7 +483,12 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
             q=next((x for x in p['questions'] if x['id']==qid),None)
             require(q is not None,'NOT_FOUND','问题不存在',404)
             q.update(answer=body.answer,status='answered',answered_at=now())
-            p['sources'].append(save_source(store,'问题回答.txt',body.answer.encode(),'goal'))
+            source=save_source(store,'问题回答.txt',body.answer.encode(),'goal')
+            p['sources'].append(source)
+            q['answer_source_refs']=[dict(source_id=source['id'],excerpt_id=e['id']) for e in source['excerpts']]
+            q['affected_requirements']=[requirement_ref(p,i) for i in p['items'] if i['kind']=='requirement' and
+                (i['id'] in q.get('related_refs',[]) or set(i.get('related_refs',[])) & set(q.get('related_refs',[])))]
+            q['answer_effect']='待核对关联需求；回答不自动改写原条款或采纳状态'
         return p
 
     @app.get('/api/models')
@@ -514,6 +617,7 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
             candidate['status']='selected'
             p['ui']=dict(spec=candidate['spec'],brief_hash=candidate['brief_hash'],created=candidate['created'])
             p['ui'].update({k:candidate[k] for k in ('generation_target','input_revision','generation_run_id') if k in candidate})
+            if 'requirement_versions' in candidate:p['ui']['requirement_versions']=copy.deepcopy(candidate['requirement_versions'])
             p['stale_document_kinds']=list(p['documents'])
             p['document_update_needed']=bool(p['stale_document_kinds'])
             p['review']=None
@@ -542,7 +646,7 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
         if p['active_baseline_id']:
             baseline=store.get_record(pid,p['active_baseline_id'],'baseline')
             if baseline['hashes']==hashes(p):
-                status='产品经理 PRD 内容确认 · '+baseline['confirmation_id'] if kind=='prd' else '同底稿 PRD 内容已确认；MRD 为派生文档，未单独签署审批'
+                status='产品经理指定版本内容确认 · '+kind.upper()
         files=await document_files(p,kind,status,reader=True)
         import hashlib
         store.record(pid,'document_export',dict(document_type=kind,document_artifact_id=artifact['id'],style_version='reader-2',generator_version='1.1',artifact_hashes={k:hashlib.sha256(v).hexdigest() for k,v in files.items()},asset_bindings=files['document_asset_bindings.json'].decode('utf8')))

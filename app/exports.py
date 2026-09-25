@@ -9,6 +9,7 @@ from .core import brief_hash, digest, dumps, ident, now, require
 from .preview import prototype
 from .contracts import profile
 from .document_reader import reader_document
+from .requirements import delivery_items
 
 
 def block_text(block, p):
@@ -16,6 +17,24 @@ def block_text(block, p):
     if block['kind'] in ('requirement','rule','acceptance'):
         return '\n'.join(f'{r} — {items[r]["statement"]}' for r in block['ref_ids'])
     return ('【建议／待确认】' if block['kind'] == 'ui_suggestion' else '') + (block['text'] or '')
+
+
+def readable_picture_parts(data):
+    """Paginate tall screenshots at quiet scanlines, preserving full image coverage."""
+    from PIL import Image
+    with Image.open(io.BytesIO(data)) as image:
+        height_limit=int(image.width*1.15)
+        if image.height<=height_limit:return [data]
+        gray=image.convert('L');parts=[];top=0
+        while top<image.height:
+            bottom=min(top+height_limit,image.height)
+            if bottom<image.height:
+                start=top+int(height_limit*.8)
+                # Avoid bisecting text when a whitespace row is available nearby.
+                bottom=min(range(start,bottom+1),key=lambda y:(sum(gray.crop((0,y,image.width,y+1)).histogram()[:110]),-y))
+            out=io.BytesIO();image.crop((0,top,image.width,bottom)).save(out,format='PNG')
+            parts.append(out.getvalue());top=bottom
+        return parts
 
 
 async def capture(spec):
@@ -41,7 +60,7 @@ async def document_files(p, kind, status='草稿／待产品经理内容确认',
     content = reader_document(artifact) if reader else artifact['content']
     meta = f'{status} · 底稿版本 {artifact["draft_revision"]} · 内容哈希 {digest(content)[:16]}'
     if reader:
-        meta=f'{status} · 版本 v{artifact["draft_revision"]}'
+        meta=f'{status} · 文档 v{artifact.get("document_version","旧版未记录")} · 底稿 v{artifact["draft_revision"]}'
     rendered = [(s, [b['text'] if reader else block_text(b,p) for b in s['blocks']]) for s in content['sections']]
     md = [f'# {content["title"]}', meta, '本文用于需求内容评审；页面及数据为原型模拟，不能证明业务系统已经实现。']
     if not reader and content['content_profile_id'].startswith('builtin-'):
@@ -71,6 +90,7 @@ async def document_files(p, kind, status='草稿／待产品经理内容确认',
     images = await capture(p['ui']['spec']) if ui_current else []
     image_map = dict(images)
     files, bindings = {}, []
+    pictured={}
     if not ui_current:
         notice = '未提供当前底稿可用的页面方案；本文未插入原型图片。' if not p.get('ui') else '页面方案对应旧底稿；本文未插入过期原型图片。'
         md.append(notice)
@@ -92,15 +112,24 @@ async def document_files(p, kind, status='草稿／待产品经理内容确认',
                     continue
                 image = image_map[page['page_id']]
                 filename = 'assets/' + hashlib.sha256(page['page_id'].encode()).hexdigest()[:16] + '.png'
-                caption = f'低保真模拟 {page["title"]} · UI 版本 {p["ui"]["spec"]["draft_revision"]} · 待确认'
+                caption = f'需求草图，非最终UI设计 · {page["title"]} · 草图版本 {p["ui"]["spec"]["draft_revision"]}'
                 from PIL import Image
-                with Image.open(io.BytesIO(image)) as preview:
-                    width=min(6.4,8.2*preview.width/preview.height)
-                # Reserve room for its caption on one page, including tall prototypes.
-                doc.add_picture(io.BytesIO(image), width=Inches(width))
-                doc.paragraphs[-1].paragraph_format.keep_with_next = True
-                doc.add_paragraph(caption)
-                md.append(f'![{caption}]({filename})')
+                if reader and page['page_id'] in pictured:
+                    reference='本功能使用同一需求草图，参见「'+pictured[page['page_id']]+'」中的图示。'
+                    doc.add_paragraph(reference);md.append(reference)
+                else:
+                    parts=readable_picture_parts(image) if reader else [image]
+                    for n,part in enumerate(parts,1):
+                        asset=filename if len(parts)==1 else filename.removesuffix('.png')+f'-{n}.png'
+                        part_caption=caption+(f'（{n}/{len(parts)}）' if len(parts)>1 else '')
+                        with Image.open(io.BytesIO(part)) as preview:
+                            width=min(6.4,8.2*preview.width/preview.height)
+                        doc.add_picture(io.BytesIO(part), width=Inches(width))
+                        doc.paragraphs[-1].paragraph_format.keep_with_next = True
+                        doc.add_paragraph(part_caption)
+                        md.append(f'![{part_caption}]({asset})')
+                        files[asset]=part
+                    pictured[page['page_id']]=s['title']
                 files[filename] = image
                 bindings.append(dict(section_id=s['section_id'], ui_page_id=page['page_id'], ui_spec_hash=digest(p['ui']['spec']), asset_hash=hashlib.sha256(image).hexdigest(), caption=caption))
     if not reader:
@@ -151,8 +180,8 @@ def handoff(store, pid, baseline_id, idempotency_key):
         baseline = next((b for b in store.records(pid,'baseline',db) if b['id'] == baseline_id),None)
         require(baseline is not None, 'CONFIRMATION_REQUIRED', '需要有效人工确认基线', 409)
         p = baseline['project']
-        items = [i for i in p['items'] if i['selection_status']=='selected' and i['applies_to']=='to_be']
-        canonical = '\n\n'.join(f'## {i["id"]} {i["title"]}\n\n{i["statement"]}' for i in items)
+        items = delivery_items(p)
+        canonical = '\n\n'.join(f'## {i["id"]}｜{i["title"]} · v{i.get("content_version",1)}\n\n{i["statement"]}' for i in items)
         refs = {i['id']: i for i in items}
         traces = []
         for req in [i for i in items if i['kind']=='requirement']:
@@ -168,6 +197,28 @@ def handoff(store, pid, baseline_id, idempotency_key):
             'ui_spec.json': dumps(p['ui']['spec'] if p['ui'] else None),
             'prototype.html': prototype(p['ui']['spec']) if p['ui'] else '<!doctype html><meta charset="utf-8"><p>本基线未包含 UI 方案</p>',
             'traceability.json': dumps(traces)}
+        from .requirements import exchange, requirement_ref
+        payload=exchange(p,baseline_id)
+        payload['change_records']=[r for r in store.records(pid,'requirement_change',db) if any(
+            i['id']==r['requirement_id'] and r['version']<=i.get('content_version',1) for i in p['items'])]
+        files['requirements-exchange.json']=dumps(payload)
+        for kind,artifact in p['documents'].items():
+            content=reader_document(artifact)
+            files[kind.upper()+'.content.json']=dumps(artifact)
+            files[kind.upper()+'.md']='# '+content['title']+'\n\n'+'\n\n'.join(
+                '## '+s['title']+'\n\n'+'\n\n'.join(b['text'] for b in s['blocks']) for s in content['sections'])
+        for role,keys in (('frontend',('actor','entry','flow','result','exceptions')),('backend',('data','permissions','result','exceptions'))):
+            from .product_flow import BEHAVIOR
+            details=[]
+            for req in (i for i in items if i['kind']=='requirement'):
+                details.append('\n\n### '+req['id']+' · v'+str(req.get('content_version',1))+' 的相关行为\n'+
+                    '\n'.join(BEHAVIOR[k]+'：'+req.get('behavior',{}).get(k,'未指定，需技术设计时核对') for k in keys))
+            files[role+'_spec.md']+=''.join(details)
+        for trace in traces:
+            trace['requirement']=requirement_ref(p,refs[trace['requirement_id']])
+            trace['test_case_refs']=[]
+            trace['test_execution_status']='not_run'
+        files['traceability.json']=dumps(traces)
         files = {k:v.encode('utf-8') for k,v in files.items()}
         manifest = dict(schema_version='1.1', baseline_id=baseline_id, baseline_hash=digest(baseline['hashes']), confirmation_id=baseline['confirmation_id'], generator_version='1.1', prompt_version='1.1', created=now(), artifacts={k:dict(sha256=hashlib.sha256(v).hexdigest(), role=k) for k,v in files.items()})
         files['manifest.json'] = dumps(manifest).encode()

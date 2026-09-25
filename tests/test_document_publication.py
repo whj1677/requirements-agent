@@ -49,7 +49,9 @@ def test_reader_preserves_business_text_without_internal_audit_dump(tmp_path, mo
         for item in p['items']:
             assert item['statement'] in text
         assert p['questions'][0]['question'] in text
-        for technical in ('REQ-0001', 'SRC-0001', 'reported', '模型讨论说明', '参考维度', '历史分析提示'):
+        # PRODUCT-01 explicitly restores stable requirement identities in human documents.
+        assert 'REQ-0001｜' in text and 'v1' in text
+        for technical in ('SRC-0001', 'reported', '模型讨论说明', '参考维度', '历史分析提示'):
             assert technical not in text
         assert artifact['content'] == app.state.store.get(p['id'])['documents']['prd']['content']
 
@@ -84,7 +86,7 @@ def test_named_export_after_answers_and_regeneration_matches_reader_and_snapshot
         assert md.status_code == 200
         assert p['name'] in unquote(md.headers['content-disposition'])
         assert "filename*=UTF-8''" in md.headers['content-disposition']
-        assert f'_PRD_v{new["draft_revision"]}.md' in unquote(md.headers['content-disposition'])
+        assert f'_PRD_v{new["document_version"]}_{new["id"]}.md' in unquote(md.headers['content-disposition'])
         word = client.get(root+'/documents/prd/docx?document_id='+new['id'])
         assert word.status_code == 200
         paragraphs = '\n'.join(x.text for x in Document(io.BytesIO(word.content)).paragraphs)
@@ -92,7 +94,8 @@ def test_named_export_after_answers_and_regeneration_matches_reader_and_snapshot
         for s in reader['sections']:
             for b in s['blocks']:
                 assert b['text'] in md.text and b['text'] in paragraphs
-        for noise in ('内容哈希', '参考维度处置', 'reported', 'SRC-0001', 'REQ-0001'):
+        assert 'REQ-0001｜' in paragraphs and 'REQ-0001｜' in md.text
+        for noise in ('内容哈希', '参考维度处置', 'reported', 'SRC-0001'):
             assert noise not in paragraphs and noise not in md.text
         assert '相接边界允许。' in paragraphs
         assert not app.state.store.records(p['id'], 'baseline')
@@ -120,3 +123,16 @@ def test_reader_keeps_candidate_and_inference_identity_and_original_evidence(tmp
     assert '澄清记录 1 仍待澄清。' in text and 'Q-0001' not in text
     assert artifact == p['documents']['prd']
     assert p['items'][-1]['selection_status']=='candidate'
+
+
+def test_source_diagnostics_use_artifact_snapshot_names_without_changing_original(tmp_path, monkeypatch):
+    from app.document_reader import reader_document
+    app,p=setup(tmp_path,monkeypatch)
+    artifact=generate(app.state.store,p['id'])
+    source=artifact['source_snapshot'][0]
+    artifact['content']['sections'][-1]['blocks'].append(dict(kind='narrative',ref_ids=[],text='材料限制：'+source['id']+' partial 图像有不可辨认部分。'))
+    original=copy.deepcopy(artifact)
+    text='\n'.join(b['text'] for s in reader_document(artifact)['sections'] for b in s['blocks'])
+    assert '材料「'+source['title']+'」（部分读取） 图像有不可辨认部分。' in text
+    assert source['id'] not in text and 'partial' not in text
+    assert artifact==original

@@ -4,9 +4,10 @@ import re
 import jsonschema
 from referencing import Registry, Resource
 from .core import KIT, brief_hash, digest, read_json, require
+from .requirements import delivery_items
 
 API_CAPABILITIES = tuple(sorted(('actions', 'artifacts', 'confirmations', 'documents', 'exports', 'models',
-                                 'options-direction', 'options-items', 'projects', 'runs', 'session', 'sources')))
+                                 'options-direction', 'options-items', 'projects', 'runs', 'session', 'sources', 'product-flow', 'requirements-exchange')))
 
 SCHEMA = read_json(KIT / 'examples/runtime_response.schema.json')
 WIRE = read_json(KIT / 'examples/wireframe.schema.json')
@@ -167,7 +168,7 @@ def validate_document(doc, p, kind):
     for s in doc['sections']:
         for b in s['blocks']:
             if b['kind'] in ('requirement', 'rule', 'acceptance'):
-                unselected = sorted(r for r in b['ref_ids'] if not (r in items and items[r]['selection_status'] == 'selected' and items[r]['applies_to'] == 'to_be'))
+                unselected = sorted(r for r in b['ref_ids'] if r not in {i['id'] for i in delivery_items(p)})
                 require(not unselected, 'SEMANTIC_BLOCKED', '规范内容只能引用本期已选目标条目（' + '、'.join(unselected[:5]) + (' 等' if len(unselected) > 5 else '') + ' 未已选）')
                 mismatched = sorted(r for r in b['ref_ids'] if r in items and items[r]['kind'] != b['kind'])
                 require(not mismatched, 'REFERENCE_INVALID', '规范段落与条目类型不一致（' + '、'.join(mismatched[:5]) + (' 等' if len(mismatched) > 5 else '') + '）')
@@ -175,7 +176,7 @@ def validate_document(doc, p, kind):
 
 def document_gaps(doc, p):
     prof = profile(doc['document_type'],doc['content_profile_id'].startswith('builtin-'))
-    functions = [i['id'] for i in p['items'] if i['kind'] == 'requirement' and i['selection_status'] == 'selected' and i['applies_to'] == 'to_be']
+    functions = [i['id'] for i in delivery_items(p) if i['kind'] == 'requirement']
     actual = {(m['profile_section_id'], m['scope_ref']) for m in doc['reference_mapping']}
     gaps = []
     for d in prof['sections']:
@@ -184,20 +185,28 @@ def document_gaps(doc, p):
                 if (d['id'], scope) not in actual:
                     gaps.append('参考维度未处置：' + d['id'] + (' / ' + scope if scope else ''))
     used = {r for s in doc['sections'] for b in s['blocks'] if b['kind'] in ('requirement', 'rule', 'acceptance') for r in b['ref_ids']}
-    for i in p['items']:
+    for i in delivery_items(p):
         if i['selection_status'] == 'selected' and i['applies_to'] == 'to_be' and i['kind'] in ('requirement', 'rule', 'acceptance') and i['id'] not in used:
             gaps.append('未成文：' + i['id'])
     return gaps
 
 
 def review_target(p):
-    return digest({'brief': brief_hash(p), 'documents': p['documents'], 'ui': p['ui']})
+    target={'brief': brief_hash(p), 'documents': p['documents'], 'ui': p['ui']}
+    if p.get('requirement_relations'):target['requirement_relations']=p['requirement_relations']
+    return digest(target)
 
 
 def gate(p):
+    from .product_flow import status, question_open
     issues = []
+    steps=status(p)
+    first=next((s for s in steps[:5] if not s['complete']),None)
+    if first:issues+=['请完成第'+str(first['step'])+'步「'+first['title']+'」核对']+first['missing']
+    for kind in p.get('delivery_scope',{}).get('documents',['mrd','prd']):
+        if kind not in p['documents']:issues.append('缺少 '+kind.upper()+' 评审稿')
     if 'prd' not in p['documents']:
-        return ['缺少 PRD 内容对象；MRD 不能代替 PRD 确认']
+        return issues+['缺少 PRD 内容对象；MRD 不能代替 PRD 确认']
     for doc in p['documents'].values():
         if doc['brief_hash'] != brief_hash(p):
             issues.append('文档与当前底稿不一致，请重新生成')
@@ -206,7 +215,7 @@ def gate(p):
         issues.append('页面变化后文档需要更新：'+'、'.join(p.get('stale_document_kinds',[])))
     if p['ui'] and p['ui']['brief_hash'] != brief_hash(p):
         issues.append('线框对应旧底稿，请重新生成')
-    issues.extend(q['question'] for q in p['questions'] if q['blocking'] and q['status'] != 'answered')
+    issues.extend(q['question'] for q in p['questions'] if q['blocking'] and question_open(q))
     review = p.get('review')
     if not review or review['target_hash'] != review_target(p):
         issues.append('需要审查当前底稿、文档和线框')
@@ -216,7 +225,7 @@ def gate(p):
         issues.append('本期没有已选需求')
     if not any(i['selection_status'] == 'selected' and i['applies_to']=='to_be' and i['kind'] == 'acceptance' for i in p['items']):
         issues.append('缺少已选验收条件')
-    selected=[i for i in p['items'] if i['selection_status']=='selected' and i['applies_to']=='to_be']
+    selected=delivery_items(p)
     for req in (i for i in selected if i['kind']=='requirement'):
         if not any(ac['kind']=='acceptance' and (req['id'] in ac['related_refs'] or ac['id'] in req['related_refs']) for ac in selected):
             issues.append('需求缺少关联验收条件：'+req['id'])
