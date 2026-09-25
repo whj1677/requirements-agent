@@ -126,3 +126,29 @@ B 的真实理解形成9条候选和3个问题。其中“只读能否看备注�
 模型仍可能重复提问、输出冗长叙述或需要格式修复；正文保留原文与行为说明，因此部分内容仍重复，尚不宣称无人干预一次成文。公开截图的视觉观察是partial；不能据此证明私有平台适配。B的后半路径、真人无指导体验/正式内容确认、真实业务开发与测试、外部管理平台集成均未执行。没有正式确认，也没有真实场景基线或交接包；合成HTTP测试的确认只验证机制。
 
 本机证据根为 `evidence/runtime/product01/`：授权与唯一调用账本、各次独立实例manifest和失败响应、输入快照、浏览器截图、Word页面、交换包均保留。最终体验实例与单机包位置随交付回报；单机包不含.env、数据或完整调用证据。原8765/8766/8767实例及dist不动，未合并或部署。
+
+## 2026-09-25 追加：日常工作台归一化
+
+用户要求以后有且仅有一个工作台。本次整理只统一启动、数据归属与维护规则，不改业务界面、成文逻辑或历史试跑结论；上文“原服务不动”是上一轮交付时的事实，本次按新授权切换。
+
+- 唯一活动源码为仓库根目录，前端为 `web/dist/`，数据为根目录 `data/`，入口固定 `http://127.0.0.1:8765/`。`start-local.cmd` 与 `scripts/start.ps1` 共用此入口，重复启动复用已有实例；另一份工程或其他程序占用时拒绝，不换端口。
+- Python 入口在加载应用之前占用端口，避免第二次初始化 Store 影响活动任务。PowerShell 启动互斥、恢复原进程环境变量，启动令牌不写服务器日志。诊断只读数据库，不再实例化应用。
+- 对原 4 个实例先核对进程与无活动任务，再完成各自 SQLite 一致性备份、材料及证据备份。原根目录 2 个项目/历史/设置保持逐行一致，汇入 6 个独立项目，统一入口共 8 个项目；同 ID 同内容跳过。同一 v17 在旧副本中存在新增文档差异，完整归档但不覆盖原项目；没有将后续产物追认为原试跑成功。文件内容冲突为 0。
+- 旧 8766、8767、50053 实例已停止，原 8765 更新为当前实现后仍使用 8765。历史副本、失败记录及本机归档未删除，不再作为日常入口；未改已有未提交文件。未合并 PR、没有外网部署。
+
+实际验证（除构建外 cwd 均为仓库根目录）：
+
+| 命令或检查 | 实际结果 |
+|---|---|
+| `.venv/Scripts/python.exe -m pytest tests/test_workbench_entry.py tests/test_runtime_info.py -q`，隔离 RA_DATA_DIR | 退出 0，7 项通过 |
+| `.venv/Scripts/python.exe -m pytest tests -q`，隔离 RA_DATA_DIR | 退出 0，185 项通过，69.37 秒，2 项依赖弃用警告 |
+| `npm.cmd run build -- --outDir ../evidence/workbench-unification/dist`，cwd=`web` | 退出 0；停止服务后更新根目录前端，未运行多个构建版本 |
+| `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start.ps1 -NoAuth` | 启动退出 0；重复启动退出 0 |
+| `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start.ps1` | 已运行时退出 0，PID 不变，不切换既有登录方式 |
+| `.venv/Scripts/python.exe scripts/serve.py`，端口已占用 | 预期退出 1，在应用/数据库初始化之前拒绝 |
+| 同上，`RA_PORT=8766` | 预期退出 1，拒绝另开端口 |
+| `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/diagnose.ps1` | 退出 0，数据库 integrity=ok；Key 仅输出配置状态 |
+| 浏览器正常入口 | 实际列出 8 项；打开 v36 项目，切换 MRD/PRD v2，正文及实际文档 ID 下载入口保留；截图已查看 |
+| TCP 监听核对 | 上述 4 个工作台端口中仅 8765 监听 |
+
+本次真实模型请求为 0，不改变既有模型/人工验收边界。本机备份、迁移清单、截图和测试日志在忽略目录 `evidence/workbench-unification/`，不公开提交；有差异的旧副本可从该备份核查。干净机器安装和真人内容验收仍未执行。本次停止条件是一个可使用的日常入口，已达到，不继续删除历史证据或扩大重构。
