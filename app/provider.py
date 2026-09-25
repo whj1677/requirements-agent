@@ -144,6 +144,7 @@ def ui_structure_example():
 
 def assemble(p, stage, user_message, config, folder, kind='prd', generation_target=None, pending_images_only=False):
     header = dict(stage=stage, project_id=p['id'], current_revision=p['revision'], mode=p['mode'], schema=request_schema(stage), remaining_budget=config['max_calls'])
+    if stage!='ui':header['delivery_policy']='工作台已取消业务草图生成与核对。交付 MRD/PRD；原页面截图仍可作为现状参考。不要要求生成或批准草图才能成文，不把历史草图当作本轮交付。业务入口、字段、流程及异常仍必须在需求中表达。'
     if stage=='ingest':header['context_contract']='整理后必须输出 product_context_proposal 的全部字段，供用户核对，未知值填空字符串；不自动采纳或批准。已有条目仅因信息实质变化才提出修订，不重复建同义候选。'
     if generation_target:
         header['generation_target']=generation_target
@@ -160,6 +161,9 @@ def assemble(p, stage, user_message, config, folder, kind='prd', generation_targ
     context['user_message'] = user_message
     context['product_context']=p.get('product_context',{})
     context['sketch_review']=p.get('sketch_review',{})
+    if stage!='ui':
+        context['ui']=None
+        context['sketch_review']={}
     context['requirement_relations']=p.get('requirement_relations',[])
     context['recent_messages'] = p['messages'][-8:]
     if stage=='clarify':
@@ -178,7 +182,7 @@ def assemble(p, stage, user_message, config, folder, kind='prd', generation_targ
         and m.get('response') and all(r['source_id'] in active_sources for r in m['response']['used_source_refs'])]
     context['source_status'] = [{k:s.get(k) for k in ('id','title','parse_status','failure_reason','excluded','purpose')} for s in p['sources']]
     if stage=='prd':
-        context=document_context(p)
+        context=document_context(p, include_sketch=False)
         context['user_message']=user_message
     remaining = config['context_chars'] - len(system) - len(dumps(context)) - config['max_tokens'] * 4 - 4000
     require(remaining > 0, 'BUDGET_EXHAUSTED', '关键底稿与输出预留已超过上下文预算；不能截断已选规则')

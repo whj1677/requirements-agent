@@ -34,10 +34,13 @@ def test_scope_and_rule_checks_use_actual_content_not_selected_count(tmp_path):
     with pytest.raises(Problem):advance(p,3)
 
 
-def test_checkpoints_bind_relevant_content_and_sketch_na_reason(tmp_path):
+def test_checkpoints_bind_content_and_retired_sketch_is_not_required(tmp_path):
     p=setup(tmp_path)
     for n in (1,2,3):advance(p,n)
-    assert not execution_issues(p,'ui') and execution_issues(p,'prd')
+    assert execution_issues(p,'ui') and not execution_issues(p,'prd')
+    assert status(p)[3]['retired'] and not status(p)[3]['complete']
+    assert status(p)[4]['available'] and '4' not in p['stage_checks']
+    # A legacy sketch check retains its identity; it is never fabricated for the new path.
     p['sketch_review']={'applicable':False,'reason':'本次仅调整后台校验，无页面或交互变化。'}
     advance(p,4)
     assert not execution_issues(p,'prd')

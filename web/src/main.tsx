@@ -9,7 +9,7 @@ import { DraftProvider, useNavigation } from './editing';
 import './style.css';
 import './workflow.css';
 
-const REQUIRED_CAPABILITIES = ['actions'];
+const REQUIRED_CAPABILITIES = ['actions', 'five-step-workflow'];
 function compatOf(info?: SessionInfo['backend']): Compat {
   if (!info) return { status: 'unverified', missing: [] };
   const missing = REQUIRED_CAPABILITIES.filter(c => !(info.capabilities || []).includes(c));

@@ -82,12 +82,9 @@ def test_real_http_adapter_to_confirmation_and_export(tmp_path):
                 assert c.post(root+'/items/'+i['id'],json={'expected_revision':current['revision'],'selection_status':'selected'}).status_code==200
             from tests.product_flow_helpers import http_check
             http_check(c,root,through=3)
-            stage('ui')
             p=c.get(root).json()
-            assert c.post(root+'/sketch-review',json=dict(expected_revision=p['revision'],applicable=True,
-                changes='本期维护区域',preserved='未改导航',behavior='重叠拒绝，原数据不变')).status_code==200
-            p=c.get(root).json()
-            assert c.post(root+'/stage-checks/4',json=dict(expected_revision=p['revision'],expected_hash=p['product_flow'][3]['content_hash'])).status_code==200
+            assert p['ui'] is None and '4' not in p.get('stage_checks',{})
+            assert p['product_flow'][4]['available']
             stage('prd');stage('prd','mrd');stage('review')
             p=c.get(root).json()
             for kind,doc in p['documents'].items():
@@ -102,7 +99,8 @@ def test_real_http_adapter_to_confirmation_and_export(tmp_path):
             response=c.post(root+'/exports',json={'baseline_id':baseline,'idempotency_key':'http-export'})
             assert response.status_code==200,response.text
             assert c.get(root+'/exports/'+response.json()['id']).content.startswith(b'PK')
-            assert len(requests)==5
+            assert len(requests)==4  # Intake, PRD, MRD, review; no retired sketch request.
+            assert all(d['sketch_policy']=='excluded' for d in p['documents'].values())
             assert len(app.state.store.records(p['id'],'confirmation'))==1
             artifacts=c.get(root+'/artifacts')
             assert artifacts.status_code==200 and len(artifacts.json()['document_artifact'])==2

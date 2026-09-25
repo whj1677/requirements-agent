@@ -1,8 +1,9 @@
-"""Six human checkpoints over content, shared by business and diagnostic entrypoints."""
+"""Human checkpoints. Legacy step 4 stays addressable, but is no longer mandatory."""
 from .core import digest, require, now, brief_hash, hashes
 from .requirements import requirement_ref, TRACKED
 
 TITLES = ('提供现状与诉求','核对现状、价值与改动范围','澄清流程与规则','核对功能草图','评审 MRD 与 PRD','确认与交接')
+ACTIVE_STEPS = (1, 2, 3, 5, 6)
 INTAKE = {'product':'现有产品','module':'相关页面或模块','intent':'本次改动意图'}
 SCOPE = {'current_state':'当前页面与流程','users':'目标使用者','value':'问题与改动价值',
          'change_scope':'本期新增或修改','preserve_scope':'保持不变','out_of_scope':'暂不涉及','priority':'优先级与依据'}
@@ -105,8 +106,11 @@ def status(p):
         valid=bool(step<6 and prior_valid and not own_missing and recorded and recorded['content_hash']==token)
         if step==6:valid=bool(prior_valid and p.get('active_baseline_id') and p.get('confirmed_hashes')==hashes(p))
         result.append(dict(step=step,title=title,content_hash=token,complete=valid,
-            available=prior_valid,missing=own_missing,needs_recheck=bool(recorded and not valid)))
-        prior_valid=valid
+            available=prior_valid,missing=own_missing,needs_recheck=bool(recorded and not valid),
+            retired=step not in ACTIVE_STEPS,
+            display_step=ACTIVE_STEPS.index(step)+1 if step in ACTIVE_STEPS else None))
+        # Do not invent a sketch approval or renumber historical stage-check keys.
+        if step in ACTIVE_STEPS:prior_valid=valid
     return result
 
 
@@ -135,7 +139,7 @@ def document_review_current(p, kind):
 def review_document(p, kind, document_id):
     doc=p['documents'].get(kind)
     require(doc and doc['id']==document_id,'STALE_DOCUMENT','文档版本已变化，请重新核对',409)
-    require(status(p)[4]['available'],'STAGE_BLOCKED','请先完成草图核对',409)
+    require(status(p)[4]['available'],'STAGE_BLOCKED','请先完成范围及业务规则核对',409)
     require(doc['brief_hash']==brief_hash(p) and kind not in p.get('stale_document_kinds',[]),
             'STALE_DOCUMENT','文档基于旧内容，请更新后评审',409)
     p.setdefault('document_reviews',{})[kind]=dict(document_id=document_id,content_hash=digest(doc['content']),
@@ -143,11 +147,12 @@ def review_document(p, kind, document_id):
 
 
 def execution_issues(p, stage, kind='prd'):
+    if stage=='ui':return ['业务草图功能已取消，请通过需求条目、业务规则及文档表达改动。']
     # Intake remains possible with missing information. Later execution shares these checks.
-    required={'brainstorm':1,'clarify':2,'change':2,'ui':3,'prd':4,'review':4}.get(stage,0)
+    required={'brainstorm':1,'clarify':2,'change':2,'ui':3,'prd':3,'review':3}.get(stage,0)
     if not required:return []
     steps=status(p)
-    failures=[s for s in steps[:required] if not s['complete']]
+    failures=[s for s in steps[:required] if not s['retired'] and not s['complete']]
     if not failures:return []
     first=failures[0]
-    return [f'先完成第{first["step"]}步「{first["title"]}」']+first['missing']
+    return [f'先完成第{first["display_step"]}步「{first["title"]}」']+first['missing']

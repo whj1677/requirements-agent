@@ -151,7 +151,7 @@ class Workflow:
                     attempt.update(meta)
                     require(self.store.get_record(pid, rid, 'run')['status'] != 'cancelled', 'CANCELLED', '已取消，结果未采纳')
                     if run['stage']=='prd':
-                        value=compile_plan(value,p,run['document_type'],omitted)
+                        value=compile_plan(value,p,run['document_type'],omitted,include_sketch=False)
                     validate_response(value, run['stage'], p, excerpts, run['document_type'])
                     if run['stage']=='ingest':
                         context_schema=request_schema('ingest')['properties']['product_context_proposal']
@@ -208,6 +208,7 @@ class Workflow:
                 apply_response(current, value)
                 if run['stage']=='prd':
                     artifact=current['documents'][run['document_type']]
+                    artifact['sketch_policy']='excluded'
                     current['stale_document_kinds']=[kind for kind in current.get('stale_document_kinds',[]) if kind!=run['document_type']]
                     current['document_update_needed']=bool(current['stale_document_kinds'])
                     self.store.record(pid,'document_artifact',artifact,db=db)

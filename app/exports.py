@@ -62,7 +62,8 @@ async def document_files(p, kind, status='草稿／待产品经理内容确认',
     if reader:
         meta=f'{status} · 文档 v{artifact.get("document_version","旧版未记录")} · 底稿 v{artifact["draft_revision"]}'
     rendered = [(s, [b['text'] if reader else block_text(b,p) for b in s['blocks']]) for s in content['sections']]
-    md = [f'# {content["title"]}', meta, '本文用于需求内容评审；页面及数据为原型模拟，不能证明业务系统已经实现。']
+    sketches_included=artifact.get('sketch_policy')!='excluded'
+    md = [f'# {content["title"]}', meta, '本文用于需求内容评审，不代表业务系统已经实现。' if not sketches_included else '本文用于需求内容评审；页面及数据为原型模拟，不能证明业务系统已经实现。']
     if not reader and content['content_profile_id'].startswith('builtin-'):
         md[2]+=' 已明确选择内置章节回退，未按用户原始 Word 参考生成。'
     doc = Document()
@@ -86,12 +87,12 @@ async def document_files(p, kind, status='草稿／待产品经理内容确认',
     doc.add_paragraph(content['title'], 'Title')
     doc.add_paragraph(meta)
     doc.add_paragraph(md[2])
-    ui_current = bool(p.get('ui') and p['ui']['brief_hash'] == brief_hash(p))
+    ui_current = bool(sketches_included and p.get('ui') and p['ui']['brief_hash'] == brief_hash(p))
     images = await capture(p['ui']['spec']) if ui_current else []
     image_map = dict(images)
     files, bindings = {}, []
     pictured={}
-    if not ui_current:
+    if sketches_included and not ui_current:
         notice = '未提供当前底稿可用的页面方案；本文未插入原型图片。' if not p.get('ui') else '页面方案对应旧底稿；本文未插入过期原型图片。'
         md.append(notice)
         doc.add_paragraph(notice)

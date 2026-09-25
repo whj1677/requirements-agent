@@ -66,7 +66,13 @@ def require_item(ref,at,p,ids):
     require(False,'REFERENCE_INVALID',at+' '+ref+' 该ID在本次允许范围内不存在；允许范围为任务头的条目清单')
 
 
-def context(p):
+def without_sketch(p):
+    """New document input excludes retired sketches without mutating old snapshots."""
+    return dict(p, ui=None, sketch_review={}, _sketch_retired=True)
+
+
+def context(p, *, include_sketch=True):
+    if not include_sketch:p=without_sketch(p)
     return dict(
         incremental_context=copy.deepcopy(p.get('product_context',{})),
         sketch_check=copy.deepcopy(p.get('sketch_review',{})),
@@ -78,7 +84,7 @@ def context(p):
             options=copy.deepcopy(p['options']), notice='讨论方向不等于采纳条目；建议和假设不成为规范。'),
         D_unknowns_limits=dict(questions=[copy.deepcopy(q) for q in p['questions'] if q['status']!='answered'],
             source_status=[{k:s.get(k) for k in ('id','title','purpose','parse_status','failure_reason','excluded')} for s in p['sources']],
-            ui='尚无原型' if not p.get('ui') else '已有低保真模拟原型，不能证明业务实现',
+            ui='本工作台已取消业务草图；仅交付需求文档，原页面截图仍是现状参考。' if p.get('_sketch_retired') else '尚无原型' if not p.get('ui') else '已有低保真模拟原型，不能证明业务实现',
             active_ui=None if not p.get('ui') else dict(version=p['ui']['spec']['draft_revision'],
                 pages=[dict(title=page['title'],requirement_refs=page['requirement_refs'],
                     components=[dict(type=c['type'],label=c['label'],ref_ids=c['ref_ids']) for region in page['regions'] for c in region['components']]) for page in p['ui']['spec']['pages']],
@@ -91,7 +97,8 @@ def context(p):
             for n,m in enumerate(p['messages']) if (m.get('response') or {}).get('limitations')])
 
 
-def compile_plan(plan, p, kind, omitted=()):
+def compile_plan(plan, p, kind, omitted=(), *, include_sketch=True):
+    if not include_sketch:p=without_sketch(p)
     errors=list(jsonschema.Draft202012Validator(PLAN_SCHEMA).iter_errors(plan))
     details=[''.join('['+str(x)+']' if isinstance(x,int) else ('.' if j else '')+x for j,x in enumerate(e.absolute_path)) or '根节点' for e in errors]
     def error_message(e):
@@ -170,6 +177,10 @@ def compile_plan(plan, p, kind, omitted=()):
     for d in prof['sections']:
         if not d['mapping_required']:continue
         for scope in (reqs or [None]) if d['repeat_per_function'] else [None]:
+            if p.get('_sketch_retired') and d['id']==picture:
+                maps.append(dict(profile_section_id=d['id'],scope_ref=scope,disposition='not_applicable',
+                    output_section_ids=[],reason='工作台已取消业务草图交付；现状截图仅作参考，不冒充生成的业务页面。'))
+                continue
             visible=bool(d['id']==picture and scope in coverage and p.get('ui') and any(scope in page['requirement_refs'] for page in p['ui']['spec']['pages']))
             maps.append(dict(profile_section_id=d['id'],scope_ref=scope,disposition='merged' if visible else 'pending',
                 output_section_ids=coverage[scope] if visible else [pending],reason='实际原型关联到已成文功能；低保真模拟。' if visible else '该内容维度的语义覆盖尚待核对；不以空章节视为覆盖。'))

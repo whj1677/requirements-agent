@@ -7,7 +7,7 @@ from .core import KIT, brief_hash, digest, read_json, require
 from .requirements import delivery_items
 
 API_CAPABILITIES = tuple(sorted(('actions', 'artifacts', 'confirmations', 'documents', 'exports', 'models',
-                                 'options-direction', 'options-items', 'projects', 'runs', 'session', 'sources', 'product-flow', 'requirements-exchange')))
+                                 'options-direction', 'options-items', 'projects', 'runs', 'session', 'sources', 'product-flow', 'five-step-workflow', 'requirements-exchange')))
 
 SCHEMA = read_json(KIT / 'examples/runtime_response.schema.json')
 WIRE = read_json(KIT / 'examples/wireframe.schema.json')
@@ -201,8 +201,8 @@ def gate(p):
     from .product_flow import status, question_open
     issues = []
     steps=status(p)
-    first=next((s for s in steps[:5] if not s['complete']),None)
-    if first:issues+=['请完成第'+str(first['step'])+'步「'+first['title']+'」核对']+first['missing']
+    first=next((s for s in steps[:5] if not s['retired'] and not s['complete']),None)
+    if first:issues+=['请完成第'+str(first['display_step'])+'步「'+first['title']+'」核对']+first['missing']
     for kind in p.get('delivery_scope',{}).get('documents',['mrd','prd']):
         if kind not in p['documents']:issues.append('缺少 '+kind.upper()+' 评审稿')
     if 'prd' not in p['documents']:
@@ -213,12 +213,10 @@ def gate(p):
         issues.extend(document_gaps(doc['content'], p))
     if p.get('document_update_needed'):
         issues.append('页面变化后文档需要更新：'+'、'.join(p.get('stale_document_kinds',[])))
-    if p['ui'] and p['ui']['brief_hash'] != brief_hash(p):
-        issues.append('线框对应旧底稿，请重新生成')
     issues.extend(q['question'] for q in p['questions'] if q['blocking'] and question_open(q))
     review = p.get('review')
     if not review or review['target_hash'] != review_target(p):
-        issues.append('需要审查当前底稿、文档和线框')
+        issues.append('需要审查当前底稿和文档')
     elif review['response']['result']['assessment'] != 'ready_for_human_review' or any(f['severity'] == 'blocker' for f in review['response']['findings']):
         issues.append('语义审查仍有阻塞项')
     if not any(i['selection_status'] == 'selected' and i['applies_to']=='to_be' and i['kind'] == 'requirement' for i in p['items']):
