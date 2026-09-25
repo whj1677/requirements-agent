@@ -7,7 +7,7 @@ import os
 import secrets
 from pathlib import Path
 from typing import Literal
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, quote
 from fastapi import FastAPI, Request, UploadFile, File, Form
 from fastapi.responses import JSONResponse, HTMLResponse, Response, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -21,6 +21,7 @@ from .actions import Actions
 from .sources import MAX_BYTES, save_source, webpage
 from .preview import prototype
 from .exports import document_files, handoff, zip_files
+from .document_reader import reader_document, export_readiness, filename
 
 
 class Strict(BaseModel):
@@ -147,12 +148,16 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
                          'capabilities': list(API_CAPABILITIES)}
 
     def attach_document_snapshot(pid, artifact):
-        if 'item_snapshot' not in artifact:
+        if any(k not in artifact for k in ('item_snapshot','question_snapshot','requirement_name')):
             with store.connect() as db:
                 row=db.execute('SELECT payload FROM revisions WHERE project_id=? AND revision=?',
                                (pid,artifact['draft_revision'])).fetchone()
             if row:
-                artifact['item_snapshot']=json.loads(row['payload'])['items']
+                snapshot=json.loads(row['payload'])
+                artifact.setdefault('item_snapshot',snapshot['items'])
+                artifact.setdefault('question_snapshot',snapshot['questions'])
+                artifact.setdefault('requirement_name',snapshot['name'])
+        artifact['reader']=reader_document(artifact)
         return artifact
 
     @app.exception_handler(Problem)
@@ -222,6 +227,7 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
         result=dict(p, hashes=hashes(p), confirmation_issues=issues, baselines=store.records(pid,'baseline'), exports=store.records(pid,'export'))
         for artifact in result['documents'].values():
             attach_document_snapshot(pid,artifact)
+        result['document_export_readiness']={kind:export_readiness(p,kind) for kind in p['documents']}
         return result
 
     @app.patch('/api/projects/{pid}')
@@ -522,19 +528,29 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
         return p
 
     @app.get('/api/projects/{pid}/documents/{kind}/{fmt}')
-    async def download_document(pid:str,kind:str,fmt:str):
+    async def download_document(pid:str,kind:str,fmt:str,document_id:str|None=None):
         require(kind in ('prd','mrd') and fmt in ('md','docx','zip'),'NOT_FOUND','文件类型不存在',404)
         p=store.get(pid)
-        status='草稿／待产品经理内容确认'
+        artifact=p['documents'].get(kind)
+        require(artifact is not None,'NOT_FOUND','请先生成文档',404)
+        require(document_id is None or document_id==artifact['id'],'STALE_DOCUMENT','文档版本已变化，请重新核对当前文档；历史文档只读。',409)
+        readiness=export_readiness(p,kind)
+        require(readiness['ready'],readiness['issues'][0]['code'] if readiness['issues'] else 'DOCUMENT_NOT_READY',
+                '下载前请完成澄清并更新文档：'+'；'.join(i['message'] for i in readiness['issues']),409)
+        attach_document_snapshot(pid,artifact)
+        status='需求评审稿／尚未正式确认'
         if p['active_baseline_id']:
             baseline=store.get_record(pid,p['active_baseline_id'],'baseline')
             if baseline['hashes']==hashes(p):
                 status='产品经理 PRD 内容确认 · '+baseline['confirmation_id'] if kind=='prd' else '同底稿 PRD 内容已确认；MRD 为派生文档，未单独签署审批'
-        files=await document_files(p,kind,status)
+        files=await document_files(p,kind,status,reader=True)
         import hashlib
-        store.record(pid,'document_export',dict(document_type=kind,style_version='1',generator_version='1.1',artifact_hashes={k:hashlib.sha256(v).hexdigest() for k,v in files.items()},asset_bindings=files['document_asset_bindings.json'].decode('utf8')))
-        body=zip_files(files) if fmt=='zip' else files[kind.upper()+'.'+fmt]
-        return Response(body,media_type='application/octet-stream',headers={'Content-Disposition':f'attachment; filename="{kind.upper()}.{fmt}"'})
+        store.record(pid,'document_export',dict(document_type=kind,document_artifact_id=artifact['id'],style_version='reader-2',generator_version='1.1',artifact_hashes={k:hashlib.sha256(v).hexdigest() for k,v in files.items()},asset_bindings=files['document_asset_bindings.json'].decode('utf8')))
+        stem=filename(artifact)
+        public_files={(stem+Path(k).suffix if k in (kind.upper()+'.md',kind.upper()+'.docx') else k):v for k,v in files.items() if not k.endswith('.json')}
+        body=zip_files(public_files) if fmt=='zip' else files[kind.upper()+'.'+fmt]
+        disposition=f'attachment; filename="{kind.upper()}_v{artifact["draft_revision"]}.{fmt}"; '+"filename*=UTF-8''"+quote(stem+'.'+fmt)
+        return Response(body,media_type='application/octet-stream',headers={'Content-Disposition':disposition})
 
     @app.post('/api/projects/{pid}/confirmations')
     async def confirmation(pid:str,body:Confirmation):

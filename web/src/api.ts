@@ -9,6 +9,7 @@ export interface Project extends ProjectSummary {
   mode: string; reference_mode: string; sources: JsonObject[]; items: JsonObject[]; options: JsonObject[];
   questions: JsonObject[]; messages: JsonObject[]; documents: Record<string, JsonObject>;
   ui?: JsonObject; hashes: Record<string, string | null>; confirmation_issues: string[];
+  document_export_readiness?: Record<string, { ready: boolean; issues: { code: string; message: string; question_id?: string }[] }>;
   baselines: JsonObject[]; exports: JsonObject[]; active_baseline_id?: string;
 }
 export interface BackendInfo { runtime_id: string; started_at: string; capabilities: string[] }

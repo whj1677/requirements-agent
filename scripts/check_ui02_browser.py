@@ -146,16 +146,35 @@ async def main():
                     await workspace.get_by_role('button',name='文档评审',exact=False).click()
                     task=await run_action(pid,workspace.get_by_role('button',name='生成讨论稿 PRD',exact=True))
                     assert task['status']=='succeeded',task
-                    await workspace.get_by_role('heading',name=topic+'需求讨论稿',exact=True).wait_for()
+                    await workspace.get_by_role('heading',name=(await read_project(pid))['name']+'｜产品需求文档（PRD）',exact=True).wait_for()
                     if args.web_dist:
                         await workspace.get_by_role('button',name='查看讨论稿',exact=True).click()
-                        assert await workspace.get_by_role('link',name='DOCX 下载').is_visible()
-                    assert await workspace.get_by_text('（尚未决定）',exact=False).count()>0
+                        assert await workspace.get_by_role('link',name='DOCX 下载').count()==0
+                    assert await workspace.get_by_text('（待澄清）',exact=False).count()>0
                     await page.screenshot(path=str(evidence/(topic+'-draft.png')),full_page=True)
                     if topic=='联系人':assert (await read_project(pid))['ui'] is None
+                    # New publication rule: unresolved drafts remain readable but cannot be downloaded.
+                    blocked=await page.request.get(f'http://127.0.0.1:{port}/api/projects/{pid}/documents/prd/docx')
+                    assert blocked.status==409 and (await blocked.json())['code']=='CLARIFICATION_REQUIRED'
+                    await workspace.get_by_role('button',name='展开成果阅读',exact=True).click()
+                    await workspace.get_by_role('button',name='去澄清这些问题').click()
+                    question=(await read_project(pid))['questions'][0]
+                    # Predetermined synthetic answers, not answers to a real user's business questions.
+                    answer='允许重名，以独立联系人编号区分。' if topic=='联系人' else '允许端点相接，不允许时间区间重叠。'
+                    await workspace.get_by_label(question['question'],exact=True).fill(answer)
+                    await workspace.get_by_role('button',name='保存回答',exact=True).click()
+                    await workspace.get_by_text('已回答的问题 · 1（可修改）',exact=True).wait_for()
+                    assert (await read_project(pid))['questions'][0]['answer']==answer
+                    await workspace.get_by_role('button',name='文档评审',exact=False).click()
+                    assert await workspace.get_by_role('link',name='DOCX 下载').count()==0
+                    task=await run_action(pid,workspace.get_by_role('button',name='更新讨论稿 PRD',exact=True))
+                    assert task['status']=='succeeded',task
                     async with page.expect_download() as download:
                         await workspace.get_by_role('link',name='DOCX 下载').click()
-                    await (await download.value).save_as(str(evidence/(topic+'.docx')))
+                    result=await download.value
+                    assert (await read_project(pid))['name'] in result.suggested_filename
+                    await result.save_as(str(evidence/(topic+'.docx')))
+                    await page.screenshot(path=str(evidence/(topic+'-clarified-document.png')),full_page=True)
                     old=(await read_project(pid))['documents']['prd']
                     model['fail_next']=True
                     task=await run_action(pid,workspace.get_by_role('button',name='更新讨论稿 PRD',exact=True))

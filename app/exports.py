@@ -8,6 +8,7 @@ from docx.oxml.ns import qn
 from .core import brief_hash, digest, dumps, ident, now, require
 from .preview import prototype
 from .contracts import profile
+from .document_reader import reader_document
 
 
 def block_text(block, p):
@@ -32,16 +33,18 @@ async def capture(spec):
     return images
 
 
-async def document_files(p, kind, status='草稿／待产品经理内容确认'):
+async def document_files(p, kind, status='草稿／待产品经理内容确认', *, reader=False):
     require(kind in p['documents'], 'NOT_FOUND', '请先生成此类型文档', 404)
     artifact = p['documents'][kind]
     require(artifact['brief_hash'] == brief_hash(p), 'STALE_REVISION', '底稿已改变，请重新成文', 409)
     require(kind not in p.get('stale_document_kinds', []), 'STALE_REVISION', '页面已改变，请重新生成此文档后导出', 409)
-    content = artifact['content']
+    content = reader_document(artifact) if reader else artifact['content']
     meta = f'{status} · 底稿版本 {artifact["draft_revision"]} · 内容哈希 {digest(content)[:16]}'
-    rendered = [(s, [block_text(b,p) for b in s['blocks']]) for s in content['sections']]
+    if reader:
+        meta=f'{status} · 版本 v{artifact["draft_revision"]}'
+    rendered = [(s, [b['text'] if reader else block_text(b,p) for b in s['blocks']]) for s in content['sections']]
     md = [f'# {content["title"]}', meta, '本文用于需求内容评审；页面及数据为原型模拟，不能证明业务系统已经实现。']
-    if content['content_profile_id'].startswith('builtin-'):
+    if not reader and content['content_profile_id'].startswith('builtin-'):
         md[2]+=' 已明确选择内置章节回退，未按用户原始 Word 参考生成。'
     doc = Document()
     section = doc.sections[0]
@@ -100,24 +103,25 @@ async def document_files(p, kind, status='草稿／待产品经理内容确认')
                 md.append(f'![{caption}]({filename})')
                 files[filename] = image
                 bindings.append(dict(section_id=s['section_id'], ui_page_id=page['page_id'], ui_spec_hash=digest(p['ui']['spec']), asset_hash=hashlib.sha256(image).hexdigest(), caption=caption))
-    doc.add_heading('参考维度处置与待确认事项', 1)
-    md.append('## 参考维度处置与待确认事项')
-    labels={d['id']:d['reference_heading'] for d in profile(kind,content['content_profile_id'].startswith('builtin-'))['sections']}
-    groups={}
-    states={'pending':'待确认','not_applicable':'不适用','merged':'合并表达'}
-    for m in content['reference_mapping']:
-        if m['disposition'] in states:
-            key=(m['disposition'],m['reason'],m['scope_ref'])
-            groups.setdefault(key,[]).append(labels.get(m['profile_section_id'],m['profile_section_id']))
-    for (state,reason,scope),dimensions in groups.items():
-        line=f'{states[state]}'+(f' · {scope}' if scope else '')+'：'+'；'.join(dimensions)+'。\n'+reason
-        doc.add_paragraph(line)
-        md.append(line)
-    for q in p['questions']:
-        if q['status'] != 'answered':
-            line = f'待确认 {q["id"]}：{q["question"]}；影响：{q["why"]}'
+    if not reader:
+        doc.add_heading('参考维度处置与待确认事项', 1)
+        md.append('## 参考维度处置与待确认事项')
+        labels={d['id']:d['reference_heading'] for d in profile(kind,content['content_profile_id'].startswith('builtin-'))['sections']}
+        groups={}
+        states={'pending':'待确认','not_applicable':'不适用','merged':'合并表达'}
+        for m in content['reference_mapping']:
+            if m['disposition'] in states:
+                key=(m['disposition'],m['reason'],m['scope_ref'])
+                groups.setdefault(key,[]).append(labels.get(m['profile_section_id'],m['profile_section_id']))
+        for (state,reason,scope),dimensions in groups.items():
+            line=f'{states[state]}'+(f' · {scope}' if scope else '')+'：'+'；'.join(dimensions)+'。\n'+reason
             doc.add_paragraph(line)
             md.append(line)
+        for q in p['questions']:
+            if q['status'] != 'answered':
+                line = f'待确认 {q["id"]}：{q["question"]}；影响：{q["why"]}'
+                doc.add_paragraph(line)
+                md.append(line)
     footer = doc.sections[0].footer.paragraphs[0]
     footer.add_run('需求内容评审 · ')
     fld = OxmlElement('w:fldSimple'); fld.set(qn('w:instr'),'PAGE'); footer._p.append(fld)
