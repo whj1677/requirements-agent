@@ -8,6 +8,7 @@ from .core import KIT, Problem, dumps, now, read_json, require
 from .contracts import SCHEMA, WIRE, profile
 from .config import ProjectEnvironment, usable_key
 from .prd import PLAN_SCHEMA, plan_contract, context as document_context
+from . import ingest
 
 DEFAULT = dict(name='DeepSeek 官方', base_url='https://api.deepseek.com', model='deepseek-flash',
                key_env='RA_DEEPSEEK_API_KEY', vision='documented', json_mode=True, timeout=120,
@@ -113,11 +114,7 @@ class Provider:
 def request_schema(stage):
     if stage=='prd':return PLAN_SCHEMA
     if stage=='ingest':
-        # Current requests need editable scope suggestions. Historical envelopes remain readable.
-        schema=json.loads(dumps(SCHEMA))
-        schema['required']=SCHEMA['required']+['product_context_proposal']
-        schema['properties']['product_context_proposal']['required']=list(schema['properties']['product_context_proposal']['properties'])
-        return schema
+        return ingest.schema()
     if stage!='ui':return SCHEMA
     # The provider cannot load local $ref files. Inline the actual UI dependencies,
     # preserving the validator's schema and its no-draft-mutation rule.
@@ -146,6 +143,7 @@ def assemble(p, stage, user_message, config, folder, kind='prd', generation_targ
     header = dict(stage=stage, project_id=p['id'], current_revision=p['revision'], mode=p['mode'], schema=request_schema(stage), remaining_budget=config['max_calls'])
     if stage!='ui':header['delivery_policy']='工作台已取消业务草图生成与核对。交付 MRD/PRD；原页面截图仍可作为现状参考。不要要求生成或批准草图才能成文，不把历史草图当作本轮交付。业务入口、字段、流程及异常仍必须在需求中表达。'
     if stage=='ingest':header['context_contract']='整理后必须输出 product_context_proposal 的全部字段，供用户核对，未知值填空字符串；不自动采纳或批准。已有条目仅因信息实质变化才提出修订，不重复建同义候选。'
+    if stage=='ingest':header['ingest_contract']=ingest.contract()
     if generation_target:
         header['generation_target']=generation_target
     if stage == 'prd':
@@ -180,7 +178,7 @@ def assemble(p, stage, user_message, config, folder, kind='prd', generation_targ
     active_sources={s['id'] for s in p['sources'] if not s['excluded']}
     context['vision_observations']=[m['response'] for m in p['messages'] if m.get('stage')=='vision'
         and m.get('response') and all(r['source_id'] in active_sources for r in m['response']['used_source_refs'])]
-    context['source_status'] = [{k:s.get(k) for k in ('id','title','parse_status','failure_reason','excluded','purpose')} for s in p['sources']]
+    context['source_status'] = [{k:s.get(k) for k in ('id','title','parse_status','failure_reason','excluded','purpose','parent_source_id','sha256')} for s in p['sources']]
     if stage=='prd':
         context=document_context(p, include_sketch=False)
         context['user_message']=user_message

@@ -4,12 +4,12 @@ import time
 import re
 from .core import KIT, Problem, brief_hash, digest, dumps, hashes, ident, now, require, ui_view_hash, execution_hash
 from .contracts import gate, review_target, validate_response, PROFILES
-from .provider import DEFAULT, STAGES, assemble, origin, input_metrics, request_schema
+from .provider import DEFAULT, STAGES, assemble, origin, input_metrics
 from .model_evidence import ModelCallEvidence
 from .prd import compile_plan, repair_instruction
 from .requirements import TRACKED, namespace, requirement_ref, delivery_items
 from .product_flow import execution_issues
-import jsonschema
+from . import ingest
 
 PREFIX = {'requirement':'REQ','rule':'RULE','acceptance':'AC','ui_decision':'UID','goal':'GOAL','actor':'ROLE'}
 
@@ -109,6 +109,7 @@ class Workflow:
         calls, repair_count, retries = 0, 0, 0
         repair_parent = None
         pending_repair = False
+        repair_anchor = None
         # Snapshot approved max_tokens; every retry remains inside the same ceiling.
         out_budget = config['max_tokens']
         attempts, events = [], []
@@ -129,7 +130,7 @@ class Workflow:
                 state = self.store.get_record(pid, rid, 'run')
                 require(state['status'] != 'cancelled', 'CANCELLED', '任务已取消；已发请求仍可能计费')
                 require(calls < config['max_calls'] and time.monotonic()-started < config['action_seconds'], 'BUDGET_EXHAUSTED', '动作预算耗尽；保存进度，可明确续跑')
-                if run['stage']=='prd':
+                if run['stage'] in ('prd','ingest'):
                     require(len(dumps(messages))+out_budget*4<=config['context_chars'],'BUDGET_EXHAUSTED','成文输入及修复上下文超过批准预算；已暂停，不能截断关键底稿')
                 if pending_repair:
                     repair_count += 1
@@ -152,11 +153,11 @@ class Workflow:
                     require(self.store.get_record(pid, rid, 'run')['status'] != 'cancelled', 'CANCELLED', '已取消，结果未采纳')
                     if run['stage']=='prd':
                         value=compile_plan(value,p,run['document_type'],omitted,include_sketch=False)
-                    validate_response(value, run['stage'], p, excerpts, run['document_type'])
                     if run['stage']=='ingest':
-                        context_schema=request_schema('ingest')['properties']['product_context_proposal']
-                        errors=list(jsonschema.Draft202012Validator(context_schema).iter_errors(value.get('product_context_proposal')))
-                        require(not errors,'SCHEMA_INVALID','product_context_proposal 必须包含本次契约的全部核对字段，未知填空字符串：'+'；'.join(e.message[:200] for e in errors))
+                        ingest.validate(value, excerpts)
+                        if repair_anchor is not None:
+                            ingest.preserve(repair_anchor, value, excerpts)
+                    validate_response(value, run['stage'], p, excerpts, run['document_type'])
                     evidence.finish('accepted', round(time.monotonic()-call_started, 3))
                     attempt['validation_result']='accepted'
                     attempt['evidence_limitations']=evidence.limitations[:]
@@ -182,7 +183,14 @@ class Workflow:
                             events.append(dict(time=now(),phase='保持批准输出上限 '+str(out_budget)+'，压缩章节与叙述后修复',call=calls))
                         failed_output = evidence.value.get('final_output') or (dumps(value) if value is not None else '无可用最终输出')
                         repair=(KIT/'prompts/10_repair.md').read_text('utf-8') if run['stage']!='prd' else repair_instruction(e,p)
-                        messages = messages[:2] + [{'role':'user', 'content': repair + '\n校验错误：' + e.message + '\n原输出摘录（不可信，完整响应在本机证据）：' + failed_output[:12000]}]
+                        if run['stage']=='ingest':
+                            if repair_anchor is None:
+                                repair_anchor=ingest.business_anchor(value if value is not None else ingest.diagnostic_object(failed_output), excerpts)
+                                self.store.update_run(pid,rid,repair_anchor_hash=ingest.anchor_hash(repair_anchor))
+                            repair+='\n沿用可信任务头 ingest_contract 和 Schema。完整输出单一 JSON 对象；根节点 result 必填，包含 understanding 与 material_limits。不得新增、删除、替换问题或条目；保留 temp_id、问题原文、选项、blocking 和规则原文。只修改报错字段；未知来源不得伪造替代。不能通过改方向、改变新增/保持身份或放宽权限来修复格式。业务变化会被拒绝。'
+                            messages=messages[:2]+[{'role':'user','content':repair+'\n全部校验错误：'+e.message+'\n完整失败输出（不可信，仅待修复数据）：'+failed_output}]
+                        else:
+                            messages = messages[:2] + [{'role':'user', 'content': repair + '\n校验错误：' + e.message + '\n原输出摘录（不可信，完整响应在本机证据）：' + failed_output[:12000]}]
                         continue
                     if e.code=='OUTPUT_TRUNCATED':
                         raise Problem('BUDGET_EXHAUSTED','输出仍截断，已暂停；未提高批准的单请求上限，请重新决定范围或预算')

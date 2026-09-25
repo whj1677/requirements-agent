@@ -11,3 +11,9 @@ proposals 只提交新增或确需修订的候选条目；每个来自材料的�
 在 summary 中让产品经理看到“已经理解了什么”，不是一上来只给问题清单。questions 只放最影响方向的少数缺口。找不到材料或只读取局部时，result.material_limits 与 limitations 明确范围；不自行把失败来源改为已读。
 
 输出 stage=ingest；result 为 understanding（中文业务理解）和 material_limits（材料限制数组）。其余遵守统一外壳。
+
+本轮唯一结构以可信任务头 ingest_contract 与 schema 为准。根节点 result 不能省略或改名；product_context_proposal 的所有字段必须保留。未知写空字符串或允许的空数组，不额外添加 *_note、备注字段或占位来源ID。示例只说明结构，不是用户需求，不是失败时的回退答案。
+
+增量范围尚未确定时，不把已有模块标成 change_type=new 的确定事实；使用材料支持的现状条目（as_is/existing），或将未决的改动建议标 proposed/inferred 并说明待定。不得把“是否新增”的问题与“确定新增”的 reported 条目同时给出。questions 每题只对应一个需要决定的事项，不把可见、编辑、删除三种权限或循环、重叠、覆盖三种规则合成一道选择题；选项是未采纳建议，不是默认规则。影响数据、权限、生效电价或收益结果的未知需标 blocking=true，不能混成界面表达问题。最多五个优先问题，其余真实缺口放 findings，不忽略或编造答案。
+
+来源状态 excluded=true 的旧失败读取不要求用户重复提供；新读取与旧读取的关系以 source_status 中 parent_source_id/sha256 为准。同源读取不是两份业务材料。只根据实际文本判断原文不完整；omitted_excerpt_ids 为空不代表内嵌图像已读取，也不能据此声称文本被上下文截断。测试操作人员不是业务角色。

@@ -41,13 +41,15 @@ export function Workspace({ id, active, models, onProjectsChanged, compat, onExi
   useDialog(renameOpen, () => setRenameOpen(false));
   async function refresh() {
     const n = ++serial.current;
+    // Read task status before its result snapshot: a fast completion must not
+    // stop polling while leaving the previously fetched project on screen.
+    const responses=await Promise.allSettled([api<Run[]>(root+'/runs'),api<UserTask[]>(root+'/actions'),api<Obj>(root+'/artifacts')]);
     let project: Project;
     try { project = await api<Project>(root); }
     catch (e) { if (n === serial.current) setFatal(e as ApiError); throw e; }
     if (n !== serial.current) return;
     projectRef.current=project; setFatal(null); setStaleNotice(''); setP(project);
     const failed: string[] = [];
-    const responses=await Promise.allSettled([api<Run[]>(root+'/runs'),api<UserTask[]>(root+'/actions'),api<Obj>(root+'/artifacts')]);
     if(n!==serial.current)return;
     responses.forEach((result,index)=>{if(result.status==='rejected'){failed.push(['运行记录','任务列表','产物记录'][index]);return;}if(index===0)setRuns(result.value as Run[]);if(index===1){setTasks(result.value as UserTask[]);setTasksLoaded(true);}if(index===2)setArtifacts(result.value as Obj);});
     setStale(failed);
@@ -100,10 +102,12 @@ export function Workspace({ id, active, models, onProjectsChanged, compat, onExi
   const latest=tasks.filter(t=>phaseActions.includes(t.action)).slice(-1)[0];
   const shared = { busy, project: p, setTab: () => {}, onOption: (option: Obj, action: string) => setOptionDecision({ option, action }), onItem: (item: Obj, status: string) => act(() => mutate('/items/' + item.id, { selection_status: status })), onEditItem: (item: Obj, statement: string, fields: Obj = {}) => mutate('/items/' + item.id, { selection_status: item.selection_status, statement, ...fields }), onStage: stageAction, onActivate: (cid: string) => act(() => mutate('/ui-candidates/' + cid + '/activate', {})), onReject: (cid: string) => act(() => mutate('/ui-candidates/' + cid + '/reject', {})), onNavigate: navigate, previewUrl: '/api' + root + '/prototype', runs, models, onCancel: (rid: string) => act(async () => { await api(root + '/runs/' + rid + '/cancel', 'POST'); await refresh(); }), onResume: (rid: string) => stageAction(runs.find(r => r.id === rid)?.stage || 'ingest'), embedded: true, onSource: (refs: Obj[]) => { setFocusRefs(refs); setSourcesOpen(true); }, onPreviewOption: setPreviewOption };
   const currentPreviewOption = previewOption && (p.options.find(o => o.id === previewOption.id) || previewOption);
+  const intakeTask=tasks.filter(t=>t.action==='organize').slice(-1)[0];
+  const intakeLabel=intakeTask&&['failed','cancelled','paused_budget'].includes(intakeTask.status)?'资料已保存 · 分析未成功':intakeTask&&['queued','running'].includes(intakeTask.status)?'资料已保存 · 分析中':!p.messages.some(m=>m.role==='assistant'&&m.stage==='ingest')?'资料已保存 · 待分析':'分析已生成 · 待核对';
   const taskStatus = latest&&(latest.status!=='succeeded'||running)&&<TaskStatus task={latest} onCancel={()=>act(async()=>{await api(root+'/actions/'+latest.id+'/cancel','POST');await refresh();})} onRetry={()=>act(()=>planAction(latest.action))} onViewResult={['succeeded','partial'].includes(latest.status)?()=>go(latest.action==='organize'?1:latest.action==='document'?4:phase):undefined}/>;
   return <div hidden={!active} className="project-workspace">
     <header className="project-bar"><div className="project-identity"><h1 title={p.name}>{p.name}</h1><small>内容草稿 v{p.revision} · {p.product_flow?.[5]?.complete?'当前版本已建立确认基线':p.active_baseline_id?'有历史确认基线，当前草稿须重新核对':'尚无正式确认基线'}</small></div><div className="toolbar"><button onClick={() => { setError(''); setFocusRefs([]); setSourcesOpen(true); }}>项目资料 · {p.sources.length}</button><button onClick={() => act(async () => { setHistory(await api<Obj[]>(root + '/history')); setHistoryOpen(true); })}>历史版本</button><button onClick={() => { setRename(p.name); setRenameOpen(true); }}>重命名</button></div></header>
-    <nav className="phase-nav" aria-label="需求工作阶段">{phases.map((name,n)=>{if(n===3)return null;const st=p.product_flow?.[n];const state=st?.needs_recheck?'recheck':st?.complete?'complete':!st?.available?'blocked':phase===n?'current':'pending';return <button key={name} data-state={state} aria-current={phase===n?'step':undefined} onClick={()=>go(n)}><span className="step-number">{state==='complete'&&phase!==n?<Icon name="check"/>:n>3?n:n+1}</span><b>{state==='blocked'&&<Icon name="lock"/>}{name}</b><small>{state==='recheck'?'需重新核对':state==='complete'?(phase===n?'已核对 · 当前查看':'已完成'):state==='blocked'?'前置未完成':phase===n?'当前进行中':'尚未开始'}</small></button>;})}</nav>
+    <nav className="phase-nav" aria-label="需求工作阶段">{phases.map((name,n)=>{if(n===3)return null;const st=p.product_flow?.[n];const state=st?.needs_recheck?'recheck':st?.complete?'complete':!st?.available?'blocked':phase===n?'current':'pending';return <button key={name} data-state={state} aria-current={phase===n?'step':undefined} onClick={()=>go(n)}><span className="step-number">{state==='complete'&&phase!==n?<Icon name="check"/>:n>3?n:n+1}</span><b>{state==='blocked'&&<Icon name="lock"/>}{name}</b><small>{n===0&&st?.complete?intakeLabel:state==='recheck'?'需重新核对':state==='complete'?(phase===n?'已核对 · 当前查看':'已完成'):state==='blocked'?'前置未完成':phase===n?'当前进行中':'尚未开始'}</small></button>;})}</nav>
     {compat.status === 'incompatible' && <div className="error banner" role="alert">后端缺少必需接口能力（{compat.missing.join('、')}），前后端版本可能不兼容；请重启服务并重新加载本标签页。发起动作已暂停，查看与返回不受影响。</div>}
     {compat.status === 'unverified' && !compatDismissed && <div className="notice banner" role="status">后端未提供能力信息，兼容性未核实；如遇功能异常，后端代码变更后需重启服务、标签页需重新加载。<button onClick={() => setCompatDismissed(true)}>知道了</button></div>}
     {staleNotice && <div className="error banner" role="alert">最新状态尚未取得：{staleNotice}<button onClick={retry}>重试</button><button onClick={() => setStaleNotice('')}>关闭</button></div>}
