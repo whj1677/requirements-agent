@@ -1,0 +1,241 @@
+{
+  "schema_version": "1.1",
+  "title": "联系人维护",
+  "draft_revision": 1,
+  "design_intent": "合成测试交互",
+  "demo_data_label": "模拟数据，仅用于原型演示",
+  "pages": [
+    {
+      "page_id": "PAGE-1",
+      "title": "联系人维护",
+      "requirement_refs": [
+        "REQ-1"
+      ],
+      "regions": [
+        {
+          "name": "main",
+          "components": [
+            {
+              "component_id": "FILTER",
+              "type": "filters",
+              "label": "姓名筛选",
+              "description": "",
+              "ref_ids": [
+                "REQ-1"
+              ],
+              "fields": [
+                {
+                  "name": "name",
+                  "label": "查找姓名",
+                  "type": "text",
+                  "required_state": "required",
+                  "options": [],
+                  "ref_ids": [
+                    "REQ-1"
+                  ]
+                }
+              ],
+              "columns": [],
+              "rows": [],
+              "interaction": {
+                "action": "none",
+                "target_id": null,
+                "target_state": null
+              },
+              "provisional": false
+            },
+            {
+              "component_id": "FIND",
+              "type": "button",
+              "label": "筛选",
+              "description": "",
+              "ref_ids": [
+                "REQ-1"
+              ],
+              "fields": [],
+              "columns": [],
+              "rows": [],
+              "interaction": {
+                "action": "filter",
+                "target_id": "LIST",
+                "target_state": null
+              },
+              "provisional": false
+            },
+            {
+              "component_id": "LIST",
+              "type": "table",
+              "label": "联系人列表",
+              "description": "",
+              "ref_ids": [
+                "REQ-1"
+              ],
+              "fields": [],
+              "columns": [
+                {
+                  "key": "name",
+                  "label": "name",
+                  "ref_ids": [
+                    "REQ-1"
+                  ]
+                },
+                {
+                  "key": "phone",
+                  "label": "phone",
+                  "ref_ids": [
+                    "REQ-1"
+                  ]
+                }
+              ],
+              "rows": [
+                [
+                  "小李",
+                  "1001"
+                ],
+                [
+                  "小周",
+                  "1002"
+                ]
+              ],
+              "interaction": {
+                "action": "edit",
+                "target_id": "DRAWER",
+                "target_state": null
+              },
+              "provisional": false,
+              "simulation": {
+                "dataset_id": "contacts",
+                "editable_roles": [
+                  "编辑者"
+                ],
+                "rules": []
+              }
+            },
+            {
+              "component_id": "NEW",
+              "type": "button",
+              "label": "新增",
+              "description": "",
+              "ref_ids": [
+                "REQ-1"
+              ],
+              "fields": [],
+              "columns": [],
+              "rows": [],
+              "interaction": {
+                "action": "new",
+                "target_id": "DRAWER",
+                "target_state": null
+              },
+              "provisional": false
+            },
+            {
+              "component_id": "DRAWER",
+              "type": "drawer",
+              "label": "联系人表单",
+              "description": "",
+              "ref_ids": [
+                "REQ-1"
+              ],
+              "fields": [
+                {
+                  "name": "name",
+                  "label": "姓名",
+                  "type": "text",
+                  "required_state": "required",
+                  "options": [],
+                  "ref_ids": [
+                    "REQ-1"
+                  ]
+                },
+                {
+                  "name": "phone",
+                  "label": "电话",
+                  "type": "text",
+                  "required_state": "required",
+                  "options": [],
+                  "ref_ids": [
+                    "REQ-1"
+                  ]
+                }
+              ],
+              "columns": [],
+              "rows": [],
+              "interaction": {
+                "action": "none",
+                "target_id": null,
+                "target_state": null
+              },
+              "provisional": false,
+              "simulation": {
+                "dataset_id": "contacts",
+                "editable_roles": [
+                  "编辑者"
+                ],
+                "rules": [
+                  {
+                    "kind": "required",
+                    "field_names": [
+                      "name"
+                    ],
+                    "ref_ids": [
+                      "REQ-1"
+                    ]
+                  }
+                ]
+              }
+            },
+            {
+              "component_id": "SAVE",
+              "type": "button",
+              "label": "模拟保存",
+              "description": "",
+              "ref_ids": [
+                "REQ-1"
+              ],
+              "fields": [],
+              "columns": [],
+              "rows": [],
+              "interaction": {
+                "action": "save",
+                "target_id": "DRAWER",
+                "target_state": null
+              },
+              "provisional": false
+            },
+            {
+              "component_id": "CANCEL",
+              "type": "button",
+              "label": "取消",
+              "description": "",
+              "ref_ids": [
+                "REQ-1"
+              ],
+              "fields": [],
+              "columns": [],
+              "rows": [],
+              "interaction": {
+                "action": "cancel",
+                "target_id": "DRAWER",
+                "target_state": null
+              },
+              "provisional": false
+            }
+          ]
+        }
+      ],
+      "states": [
+        "normal",
+        "error"
+      ],
+      "state_messages": {
+        "normal": "模拟列表",
+        "loading": null,
+        "empty": null,
+        "error": "模拟错误",
+        "forbidden": null
+      },
+      "not_applicable_states": []
+    }
+  ]
+}

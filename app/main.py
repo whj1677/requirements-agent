@@ -1,23 +1,31 @@
 import asyncio
 import copy
+import hashlib
 import hmac
+import json
 import os
 import secrets
 from pathlib import Path
 from typing import Literal
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, quote
 from fastapi import FastAPI, Request, UploadFile, File, Form
 from fastapi.responses import JSONResponse, HTMLResponse, Response, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
-from .core import DATA, ROOT, Problem, brief_hash, digest, hashes, ident, now, require
+from .core import DATA, ROOT, Problem, brief_hash, digest, hashes, ident, now, require, ui_view_hash
 from .store import Store
-from .contracts import gate, PROFILES
+from .contracts import gate, API_CAPABILITIES, PROFILES, review_target
 from .provider import Provider, DEFAULT, origin
 from .workflow import Workflow, confirm
-from .sources import MAX_BYTES, save_source, webpage
+from .actions import Actions
+from .sources import MAX_BYTES, SOURCE_EXTENSIONS, save_source, webpage
+from .material_images import append_source
+from .understanding import record_answer, accept_answer_update
 from .preview import prototype
 from .exports import document_files, handoff, zip_files
+from .document_reader import reader_document, export_readiness, filename
+from .product_flow import status as flow_status, checkpoint, INTAKE, SCOPE, BEHAVIOR, review_document, document_review_current
+from .requirements import exchange, requirement_ref, delivery_items
 
 
 class Strict(BaseModel):
@@ -42,6 +50,7 @@ class TextSource(Revision):
 class URLSource(Revision):
     url: str = Field(max_length=2000)
     dynamic: bool = False
+    purpose: Literal['current','reference','goal','template'] = 'reference'
     authorized_public: bool = False
 
 class RunInput(Revision):
@@ -49,12 +58,84 @@ class RunInput(Revision):
     message: str = Field(default='',max_length=12000)
     document_type: Literal['prd','mrd'] = 'prd'
 
+class ActionTarget(Strict):
+    kind: Literal['item','question','ui','document']
+    id: str = Field(min_length=1,max_length=200)
+    section_id: str | None = None
+
+class ActionPlan(Revision):
+    action: Literal['organize','explore','clarify','prototype','document','review','change']
+    message: str = Field(default='',max_length=12000)
+    document_type: Literal['prd','mrd'] = 'prd'
+    option_id: str | None = None
+    max_calls: int = Field(default=8,ge=1,le=30)
+    target: ActionTarget | None = None
+
+class ActionStart(ActionPlan):
+    plan_hash: str
+    idempotency_key: str = Field(min_length=8,max_length=100)
+    authorize: bool = False
+
 class Decision(Revision):
     selection_status: Literal['candidate','selected','rejected','deferred']
     statement: str | None = Field(default=None,min_length=1,max_length=6000)
+    title: str | None = Field(default=None,min_length=1,max_length=200)
+    change_type: Literal['new','modified','preserved','existing','unspecified'] | None = None
+
+class DirectionDecision(Revision):
+    direction_status: Literal['selected','deferred','rejected']
+
+class OptionItems(Revision):
+    item_ids: list[str] = Field(min_length=1)
 
 class Answer(Revision):
     answer: str = Field(min_length=1,max_length=6000)
+
+class Answers(Revision):
+    answers: dict[str,str]
+
+class Intake(Revision):
+    text: str = Field(default='',max_length=12000)
+    platform: str = Field(default='',max_length=2000)
+    preserved: str = Field(default='',max_length=2000)
+
+class Candidate(Revision):
+    title: str = Field(min_length=1,max_length=200)
+    statement: str = Field(min_length=1,max_length=6000)
+    change_type: Literal['new','modified','preserved'] = 'new'
+
+class AcceptanceCandidate(Revision):
+    title: str = Field(min_length=1,max_length=200)
+    statement: str = Field(min_length=1,max_length=6000)
+
+class DocumentReview(Revision):
+    document_id: str
+
+class ContextEdit(Revision):
+    values: dict[str,str]
+    scope_ids: list[str] | None = None
+
+class BehaviorEdit(Revision):
+    values: dict[str,str]
+    change_type: Literal['new','modified','preserved','existing','unspecified']
+
+class StageCheck(Revision):
+    expected_hash: str
+
+class SketchReview(Revision):
+    applicable: bool
+    reason: str = Field(default='',max_length=6000)
+    changes: str = Field(default='',max_length=6000)
+    preserved: str = Field(default='',max_length=6000)
+    behavior: str = Field(default='',max_length=6000)
+
+class QuestionScope(Revision):
+    out_of_scope_reason: str = Field(max_length=6000)
+
+class RequirementRelation(Revision):
+    relation: Literal['parent_of','refines','replaces','depends_on']
+    source_id: str
+    target_id: str
 
 class Confirmation(Revision):
     expected_hashes: dict
@@ -74,10 +155,11 @@ class ModelConfig(Strict):
     json_mode: bool = True
     timeout: int = Field(default=120,ge=1,le=600)
     max_calls: int = Field(default=8,ge=1,le=30)
-    max_tokens: int = Field(default=6000,ge=100,le=50000)
+    max_tokens: int = Field(default=16000,ge=100,le=50000)
     context_chars: int = Field(default=180000,ge=10000,le=2000000)
     action_seconds: int = Field(default=300,ge=5,le=1800)
     thinking_disabled: bool = True
+    review_thinking: bool = True
     documented_at: str | None = None
     local_allowed: bool = False
     proxy: str = Field(default='',max_length=2000)
@@ -92,6 +174,12 @@ class Grant(Revision):
     source_ids: list[str]
 
 
+def runtime_fingerprint():
+    """启动时对 app 包源码算一次指纹；进程内固定，不在请求时重读磁盘。"""
+    payload = b''.join(p.read_bytes() for p in sorted((ROOT / 'app').glob('*.py')))
+    return hashlib.sha256(payload).hexdigest()[:16]
+
+
 def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
     store = Store(folder)
     provider = provider or Provider(env_path=env_path)
@@ -104,11 +192,33 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
             require(bound is None or bound == endpoint, 'KEY_ORIGIN_CONFLICT', '已保存的模型密钥变量绑定到不同接收端，请修正模型配置')
             provider.env_origins[name] = endpoint
     workflow = Workflow(store, provider)
-    token = access_token or os.environ.get('RA_ACCESS_TOKEN') or secrets.token_urlsafe(32)
+    actions = Actions(store, workflow)
+    # RA_ACCESS_TOKEN=off 为临时的本机无令牌模式，待硬件绑定方案替换；其余情况保持强制令牌
+    if access_token is None and os.environ.get('RA_ACCESS_TOKEN')=='off':
+        token=None
+    else:
+        token = access_token or os.environ.get('RA_ACCESS_TOKEN') or secrets.token_urlsafe(32)
     sessions = {}
     app = FastAPI(title='需求 Agent', version='1.1', docs_url=None, redoc_url=None)
     app.state.store, app.state.provider, app.state.workflow = store, provider, workflow
+    app.state.actions = actions
     app.state.access_token = token
+    app.state.runtime = {'runtime_id': runtime_fingerprint(), 'started_at': now(),
+                         'capabilities': list(API_CAPABILITIES)}
+
+    def attach_document_snapshot(pid, artifact):
+        if any(k not in artifact for k in ('item_snapshot','question_snapshot','requirement_name','source_snapshot')):
+            with store.connect() as db:
+                row=db.execute('SELECT payload FROM revisions WHERE project_id=? AND revision=?',
+                               (pid,artifact['draft_revision'])).fetchone()
+            if row:
+                snapshot=json.loads(row['payload'])
+                artifact.setdefault('item_snapshot',snapshot['items'])
+                artifact.setdefault('question_snapshot',snapshot['questions'])
+                artifact.setdefault('requirement_name',snapshot['name'])
+                artifact.setdefault('source_snapshot',[{k:s.get(k) for k in ('id','title','parse_status','failure_reason')} for s in snapshot['sources']])
+        artifact['reader']=reader_document(artifact)
+        return artifact
 
     @app.exception_handler(Problem)
     async def error_handler(request, error):
@@ -127,7 +237,7 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
             expected_origin = str(request.base_url).rstrip('/')
             if remote_origin and remote_origin != expected_origin:
                 return JSONResponse({'code':'ORIGIN_DENIED','message':'拒绝跨站访问'},status_code=403)
-            if request.url.path != '/api/session/login':
+            if request.url.path != '/api/session/login' and token is not None:
                 session = sessions.get(request.cookies.get('ra_session',''))
                 if not session:
                     return JSONResponse({'code':'SESSION_REQUIRED','message':'请输入本机访问令牌'},status_code=401)
@@ -144,6 +254,8 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
 
     @app.post('/api/session/login')
     async def login(body: KeyInput):
+        if token is None:
+            return {'csrf':''}
         require(hmac.compare_digest(body.key,token), 'AUTH_FAILED', '本机访问令牌错误', 401)
         sid, csrf = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
         sessions[sid] = csrf
@@ -153,7 +265,9 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
 
     @app.get('/api/session')
     async def session(request:Request):
-        return {'csrf':sessions[request.cookies['ra_session']], 'mode':'live', 'version':'1.1'}
+        # backend 为纯附加字段：旧前端忽略它，新前端据此核实接口能力。
+        return {'csrf':sessions.get(request.cookies.get('ra_session',''),''), 'mode':'live', 'version':'1.1',
+                'backend': app.state.runtime}
 
     @app.get('/api/projects')
     async def projects():
@@ -170,7 +284,150 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
             issues=gate(p)
         except Problem as e:
             issues=[e.message]
-        return dict(p, hashes=hashes(p), confirmation_issues=issues, baselines=store.records(pid,'baseline'), exports=store.records(pid,'export'))
+        # Reader/source progress are response projections; keep canonical review hashes intact.
+        result=copy.deepcopy(p)
+        result.update(hashes=hashes(p), confirmation_issues=issues,
+                      baselines=store.records(pid,'baseline'), exports=store.records(pid,'export'))
+        for source in result['sources']:
+            if source.get('embedded_image_ids'):
+                children=[s for s in result['sources'] if s.get('container_source_id')==source['id']]
+                source['image_progress']=dict(extracted=len(children),analyzed=sum(bool(s.get('vision_run_id')) for s in children),
+                    limited=sum(s['parse_status']=='partial' for s in children),pending=sum(not s.get('vision_run_id') for s in children))
+        for artifact in result['documents'].values():
+            attach_document_snapshot(pid,artifact)
+        result['document_export_readiness']={kind:export_readiness(p,kind) for kind in p['documents']}
+        result['product_flow']=flow_status(p)
+        result['confirmation_scope_ids']=[i['id'] for i in delivery_items(p)]
+        result['document_review_status']={k:dict(reviewed=document_review_current(p,k),record=p.get('document_reviews',{}).get(k)) for k in ('mrd','prd')}
+        result['review_status']=dict(available=bool(p.get('review')),current=bool(p.get('review') and p['review']['target_hash']==review_target(p)))
+        result['source_capabilities']=dict(max_bytes=MAX_BYTES,extensions=SOURCE_EXTENSIONS,office_fallback='local-read-only')
+        return result
+
+    @app.post('/api/projects/{pid}/intake')
+    async def save_intake(pid:str,body:Intake):
+        with store.edit(pid,body.expected_revision,'保存本次诉求（未授权模型分析）') as (p,db):
+            text='\n\n'.join(v for v in (body.text.strip(), '平台/页面：'+body.platform.strip() if body.platform.strip() else '',
+                                             '保持/不涉及：'+body.preserved.strip() if body.preserved.strip() else '') if v)
+            require(text or any(not s['excluded'] and s.get('excerpts') for s in p['sources']),
+                    'INPUT_REQUIRED','请先描述本次需求或添加相关材料')
+            if text:
+                s=save_source(store,'本次诉求.txt',text.encode('utf-8'),'goal');p['sources'].append(s)
+            p['intake']=dict(text=body.text,platform=body.platform,preserved=body.preserved,
+                source_ids=[s['id'] for s in p['sources'] if not s['excluded']],saved_at=now())
+            checkpoint(p,1,flow_status(p)[0]['content_hash'])
+            p['stage_checks']['1']['meaning']='输入已保存，尚非分析结论核对'
+        return p
+
+    @app.post('/api/projects/{pid}/items')
+    async def create_candidate(pid:str,body:Candidate):
+        with store.edit(pid,body.expected_revision,'人工新增候选需求') as (p,db):
+            require(body.title.strip() and body.statement.strip(),'INPUT_REQUIRED','名称与原文不能为空')
+            source=save_source(store,'人工新增需求.txt',body.statement.encode('utf-8'),'goal');p['sources'].append(source)
+            p['items'].append(dict(id=ident('REQ'),kind='requirement',title=body.title,statement=body.statement,
+                change_type=body.change_type,applies_to='to_be',epistemic_status='reported',selection_status='candidate',
+                source_refs=[dict(source_id=source['id'],excerpt_id=e['id']) for e in source['excerpts']],related_refs=[],revision=p['revision']))
+        return p
+
+    @app.post('/api/projects/{pid}/items/{iid}/acceptance')
+    async def create_acceptance_candidate(pid:str,iid:str,body:AcceptanceCandidate):
+        with store.edit(pid,body.expected_revision,'人工新增关联验收候选') as (p,db):
+            requirement=next((i for i in p['items'] if i['id']==iid and i['kind']=='requirement' and i['applies_to']=='to_be'),None)
+            require(requirement is not None and iid in p.get('product_context',{}).get('scope_ids',[]),
+                    'REFERENCE_INVALID','请选择当前本期范围内的实际需求编号')
+            require(body.title.strip() and body.statement.strip(),'INPUT_REQUIRED','验收名称与原文不能为空')
+            source=save_source(store,'人工新增验收条件.txt',body.statement.encode('utf-8'),'goal')
+            p['sources'].append(source)
+            p['items'].append(dict(id=ident('AC'),kind='acceptance',title=body.title,statement=body.statement,
+                applies_to='to_be',epistemic_status='reported',selection_status='candidate',
+                source_refs=[dict(source_id=source['id'],excerpt_id=e['id']) for e in source['excerpts']],
+                related_refs=[iid],revision=p['revision']))
+        return p
+
+    @app.post('/api/projects/{pid}/documents/{kind}/review')
+    async def record_document_review(pid:str,kind:str,body:DocumentReview):
+        require(kind in ('mrd','prd'),'NOT_FOUND','文档类型不存在',404)
+        with store.edit(pid,body.expected_revision,'核对 '+kind.upper()+' 指定文档') as (p,db):
+            review_document(p,kind,body.document_id)
+        return p
+
+    @app.post('/api/projects/{pid}/answers')
+    async def save_answers(pid:str,body:Answers):
+        with store.edit(pid,body.expected_revision,'保存本次问题回答') as (p,db):
+            questions={q['id']:q for q in p['questions']}
+            require(body.answers and set(body.answers)<=questions.keys(),'REFERENCE_INVALID','回答包含不存在的问题')
+            require(all(v.strip() and len(v)<=6000 for v in body.answers.values()),'INPUT_REQUIRED','回答不能为空或超过6000字符')
+            for qid,value in body.answers.items():
+                q=questions[qid]
+                require(not q.get('superseded_by'),'QUESTION_SPLIT','请回答拆分后的具体问题',409)
+                record_answer(q)
+                source=save_source(store,'问题回答.txt',value.encode('utf-8'),'goal');p['sources'].append(source)
+                q.update(answer=value,status='answered',answered_at=now(),
+                    answer_source_refs=[dict(source_id=source['id'],excerpt_id=e['id']) for e in source['excerpts']],
+                    affected_requirements=[requirement_ref(p,i) for i in p['items'] if i['kind']=='requirement' and
+                        (i['id'] in q.get('related_refs',[]) or set(i.get('related_refs',[])) & set(q.get('related_refs',[])))],
+                    answer_effect='待核对关联需求；回答不自动改写原条款或采纳状态')
+        return p
+
+    @app.post('/api/projects/{pid}/product-context')
+    async def context_edit(pid:str,body:ContextEdit):
+        require(set(body.values)<=(INTAKE.keys()|SCOPE.keys()),'CONTEXT_INVALID','未知核对字段')
+        require(all(len(v)<=6000 for v in body.values.values()),'CONTEXT_INVALID','核对说明过长')
+        with store.edit(pid,body.expected_revision,'核对产品现状与增量范围') as (p,db):
+            if body.scope_ids is not None:
+                valid={i['id'] for i in p['items'] if i['kind']=='requirement' and i['applies_to']=='to_be'}
+                require(set(body.scope_ids)<=valid,'REFERENCE_INVALID','本期范围只能引用实际目标需求')
+                p.setdefault('product_context',{})['scope_ids']=list(dict.fromkeys(body.scope_ids))
+            p.setdefault('product_context',{}).update(body.values)
+        return p
+
+    @app.post('/api/projects/{pid}/items/{iid}/behavior')
+    async def behavior_edit(pid:str,iid:str,body:BehaviorEdit):
+        require(set(body.values)<=BEHAVIOR.keys(),'CONTEXT_INVALID','未知行为字段')
+        require(all(len(v)<=6000 for v in body.values.values()),'CONTEXT_INVALID','行为说明过长')
+        with store.edit(pid,body.expected_revision,'核对需求行为与改动性质') as (p,db):
+            item=next((i for i in p['items'] if i['id']==iid and i['kind']=='requirement'),None)
+            require(item is not None,'NOT_FOUND','需求不存在',404)
+            item.setdefault('behavior',{}).update(body.values)
+            item['change_type']=body.change_type
+        return p
+
+    @app.post('/api/projects/{pid}/sketch-review')
+    async def sketch_review(pid:str,body:SketchReview):
+        with store.edit(pid,body.expected_revision,'保存功能草图核对说明') as (p,db):
+            p['sketch_review']=body.model_dump(exclude={'expected_revision'})
+        return p
+
+    @app.post('/api/projects/{pid}/stage-checks/{step}')
+    async def check_stage(pid:str,step:int,body:StageCheck):
+        with store.edit(pid,body.expected_revision,'核对第 '+str(step)+' 步内容') as (p,db):
+            checkpoint(p,step,body.expected_hash)
+        return flow_status(p)
+
+    @app.get('/api/projects/{pid}/requirements-exchange')
+    async def export_requirements(pid:str):
+        value=exchange(store.get(pid))
+        value['change_records']=store.records(pid,'requirement_change')
+        return value
+
+    @app.post('/api/projects/{pid}/requirement-relations')
+    async def relate_requirements(pid:str,body:RequirementRelation):
+        with store.edit(pid,body.expected_revision,'记录独立需求之间的关系') as (p,db):
+            items={i['id']:i for i in p['items'] if i['kind']=='requirement'}
+            require(body.source_id in items and body.target_id in items and body.source_id!=body.target_id,
+                    'REFERENCE_INVALID','请选择两个不同的实际需求编号')
+            relation=dict(type=body.relation,source=requirement_ref(p,items[body.source_id]),target=requirement_ref(p,items[body.target_id]))
+            relations=p.setdefault('requirement_relations',[])
+            if relation not in relations:relations.append(relation)
+        return p
+
+    @app.post('/api/projects/{pid}/questions/{qid}/scope')
+    async def scope_question(pid:str,qid:str,body:QuestionScope):
+        with store.edit(pid,body.expected_revision,'明确问题是否属于本期范围') as (p,db):
+            q=next((q for q in p['questions'] if q['id']==qid),None)
+            require(q is not None,'NOT_FOUND','问题不存在',404)
+            q['out_of_scope_reason']=body.out_of_scope_reason.strip()
+            q['scope_decided_at']=now()
+        return p
 
     @app.patch('/api/projects/{pid}')
     async def edit_project(pid:str, body:ProjectEdit):
@@ -189,7 +446,10 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
     @app.get('/api/projects/{pid}/artifacts')
     async def artifact_history(pid:str):
         store.get(pid)
-        return {kind:store.records(pid,kind) for kind in ('document_artifact','ui_artifact','review','document_export')}
+        records={kind:store.records(pid,kind) for kind in ('document_artifact','ui_artifact','review','document_export')}
+        for artifact in records['document_artifact']:
+            attach_document_snapshot(pid,artifact)
+        return records
 
     @app.post('/api/projects/{pid}/sources/text')
     async def text_source(pid:str,body:TextSource):
@@ -207,7 +467,7 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
         require(p['revision']==expected_revision,'STALE_REVISION','页面已过期',409)
         s=await asyncio.to_thread(save_source,store,Path(file.filename or 'unknown').name,data,purpose)
         with store.edit(pid,expected_revision,'添加文件材料') as (p,db):
-            p['sources'].append(s)
+            append_source(p,s)
         return s
 
     @app.post('/api/projects/{pid}/sources/url')
@@ -216,9 +476,10 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
         store.get(pid)
         try:
             raw,text,method,final=await asyncio.wait_for(webpage(body.url,body.dynamic),30)
-            s=save_source(store,body.url,raw,'reference',final,([(method,text)],'partial' if 'partial' in method else 'read','部分子资源被阻止' if 'partial' in method else '',None))
+            s=save_source(store,body.url,raw,body.purpose,final,([(method,text)],'partial' if 'partial' in method else 'read','部分子资源被阻止' if 'partial' in method else '',None))
         except Exception as e:
-            s=dict(id=ident('SRC'),title=body.url,purpose='reference',uri=body.url,sha256=None,created=now(),version=1,excluded=False,excerpts=[],parse_status='failed',failure_reason=e.message if isinstance(e,Problem) else '网页读取失败：'+type(e).__name__,image_mime=None)
+            s=dict(id=ident('SRC'),title=body.url,purpose=body.purpose,uri=body.url,sha256=None,created=now(),version=1,excluded=False,excerpts=[],parse_status='failed',failure_reason=e.message if isinstance(e,Problem) else '网页读取失败：'+type(e).__name__,image_mime=None)
+        s['dynamic']=body.dynamic
         with store.edit(pid,body.expected_revision,'添加网页材料') as (p,db):
             p['sources'].append(s)
         return s
@@ -229,6 +490,8 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
             s=next((x for x in p['sources'] if x['id']==sid),None)
             require(s is not None,'NOT_FOUND','材料不存在',404)
             s['excluded']=not s['excluded']
+            for child in p['sources']:
+                if child.get('container_source_id')==sid:child['excluded']=s['excluded']
         return s
 
     @app.get('/api/projects/{pid}/sources/{sid}/image')
@@ -241,19 +504,29 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
     @app.post('/api/projects/{pid}/sources/{sid}/retry')
     async def retry_source(pid:str,sid:str,body:Revision):
         p=store.get(pid)
+        require(p['revision']==body.expected_revision,'STALE_REVISION','页面已过期',409)
         old=next((x for x in p['sources'] if x['id']==sid),None)
         require(old is not None,'NOT_FOUND','材料不存在',404)
         if old.get('uri'):
+            # Older successful records retain the extraction method in the locator.
+            # If no strategy can be established, keep the old source unchanged.
+            dynamic=old.get('dynamic')
+            if dynamic is None:
+                locators=[e.get('locator','') for e in old.get('excerpts',[])]
+                if any('controlled-browser' in value for value in locators):dynamic=True
+                elif any('http-text' in value for value in locators):dynamic=False
+                else:raise Problem('SOURCE_FAILED','旧网页记录没有读取策略；请按明确的静态或动态方式重新添加，原记录保留')
             try:
-                raw,text,method,final=await asyncio.wait_for(webpage(old['uri']),30)
-                s=save_source(store,old['title'],raw,old['purpose'],final,([(method,text)],'read','',None))
+                raw,text,method,final=await asyncio.wait_for(webpage(old['uri'],dynamic),30)
+                s=save_source(store,old['title'],raw,old['purpose'],final,([(method,text)],'partial' if 'partial' in method else 'read','部分子资源被阻止' if 'partial' in method else '',None))
+                s['dynamic']=dynamic
             except Exception:
                 raise Problem('SOURCE_FAILED','网页重试失败；原失败记录保留')
         else:
-            s=save_source(store,old['title'],(store.folder/'sources'/old['id']).read_bytes(),old['purpose'])
+            s=await asyncio.to_thread(save_source,store,old['title'],(store.folder/'sources'/old['id']).read_bytes(),old['purpose'])
         s['version']=old['version']+1
         s['parent_source_id']=old['id']
-        with store.edit(pid,body.expected_revision,'重新读取材料，保留原记录') as (p,db):p['sources'].append(s)
+        with store.edit(pid,body.expected_revision,'重新读取材料，保留原记录') as (p,db):append_source(p,s)
         return s
 
     @app.post('/api/projects/{pid}/items/{iid}')
@@ -261,13 +534,22 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
         with store.edit(pid,body.expected_revision,'人工编辑或采纳条目') as (p,db):
             i=next((x for x in p['items'] if x['id']==iid),None)
             require(i is not None,'NOT_FOUND','条目不存在',404)
+            if body.title is not None:i['title']=body.title
+            if body.change_type is not None:i['change_type']=body.change_type
             if body.statement:
+                if body.statement != i['statement']:
+                    s=save_source(store,'人工修订.txt',body.statement.encode('utf-8'),'goal')
+                    p['sources'].append(s)
+                    i['source_refs']=i.get('source_refs',[])+[dict(source_id=s['id'],excerpt_id=ex['id']) for ex in s['excerpts']]
                 i['statement']=body.statement
             if i.get('target_item_id') and body.selection_status=='selected':
+                accept_answer_update(p,i)
                 target=next(x for x in p['items'] if x['id']==i['target_item_id'])
                 # Preserve stable business identity for a selected revision.
                 for key in ('title','statement','applies_to','epistemic_status','source_refs','related_refs'):
                     target[key]=copy.deepcopy(i[key])
+                for key in ('behavior','change_type','scope_evidence','classification_reason'):
+                    if key in i:target[key]=copy.deepcopy(i[key])
                 target['selection_status']='selected'
                 i['selection_status']='deferred'
                 for linked in p['items']+p['questions']:
@@ -280,13 +562,38 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
 
     @app.post('/api/projects/{pid}/options/{oid}')
     async def choose(pid:str,oid:str,body:Decision):
-        with store.edit(pid,body.expected_revision,'人工选择方案') as (p,db):
+        store.get(pid)
+        raise Problem('LEGACY_OPTION_WRITE','旧版整包方案写入已停用；请分别选择讨论方向与明确指定条目。历史记录保留原义。',409)
+
+    @app.post('/api/projects/{pid}/options/{oid}/direction')
+    async def choose_direction(pid:str,oid:str,body:DirectionDecision):
+        with store.edit(pid,body.expected_revision,'记录方案讨论方向') as (p,db):
             option=next((x for x in p['options'] if x['id']==oid),None)
             require(option is not None,'NOT_FOUND','方案不存在',404)
-            option['selection_status']=body.selection_status
-            for i in p['items']:
-                if i['id'] in option['proposed_item_refs']:
-                    i['selection_status']=body.selection_status
+            if body.direction_status=='selected':
+                for other in p['options']:
+                    if other is not option and other.get('direction_status')=='selected':
+                        other['direction_status']='deferred'
+            option['direction_status']=body.direction_status
+            option['direction_decided_at']=now()
+        return p
+
+    @app.post('/api/projects/{pid}/options/{oid}/items')
+    async def accept_option_items(pid:str,oid:str,body:OptionItems):
+        with store.edit(pid,body.expected_revision,'人工采纳指定关联条目') as (p,db):
+            option=next((x for x in p['options'] if x['id']==oid),None)
+            require(option is not None,'NOT_FOUND','方案不存在',404)
+            ids=set(body.item_ids)
+            require(len(ids)==len(body.item_ids) and ids <= set(option['proposed_item_refs']),
+                    'REFERENCE_INVALID','只能明确采纳本方案关联的不同条目')
+            items={i['id']:i for i in p['items']}
+            require(ids <= set(items),'REFERENCE_INVALID','条目引用不存在')
+            excerpts={(s['id'],ex['id']) for s in p['sources'] for ex in s['excerpts']}
+            for iid in ids:
+                require(items[iid].get('source_refs') and all((r['source_id'],r['excerpt_id']) in excerpts for r in items[iid]['source_refs']) and items[iid].get('epistemic_status'),
+                        'REFERENCE_INVALID','条目缺少来源或假设状态，不可批量采纳')
+                require(not items[iid].get('target_item_id'), 'REFERENCE_INVALID', '修订条目需单独核对原条目')
+                items[iid]['selection_status']='selected'
         return p
 
     @app.post('/api/projects/{pid}/questions/{qid}')
@@ -294,8 +601,15 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
         with store.edit(pid,body.expected_revision,'人工回答问题') as (p,db):
             q=next((x for x in p['questions'] if x['id']==qid),None)
             require(q is not None,'NOT_FOUND','问题不存在',404)
+            require(not q.get('superseded_by'),'QUESTION_SPLIT','请回答拆分后的具体问题',409)
+            record_answer(q)
             q.update(answer=body.answer,status='answered',answered_at=now())
-            p['sources'].append(save_source(store,'问题回答.txt',body.answer.encode(),'goal'))
+            source=save_source(store,'问题回答.txt',body.answer.encode(),'goal')
+            p['sources'].append(source)
+            q['answer_source_refs']=[dict(source_id=source['id'],excerpt_id=e['id']) for e in source['excerpts']]
+            q['affected_requirements']=[requirement_ref(p,i) for i in p['items'] if i['kind']=='requirement' and
+                (i['id'] in q.get('related_refs',[]) or set(i.get('related_refs',[])) & set(q.get('related_refs',[])))]
+            q['answer_effect']='待核对关联需求；回答不自动改写原条款或采纳状态'
         return p
 
     @app.get('/api/models')
@@ -357,6 +671,28 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
     async def run(pid:str,body:RunInput):
         return workflow.start(pid,body.expected_revision,body.stage,body.message,body.document_type)
 
+    @app.post('/api/projects/{pid}/actions/plan')
+    async def action_plan(pid:str,body:ActionPlan):
+        return actions.plan(pid,body.model_dump())
+
+    @app.post('/api/projects/{pid}/actions')
+    async def action_start(pid:str,body:ActionStart):
+        values=body.model_dump()
+        plan_hash=values.pop('plan_hash'); key=values.pop('idempotency_key'); authorize=values.pop('authorize')
+        return actions.start(pid,values,plan_hash,key,authorize)
+
+    @app.get('/api/projects/{pid}/actions')
+    async def user_tasks(pid:str):
+        store.get(pid)
+        tasks=store.records(pid,'user_task')
+        for task in tasks:
+            task['calls']=sum(store.get_record(pid,rid,'run')['calls'] for rid in task['run_ids'])
+        return tasks
+
+    @app.post('/api/projects/{pid}/actions/{tid}/cancel')
+    async def action_cancel(pid:str,tid:str):
+        return actions.cancel(pid,tid)
+
     @app.get('/api/projects/{pid}/runs')
     async def runs(pid:str):
         store.get(pid)
@@ -365,6 +701,8 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
     @app.post('/api/projects/{pid}/runs/{rid}/cancel')
     async def cancel(pid:str,rid:str):
         r=store.get_record(pid,rid,'run')
+        if r.get('user_task_id'):
+            return actions.cancel(pid,r['user_task_id'])
         require(r['status'] in ('queued','running'),'RUN_FINISHED','此任务已结束')
         store.update_run(pid,rid,status='cancelled',message='已取消；已发请求仍可能计费')
         return {'status':'cancelled'}
@@ -372,6 +710,7 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
     @app.post('/api/projects/{pid}/runs/{rid}/resume')
     async def resume(pid:str,rid:str,body:Revision):
         r=store.get_record(pid,rid,'run')
+        require(not r.get('user_task_id'),'TASK_REVIEW_REQUIRED','此步骤属于业务任务，请重新核对整个任务的范围和总预算',409)
         require(r['status'] in ('failed','cancelled','paused_budget'),'RUN_FINISHED','无需重跑已成功阶段')
         return workflow.start(pid,body.expected_revision,r['stage'],r['message'],r['document_type'],rid)
 
@@ -381,20 +720,62 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
         require(p['ui'],'NOT_FOUND','尚未生成页面方案',404)
         return HTMLResponse(prototype(p['ui']['spec']))
 
+    @app.get('/api/projects/{pid}/ui-candidates/{cid}/prototype')
+    async def preview_candidate(pid:str,cid:str):
+        p=store.get(pid)
+        candidate=next((c for c in p.get('ui_candidates',[]) if c['id']==cid),None)
+        require(candidate is not None,'NOT_FOUND','页面候选不存在',404)
+        return HTMLResponse(prototype(candidate['spec']))
+
+    @app.post('/api/projects/{pid}/ui-candidates/{cid}/activate')
+    async def activate_candidate(pid:str,cid:str,body:Revision):
+        with store.edit(pid,body.expected_revision,'采纳页面候选') as (p,db):
+            candidate=next((c for c in p.get('ui_candidates',[]) if c['id']==cid),None)
+            require(candidate is not None and candidate['status']=='candidate','NOT_FOUND','页面候选不可采纳',404)
+            require(p['ui'] and candidate['base_ui_hash']==digest(p['ui']['spec']) and candidate['brief_hash']==brief_hash(p),
+                    'STALE_REVISION','底稿或页面已变化，请重新比较候选',409)
+            require(ui_view_hash(candidate['spec'])!=ui_view_hash(p['ui']['spec']),'NO_CHANGE','页面没有实际差异，未创建新版本')
+            candidate['status']='selected'
+            p['ui']=dict(spec=candidate['spec'],brief_hash=candidate['brief_hash'],created=candidate['created'])
+            p['ui'].update({k:candidate[k] for k in ('generation_target','input_revision','generation_run_id') if k in candidate})
+            if 'requirement_versions' in candidate:p['ui']['requirement_versions']=copy.deepcopy(candidate['requirement_versions'])
+            p['stale_document_kinds']=list(p['documents'])
+            p['document_update_needed']=bool(p['stale_document_kinds'])
+            p['review']=None
+        return p
+
+    @app.post('/api/projects/{pid}/ui-candidates/{cid}/reject')
+    async def reject_candidate(pid:str,cid:str,body:Revision):
+        with store.edit(pid,body.expected_revision,'保留现有页面并拒绝候选',bump=False) as (p,db):
+            candidate=next((c for c in p.get('ui_candidates',[]) if c['id']==cid),None)
+            require(candidate is not None and candidate['status']=='candidate','NOT_FOUND','页面候选不可拒绝',404)
+            candidate['status']='rejected'
+        return p
+
     @app.get('/api/projects/{pid}/documents/{kind}/{fmt}')
-    async def download_document(pid:str,kind:str,fmt:str):
+    async def download_document(pid:str,kind:str,fmt:str,document_id:str|None=None):
         require(kind in ('prd','mrd') and fmt in ('md','docx','zip'),'NOT_FOUND','文件类型不存在',404)
         p=store.get(pid)
-        status='草稿／待产品经理内容确认'
+        artifact=p['documents'].get(kind)
+        require(artifact is not None,'NOT_FOUND','请先生成文档',404)
+        require(document_id is None or document_id==artifact['id'],'STALE_DOCUMENT','文档版本已变化，请重新核对当前文档；历史文档只读。',409)
+        readiness=export_readiness(p,kind)
+        require(readiness['ready'],readiness['issues'][0]['code'] if readiness['issues'] else 'DOCUMENT_NOT_READY',
+                '下载前请完成澄清并更新文档：'+'；'.join(i['message'] for i in readiness['issues']),409)
+        attach_document_snapshot(pid,artifact)
+        status='需求评审稿／尚未正式确认'
         if p['active_baseline_id']:
             baseline=store.get_record(pid,p['active_baseline_id'],'baseline')
             if baseline['hashes']==hashes(p):
-                status='产品经理 PRD 内容确认 · '+baseline['confirmation_id'] if kind=='prd' else '同底稿 PRD 内容已确认；MRD 为派生文档，未单独签署审批'
-        files=await document_files(p,kind,status)
+                status='产品经理指定版本内容确认 · '+kind.upper()
+        files=await document_files(p,kind,status,reader=True)
         import hashlib
-        store.record(pid,'document_export',dict(document_type=kind,style_version='1',generator_version='1.1',artifact_hashes={k:hashlib.sha256(v).hexdigest() for k,v in files.items()},asset_bindings=files['document_asset_bindings.json'].decode('utf8')))
-        body=zip_files(files) if fmt=='zip' else files[kind.upper()+'.'+fmt]
-        return Response(body,media_type='application/octet-stream',headers={'Content-Disposition':f'attachment; filename="{kind.upper()}.{fmt}"'})
+        store.record(pid,'document_export',dict(document_type=kind,document_artifact_id=artifact['id'],style_version='reader-2',generator_version='1.1',artifact_hashes={k:hashlib.sha256(v).hexdigest() for k,v in files.items()},asset_bindings=files['document_asset_bindings.json'].decode('utf8')))
+        stem=filename(artifact)
+        public_files={(stem+Path(k).suffix if k in (kind.upper()+'.md',kind.upper()+'.docx') else k):v for k,v in files.items() if not k.endswith('.json')}
+        body=zip_files(public_files) if fmt=='zip' else files[kind.upper()+'.'+fmt]
+        disposition=f'attachment; filename="{kind.upper()}_v{artifact["draft_revision"]}.{fmt}"; '+"filename*=UTF-8''"+quote(stem+'.'+fmt)
+        return Response(body,media_type='application/octet-stream',headers={'Content-Disposition':disposition})
 
     @app.post('/api/projects/{pid}/confirmations')
     async def confirmation(pid:str,body:Confirmation):

@@ -8,6 +8,8 @@ from docx.oxml.ns import qn
 from .core import brief_hash, digest, dumps, ident, now, require
 from .preview import prototype
 from .contracts import profile
+from .document_reader import reader_document
+from .requirements import delivery_items
 
 
 def block_text(block, p):
@@ -15,6 +17,24 @@ def block_text(block, p):
     if block['kind'] in ('requirement','rule','acceptance'):
         return '\n'.join(f'{r} — {items[r]["statement"]}' for r in block['ref_ids'])
     return ('【建议／待确认】' if block['kind'] == 'ui_suggestion' else '') + (block['text'] or '')
+
+
+def readable_picture_parts(data):
+    """Paginate tall screenshots at quiet scanlines, preserving full image coverage."""
+    from PIL import Image
+    with Image.open(io.BytesIO(data)) as image:
+        height_limit=int(image.width*1.15)
+        if image.height<=height_limit:return [data]
+        gray=image.convert('L');parts=[];top=0
+        while top<image.height:
+            bottom=min(top+height_limit,image.height)
+            if bottom<image.height:
+                start=top+int(height_limit*.8)
+                # Avoid bisecting text when a whitespace row is available nearby.
+                bottom=min(range(start,bottom+1),key=lambda y:(sum(gray.crop((0,y,image.width,y+1)).histogram()[:110]),-y))
+            out=io.BytesIO();image.crop((0,top,image.width,bottom)).save(out,format='PNG')
+            parts.append(out.getvalue());top=bottom
+        return parts
 
 
 async def capture(spec):
@@ -32,22 +52,26 @@ async def capture(spec):
     return images
 
 
-async def document_files(p, kind, status='草稿／待产品经理内容确认'):
+async def document_files(p, kind, status='草稿／待产品经理内容确认', *, reader=False):
     require(kind in p['documents'], 'NOT_FOUND', '请先生成此类型文档', 404)
     artifact = p['documents'][kind]
     require(artifact['brief_hash'] == brief_hash(p), 'STALE_REVISION', '底稿已改变，请重新成文', 409)
-    content = artifact['content']
+    require(kind not in p.get('stale_document_kinds', []), 'STALE_REVISION', '页面已改变，请重新生成此文档后导出', 409)
+    content = reader_document(artifact) if reader else artifact['content']
     meta = f'{status} · 底稿版本 {artifact["draft_revision"]} · 内容哈希 {digest(content)[:16]}'
-    rendered = [(s, [block_text(b,p) for b in s['blocks']]) for s in content['sections']]
-    md = [f'# {content["title"]}', meta, '本文用于需求内容评审；页面及数据为原型模拟，不能证明业务系统已经实现。']
-    if content['content_profile_id'].startswith('builtin-'):
+    if reader:
+        meta=f'{status} · 文档 v{artifact.get("document_version","旧版未记录")} · 底稿 v{artifact["draft_revision"]}'
+    rendered = [(s, [b['text'] if reader else block_text(b,p) for b in s['blocks']]) for s in content['sections']]
+    sketches_included=artifact.get('sketch_policy')!='excluded'
+    md = [f'# {content["title"]}', meta, '本文用于需求内容评审，不代表业务系统已经实现。' if not sketches_included else '本文用于需求内容评审；页面及数据为原型模拟，不能证明业务系统已经实现。']
+    if not reader and content['content_profile_id'].startswith('builtin-'):
         md[2]+=' 已明确选择内置章节回退，未按用户原始 Word 参考生成。'
     doc = Document()
     section = doc.sections[0]
     section.page_width, section.page_height = Inches(8.5), Inches(11)
     section.top_margin = section.bottom_margin = Inches(.7)
     section.left_margin = section.right_margin = Inches(.75)
-    for style_name in ('Normal','Title','Heading 1','Heading 2','Heading 3','Heading 4','Heading 5'):
+    for style_name in ('Normal','Title',*[f'Heading {n}' for n in range(1,10)]):
         st = doc.styles[style_name]
         st.font.name = 'Microsoft YaHei'
         st.font.color.rgb = RGBColor(0,0,0)
@@ -60,23 +84,62 @@ async def document_files(p, kind, status='草稿／待产品经理内容确认')
             st.font.size = Pt(11)
             st.font.bold = False
             st.paragraph_format.space_after = Pt(7)
+            st.paragraph_format.line_spacing = 1.5
+        elif style_name == 'Title':
+            st.font.size = Pt(22)
+            st.font.bold = True
+            st.paragraph_format.space_after = Pt(12)
+            st.paragraph_format.keep_with_next = True
+        else:
+            depth = int(style_name.split()[-1])
+            st.font.size = Pt({1:16,2:14}.get(depth,12))
+            st.font.bold = True
+            st.paragraph_format.space_before = Pt(20 if depth==1 else 14)
+            st.paragraph_format.space_after = Pt(7)
+            st.paragraph_format.keep_with_next = True
+    from docx.enum.style import WD_STYLE_TYPE
+    metadata_style = doc.styles.add_style('Document Metadata', WD_STYLE_TYPE.PARAGRAPH)
+    metadata_style.base_style = doc.styles['Normal']
+    metadata_style.font.size = Pt(9)
+    metadata_style.font.color.rgb = RGBColor(100,115,107)
+    metadata_style.paragraph_format.space_after = Pt(7)
+    cover_metadata_style = doc.styles.add_style('Document Cover Metadata', WD_STYLE_TYPE.PARAGRAPH)
+    cover_metadata_style.base_style = doc.styles['Normal']
+    cover_metadata_style.font.size = Pt(10)
+    cover_metadata_style.font.color.rgb = RGBColor(70,80,74)
+    cover_metadata_style.paragraph_format.line_spacing = 1.4
+    cover_metadata_style.paragraph_format.space_after = Pt(10)
     doc.add_paragraph(content['title'], 'Title')
-    doc.add_paragraph(meta)
+    doc.add_paragraph(meta.replace(' · ', '\n'), 'Document Cover Metadata')
     doc.add_paragraph(md[2])
-    ui_current = bool(p.get('ui') and p['ui']['brief_hash'] == brief_hash(p))
+    ui_current = bool(sketches_included and p.get('ui') and p['ui']['brief_hash'] == brief_hash(p))
     images = await capture(p['ui']['spec']) if ui_current else []
     image_map = dict(images)
     files, bindings = {}, []
-    if not ui_current:
+    pictured={}
+    if sketches_included and not ui_current:
         notice = '未提供当前底稿可用的页面方案；本文未插入原型图片。' if not p.get('ui') else '页面方案对应旧底稿；本文未插入过期原型图片。'
         md.append(notice)
         doc.add_paragraph(notice)
     for s, texts in rendered:
-        md.append('#'*(s['level']+1) + ' ' + s['title'])
-        doc.add_heading(s['title'], s['level'])
-        for text in texts:
-            md.append(text)
-            doc.add_paragraph(text)
+        if reader:
+            for node in s['reading_nodes']:
+                if node['kind']=='heading':
+                    title=node['number']+' '+node['text']
+                    md.append('#'*(node['level']+1)+' '+title)
+                    doc.add_heading(title, node['level'])
+                else:
+                    md.append(node['text'])
+                    paragraph = doc.add_paragraph(node['text'], 'Document Metadata' if node['kind']=='metadata' else 'Normal')
+                    if node['kind']=='metadata' and node.get('item_id'):
+                        # Keep the heading and full identifier with the actual clause.
+                        paragraph.paragraph_format.keep_with_next = True
+        else:
+            md.append('#'*(s['level']+1) + ' ' + s['title'])
+            doc.add_heading(s['title'], s['level'])
+            for text in texts:
+                md.append(text)
+                doc.add_paragraph(text)
         picture_dimension = 'PRD-4.F.1' if kind == 'prd' else 'MRD-5.1.F.3'
         maps = [m for m in content['reference_mapping'] if s['section_id'] in m['output_section_ids'] and m['profile_section_id'] == picture_dimension and m['disposition'] in ('included','merged')]
         if maps and images:
@@ -88,31 +151,45 @@ async def document_files(p, kind, status='草稿／待产品经理内容确认')
                     continue
                 image = image_map[page['page_id']]
                 filename = 'assets/' + hashlib.sha256(page['page_id'].encode()).hexdigest()[:16] + '.png'
-                caption = f'低保真模拟 {page["title"]} · UI 版本 {p["ui"]["spec"]["draft_revision"]} · 待确认'
-                doc.add_picture(io.BytesIO(image), width=Inches(6.4))
-                doc.paragraphs[-1].paragraph_format.keep_with_next = True
-                doc.add_paragraph(caption)
-                md.append(f'![{caption}]({filename})')
+                caption = f'需求草图，非最终UI设计 · {page["title"]} · 草图版本 {p["ui"]["spec"]["draft_revision"]}'
+                from PIL import Image
+                if reader and page['page_id'] in pictured:
+                    reference='本功能使用同一需求草图，参见「'+pictured[page['page_id']]+'」中的图示。'
+                    doc.add_paragraph(reference);md.append(reference)
+                else:
+                    parts=readable_picture_parts(image) if reader else [image]
+                    for n,part in enumerate(parts,1):
+                        asset=filename if len(parts)==1 else filename.removesuffix('.png')+f'-{n}.png'
+                        part_caption=caption+(f'（{n}/{len(parts)}）' if len(parts)>1 else '')
+                        with Image.open(io.BytesIO(part)) as preview:
+                            width=min(6.4,8.2*preview.width/preview.height)
+                        doc.add_picture(io.BytesIO(part), width=Inches(width))
+                        doc.paragraphs[-1].paragraph_format.keep_with_next = True
+                        doc.add_paragraph(part_caption)
+                        md.append(f'![{part_caption}]({asset})')
+                        files[asset]=part
+                    pictured[page['page_id']]=s['title']
                 files[filename] = image
                 bindings.append(dict(section_id=s['section_id'], ui_page_id=page['page_id'], ui_spec_hash=digest(p['ui']['spec']), asset_hash=hashlib.sha256(image).hexdigest(), caption=caption))
-    doc.add_heading('参考维度处置与待确认事项', 1)
-    md.append('## 参考维度处置与待确认事项')
-    labels={d['id']:d['reference_heading'] for d in profile(kind,content['content_profile_id'].startswith('builtin-'))['sections']}
-    groups={}
-    states={'pending':'待确认','not_applicable':'不适用','merged':'合并表达'}
-    for m in content['reference_mapping']:
-        if m['disposition'] in states:
-            key=(m['disposition'],m['reason'],m['scope_ref'])
-            groups.setdefault(key,[]).append(labels.get(m['profile_section_id'],m['profile_section_id']))
-    for (state,reason,scope),dimensions in groups.items():
-        line=f'{states[state]}'+(f' · {scope}' if scope else '')+'：'+'；'.join(dimensions)+'。\n'+reason
-        doc.add_paragraph(line)
-        md.append(line)
-    for q in p['questions']:
-        if q['status'] != 'answered':
-            line = f'待确认 {q["id"]}：{q["question"]}；影响：{q["why"]}'
+    if not reader:
+        doc.add_heading('参考维度处置与待确认事项', 1)
+        md.append('## 参考维度处置与待确认事项')
+        labels={d['id']:d['reference_heading'] for d in profile(kind,content['content_profile_id'].startswith('builtin-'))['sections']}
+        groups={}
+        states={'pending':'待确认','not_applicable':'不适用','merged':'合并表达'}
+        for m in content['reference_mapping']:
+            if m['disposition'] in states:
+                key=(m['disposition'],m['reason'],m['scope_ref'])
+                groups.setdefault(key,[]).append(labels.get(m['profile_section_id'],m['profile_section_id']))
+        for (state,reason,scope),dimensions in groups.items():
+            line=f'{states[state]}'+(f' · {scope}' if scope else '')+'：'+'；'.join(dimensions)+'。\n'+reason
             doc.add_paragraph(line)
             md.append(line)
+        for q in p['questions']:
+            if q['status'] != 'answered':
+                line = f'待确认 {q["id"]}：{q["question"]}；影响：{q["why"]}'
+                doc.add_paragraph(line)
+                md.append(line)
     footer = doc.sections[0].footer.paragraphs[0]
     footer.add_run('需求内容评审 · ')
     fld = OxmlElement('w:fldSimple'); fld.set(qn('w:instr'),'PAGE'); footer._p.append(fld)
@@ -142,8 +219,8 @@ def handoff(store, pid, baseline_id, idempotency_key):
         baseline = next((b for b in store.records(pid,'baseline',db) if b['id'] == baseline_id),None)
         require(baseline is not None, 'CONFIRMATION_REQUIRED', '需要有效人工确认基线', 409)
         p = baseline['project']
-        items = [i for i in p['items'] if i['selection_status']=='selected' and i['applies_to']=='to_be']
-        canonical = '\n\n'.join(f'## {i["id"]} {i["title"]}\n\n{i["statement"]}' for i in items)
+        items = delivery_items(p)
+        canonical = '\n\n'.join(f'## {i["id"]}｜{i["title"]} · v{i.get("content_version",1)}\n\n{i["statement"]}' for i in items)
         refs = {i['id']: i for i in items}
         traces = []
         for req in [i for i in items if i['kind']=='requirement']:
@@ -159,6 +236,28 @@ def handoff(store, pid, baseline_id, idempotency_key):
             'ui_spec.json': dumps(p['ui']['spec'] if p['ui'] else None),
             'prototype.html': prototype(p['ui']['spec']) if p['ui'] else '<!doctype html><meta charset="utf-8"><p>本基线未包含 UI 方案</p>',
             'traceability.json': dumps(traces)}
+        from .requirements import exchange, requirement_ref
+        payload=exchange(p,baseline_id)
+        payload['change_records']=[r for r in store.records(pid,'requirement_change',db) if any(
+            i['id']==r['requirement_id'] and r['version']<=i.get('content_version',1) for i in p['items'])]
+        files['requirements-exchange.json']=dumps(payload)
+        for kind,artifact in p['documents'].items():
+            content=reader_document(artifact)
+            files[kind.upper()+'.content.json']=dumps(artifact)
+            files[kind.upper()+'.md']='# '+content['title']+'\n\n'+'\n\n'.join(
+                '## '+s['title']+'\n\n'+'\n\n'.join(b['text'] for b in s['blocks']) for s in content['sections'])
+        for role,keys in (('frontend',('actor','entry','flow','result','exceptions')),('backend',('data','permissions','result','exceptions'))):
+            from .product_flow import BEHAVIOR
+            details=[]
+            for req in (i for i in items if i['kind']=='requirement'):
+                details.append('\n\n### '+req['id']+' · v'+str(req.get('content_version',1))+' 的相关行为\n'+
+                    '\n'.join(BEHAVIOR[k]+'：'+req.get('behavior',{}).get(k,'未指定，需技术设计时核对') for k in keys))
+            files[role+'_spec.md']+=''.join(details)
+        for trace in traces:
+            trace['requirement']=requirement_ref(p,refs[trace['requirement_id']])
+            trace['test_case_refs']=[]
+            trace['test_execution_status']='not_run'
+        files['traceability.json']=dumps(traces)
         files = {k:v.encode('utf-8') for k,v in files.items()}
         manifest = dict(schema_version='1.1', baseline_id=baseline_id, baseline_hash=digest(baseline['hashes']), confirmation_id=baseline['confirmation_id'], generator_version='1.1', prompt_version='1.1', created=now(), artifacts={k:dict(sha256=hashlib.sha256(v).hexdigest(), role=k) for k,v in files.items()})
         files['manifest.json'] = dumps(manifest).encode()

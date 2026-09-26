@@ -1,8 +1,13 @@
 import copy
 import hashlib
+import re
 import jsonschema
 from referencing import Registry, Resource
 from .core import KIT, brief_hash, digest, read_json, require
+from .requirements import delivery_items
+
+API_CAPABILITIES = tuple(sorted(('actions', 'artifacts', 'confirmations', 'documents', 'exports', 'models',
+                                 'options-direction', 'options-items', 'projects', 'runs', 'session', 'sources', 'product-flow', 'five-step-workflow', 'requirements-exchange')))
 
 SCHEMA = read_json(KIT / 'examples/runtime_response.schema.json')
 WIRE = read_json(KIT / 'examples/wireframe.schema.json')
@@ -36,13 +41,30 @@ def nodes(value):
             yield from nodes(v)
 
 
+def describe_schema_error(errors):
+    flat = []
+    stack = list(errors)
+    while stack:
+        e = stack.pop()
+        flat.append(e)
+        stack.extend(getattr(e, 'context', None) or [])
+    best = max(flat, key=lambda e: (len(list(e.absolute_path)), len(list(e.absolute_schema_path))))
+    message = best.message
+    if len(message) > 160:
+        message = message[:160] + '…'
+    return str(list(best.absolute_path)) + ' ' + message
+
+
 def validate_response(value, stage, project, excerpts, document_type='prd'):
     errors = sorted(VALIDATOR.iter_errors(value), key=lambda e: str(e.path))
-    require(not errors, 'SCHEMA_INVALID', '模型响应不匹配 Schema：' + (str(list(errors[0].path)) if errors else ''))
+    require(not errors, 'SCHEMA_INVALID', '模型响应不匹配 Schema：' + (describe_schema_error(errors) if errors else ''))
     require(value['stage'] == stage, 'SCHEMA_INVALID', '模型返回了错误阶段')
+    if stage=='review':
+        require(not value['proposals'] and not value['questions'] and 'product_context_proposal' not in value,
+                'SEMANTIC_BLOCKED','语义审查只报告发现，不能创建候选、问题或替换产品上下文；请在澄清阶段处理修订')
     item_ids = {i['id'] for i in project['items']}
     question_ids = {q['id'] for q in project['questions']}
-    temps = [i['temp_id'] for i in value['proposals']] + [q['temp_id'] for q in value['questions']]
+    temps = [i['temp_id'] for i in value['proposals']] + [q['temp_id'] for q in value['questions']] + [q['temp_id'] for parent in value['questions'] for q in parent.get('decision_points',[])]
     require(len(set(temps)) == len(temps), 'REFERENCE_INVALID', '临时 ID 重复')
     allowed = item_ids | question_ids | set(temps)
     if project.get('ui'):
@@ -53,14 +75,17 @@ def validate_response(value, stage, project, excerpts, document_type='prd'):
             require((node['source_id'], node['excerpt_id']) in pairs, 'REFERENCE_INVALID', '来源不在本轮实际输入范围')
         for key in ('related_refs', 'ref_ids', 'canonical_refs', 'requirement_refs', 'proposed_item_refs', 'reviewed_refs', 'impacted_refs', 'unimpacted_refs', 'rule_ids', 'ac_ids'):
             if key in node:
-                require(set(node[key]) <= allowed, 'REFERENCE_INVALID', '引用不存在或跨项目：' + key)
+                bad = sorted(set(node[key]) - allowed)
+                require(not bad, 'REFERENCE_INVALID', '引用不存在或跨项目：' + key + '（' + '、'.join(bad[:5]) + (' 等' if len(bad) > 5 else '') + '）')
         for key in ('target_ref', 'target_item_id', 'requirement_id', 'item_id', 'scope_ref'):
             if node.get(key) is not None:
-                require(node[key] in allowed, 'REFERENCE_INVALID', '未知关联：' + key)
+                require(node[key] in allowed, 'REFERENCE_INVALID', '未知关联：' + key + '（' + str(node[key]) + '）')
     for proposal in value['proposals']:
         require((proposal['action'] == 'add' and proposal['target_item_id'] is None) or
                 (proposal['action'] == 'revise' and proposal['target_item_id'] in item_ids),
                 'REFERENCE_INVALID', '修订目标必须存在；新增不能覆盖旧条目')
+    from .understanding import validate as validate_understanding
+    validate_understanding(value,project,excerpts)
     if stage == 'ui':
         validate_ui(value['result']['spec'], project)
     if stage == 'prd':
@@ -72,16 +97,59 @@ def validate_response(value, stage, project, excerpts, document_type='prd'):
 
 def validate_ui(spec, p):
     jsonschema.Draft202012Validator(WIRE).validate(spec)
+    forbidden=re.compile(r'https?://|javascript:|data:|<\s*(script|iframe|img|svg)\b|\bon(?:error|load|click)\s*=',re.I)
+    for node in nodes(spec):
+        if isinstance(node, dict):
+            require(not any(forbidden.search(value) for value in node.values() if isinstance(value,str)),
+                    'SCHEMA_INVALID','原型 spec 不接受脚本、HTML 标签或网络地址')
     require(spec['draft_revision'] == p['revision'], 'STALE_REVISION', '线框版本过期')
     components = [c for page in spec['pages'] for r in page['regions'] for c in r['components']]
     ids = [c['component_id'] for c in components]
     require(len(ids) == len(set(ids)) and len(ids) <= 150, 'SCHEMA_INVALID', '组件 ID 重复或超限')
     pages = [x['page_id'] for x in spec['pages']]
     require(len(pages) == len(set(pages)), 'SCHEMA_INVALID', '页面 ID 重复')
+    by_id = {c['component_id']: c for c in components}
+    datasets={c['simulation']['dataset_id']:c for c in components if c['type'] in ('table','list') and c.get('simulation')}
     for c in components:
+        for field in c['fields']:
+            if 'filter_all_option' in field:
+                require(spec['schema_version']=='1.1' and c['type']=='filters' and field['type']=='select'
+                    and field['filter_all_option'] in field['options'], 'REFERENCE_INVALID',
+                    f"组件 {c['component_id']} 字段 {field['name']}：filter_all_option 仅用于 1.1 filters/select 且必须是 options 中的值")
         require(c['ref_ids'] or c['type'] in ('text', 'heading', 'notice'), 'REFERENCE_INVALID', '功能性组件缺少需求关联')
         require(not c['interaction']['target_id'] or c['interaction']['target_id'] in ids + pages, 'REFERENCE_INVALID', '交互目标不存在')
         require(all(len(row) == len(c['columns']) for row in c['rows']), 'SCHEMA_INVALID', '表格行列不一致')
+        action = c['interaction']['action']
+        target = by_id.get(c['interaction']['target_id'])
+        if action in ('new', 'edit', 'filter', 'save', 'cancel', 'switch_page') or c['type'] == 'drawer' or c.get('simulation') or any(f['type'] == 'time' for f in c['fields']):
+            require(spec['schema_version'] == '1.1', 'SCHEMA_INVALID', '新模拟能力需要 wireframe 1.1')
+        if action in ('new', 'edit'):
+            require(c['type'] in ('button', 'table', 'list') and target and target['type'] in ('form', 'panel', 'dialog', 'drawer'), 'REFERENCE_INVALID', '新增或编辑必须指向表单容器')
+        if action in ('save', 'cancel'):
+            require(c['type'] == 'button' and target and target['type'] in ('form', 'panel', 'dialog', 'drawer'), 'REFERENCE_INVALID', '保存或取消必须指向表单容器')
+        if action == 'filter':
+            require(c['type'] == 'button' and target and target['type'] in ('table', 'list'), 'REFERENCE_INVALID',
+                    f"组件 {c['component_id']}：filter 只能放在 button，当前类型 {c['type']}；target_id={c['interaction']['target_id']} 必须指向 table/list。filters 只保留输入且 action=none，另设筛选 button。")
+        if action == 'switch_page':
+            require(c['interaction']['target_id'] in pages, 'REFERENCE_INVALID', '导航目标必须是页面')
+        if c.get('simulation'):
+            sim = c['simulation']
+            fields = {f['name'] for f in c['fields']}
+            if c['type'] in ('form','panel','dialog','drawer'):
+                require(sim['dataset_id'] in datasets, 'REFERENCE_INVALID', '表单模拟数据集不存在')
+            for rule in sim['rules']:
+                require(set(rule['field_names']) <= fields, 'REFERENCE_INVALID', '模拟校验字段不存在')
+                require(set(rule['ref_ids']) <= {i['id'] for i in p['items']}, 'REFERENCE_INVALID', '模拟校验依据不存在')
+                require((rule['kind'] in ('required', 'non_negative') and len(rule['field_names']) == 1) or
+                        (rule['kind'] in ('start_before_end', 'no_overlap') and len(rule['field_names']) == 2),
+                        'SCHEMA_INVALID', '模拟校验字段数量不匹配')
+                if rule['kind']=='no_overlap':
+                    require(set(rule['field_names']) <= {col['key'] for col in datasets[sim['dataset_id']]['columns']},
+                            'REFERENCE_INVALID', '区间字段未绑定模拟列表')
+    for page in spec['pages']:
+        for c in (c for region in page['regions'] for c in region['components']):
+            if c['interaction']['action']=='switch_state':
+                require(c['interaction']['target_state'] in page['states'], 'REFERENCE_INVALID', '目标状态不适用于此页面')
 
 
 def validate_document(doc, p, kind):
@@ -105,13 +173,15 @@ def validate_document(doc, p, kind):
     for s in doc['sections']:
         for b in s['blocks']:
             if b['kind'] in ('requirement', 'rule', 'acceptance'):
-                require(all(r in items and items[r]['selection_status'] == 'selected' and items[r]['applies_to'] == 'to_be' for r in b['ref_ids']), 'SEMANTIC_BLOCKED', '规范内容只能引用本期已选目标条目')
-                require(all(items[r]['kind'] == b['kind'] for r in b['ref_ids']), 'REFERENCE_INVALID', '规范段落与条目类型不一致')
+                unselected = sorted(r for r in b['ref_ids'] if r not in {i['id'] for i in delivery_items(p)})
+                require(not unselected, 'SEMANTIC_BLOCKED', '规范内容只能引用本期已选目标条目（' + '、'.join(unselected[:5]) + (' 等' if len(unselected) > 5 else '') + ' 未已选）')
+                mismatched = sorted(r for r in b['ref_ids'] if r in items and items[r]['kind'] != b['kind'])
+                require(not mismatched, 'REFERENCE_INVALID', '规范段落与条目类型不一致（' + '、'.join(mismatched[:5]) + (' 等' if len(mismatched) > 5 else '') + '）')
 
 
 def document_gaps(doc, p):
     prof = profile(doc['document_type'],doc['content_profile_id'].startswith('builtin-'))
-    functions = [i['id'] for i in p['items'] if i['kind'] == 'requirement' and i['selection_status'] == 'selected' and i['applies_to'] == 'to_be']
+    functions = [i['id'] for i in delivery_items(p) if i['kind'] == 'requirement']
     actual = {(m['profile_section_id'], m['scope_ref']) for m in doc['reference_mapping']}
     gaps = []
     for d in prof['sections']:
@@ -120,37 +190,53 @@ def document_gaps(doc, p):
                 if (d['id'], scope) not in actual:
                     gaps.append('参考维度未处置：' + d['id'] + (' / ' + scope if scope else ''))
     used = {r for s in doc['sections'] for b in s['blocks'] if b['kind'] in ('requirement', 'rule', 'acceptance') for r in b['ref_ids']}
-    for i in p['items']:
+    for i in delivery_items(p):
         if i['selection_status'] == 'selected' and i['applies_to'] == 'to_be' and i['kind'] in ('requirement', 'rule', 'acceptance') and i['id'] not in used:
             gaps.append('未成文：' + i['id'])
     return gaps
 
 
 def review_target(p):
-    return digest({'brief': brief_hash(p), 'documents': p['documents'], 'ui': p['ui']})
+    target={'brief': brief_hash(p), 'documents': p['documents'], 'ui': p['ui']}
+    if p.get('requirement_relations'):target['requirement_relations']=p['requirement_relations']
+    return digest(target)
 
 
 def gate(p):
+    from .product_flow import status, question_open
     issues = []
+    steps=status(p)
+    first=next((s for s in steps[:5] if not s['retired'] and not s['complete']),None)
+    if first:issues+=['请完成第'+str(first['display_step'])+'步「'+first['title']+'」核对']+first['missing']
+    for kind in p.get('delivery_scope',{}).get('documents',['mrd','prd']):
+        if kind not in p['documents']:issues.append('缺少 '+kind.upper()+' 评审稿')
     if 'prd' not in p['documents']:
-        return ['缺少 PRD 内容对象；MRD 不能代替 PRD 确认']
+        return issues+['缺少 PRD 内容对象；MRD 不能代替 PRD 确认']
     for doc in p['documents'].values():
         if doc['brief_hash'] != brief_hash(p):
             issues.append('文档与当前底稿不一致，请重新生成')
         issues.extend(document_gaps(doc['content'], p))
-    if p['ui'] and p['ui']['brief_hash'] != brief_hash(p):
-        issues.append('线框对应旧底稿，请重新生成')
-    issues.extend(q['question'] for q in p['questions'] if q['blocking'] and q['status'] != 'answered')
+    if p.get('document_update_needed'):
+        issues.append('页面变化后文档需要更新：'+'、'.join(p.get('stale_document_kinds',[])))
+    issues.extend(q['question'] for q in p['questions'] if q['blocking'] and question_open(q))
     review = p.get('review')
     if not review or review['target_hash'] != review_target(p):
-        issues.append('需要审查当前底稿、文档和线框')
-    elif review['response']['result']['assessment'] != 'ready_for_human_review' or any(f['severity'] == 'blocker' for f in review['response']['findings']):
-        issues.append('语义审查仍有阻塞项')
+        issues.append('需要审查当前底稿和文档')
+    else:
+        result=review['response']['result']
+        if result['assessment'] != 'ready_for_human_review' or any(f['severity'] == 'blocker' for f in review['response']['findings']):
+            issues.append('语义审查仍有阻塞项')
+        if result.get('required_decisions'):
+            issues.append('语义审查仍有必要决定待产品处理：'+'；'.join(result['required_decisions']))
+        reviewed=set(result.get('reviewed_refs',[]))
+        uncovered=[i['id'] for i in delivery_items(p) if i['kind']=='requirement' and i['id'] not in reviewed]
+        if uncovered or not result.get('perspectives'):
+            issues.append('语义审查覆盖不足：'+('未审查需求 '+ '、'.join(uncovered) if uncovered else '缺少审查视角'))
     if not any(i['selection_status'] == 'selected' and i['applies_to']=='to_be' and i['kind'] == 'requirement' for i in p['items']):
         issues.append('本期没有已选需求')
     if not any(i['selection_status'] == 'selected' and i['applies_to']=='to_be' and i['kind'] == 'acceptance' for i in p['items']):
         issues.append('缺少已选验收条件')
-    selected=[i for i in p['items'] if i['selection_status']=='selected' and i['applies_to']=='to_be']
+    selected=delivery_items(p)
     for req in (i for i in selected if i['kind']=='requirement'):
         if not any(ac['kind']=='acceptance' and (req['id'] in ac['related_refs'] or ac['id'] in req['related_refs']) for ac in selected):
             issues.append('需求缺少关联验收条件：'+req['id'])

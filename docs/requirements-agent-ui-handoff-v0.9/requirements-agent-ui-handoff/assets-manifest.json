@@ -1,0 +1,66 @@
+{
+  "package": "requirements-agent-ui-handoff",
+  "version": "0.9",
+  "created": "2026-09-25",
+  "status": "design-handoff-not-product-acceptance",
+  "source": "本次对话生成并显示的五张概念设计图；非运行截图。",
+  "images": [
+    {
+      "page_id": "P01",
+      "title": "提供现状与诉求",
+      "path": "assets/01-intake.png",
+      "original_filename": "需求_agent_产品流程工作台.png",
+      "width": 1672,
+      "height": 941,
+      "sha256": "1f372c1a442cfc242eee16c3a71c32725b8bd22d90e0dac63711aad6a2a2085a",
+      "content": "原图未修改；图中文字、数字和业务例子不是冻结的产品数据或接口契约。"
+    },
+    {
+      "page_id": "P02",
+      "title": "核对现状、价值与改动范围",
+      "path": "assets/02-scope-review.png",
+      "original_filename": "需求_agent_项目范围核对界面.png",
+      "width": 1672,
+      "height": 941,
+      "sha256": "a91e87ce0102a057733ab13373454854eab3655811b3b7eb903130823dadd312",
+      "content": "原图未修改；图中文字、数字和业务例子不是冻结的产品数据或接口契约。"
+    },
+    {
+      "page_id": "P03",
+      "title": "澄清流程与规则",
+      "path": "assets/03-rules-clarification.png",
+      "original_filename": "澄清流程与规则工作台.png",
+      "width": 1672,
+      "height": 941,
+      "sha256": "290f7745d919213edb3f6e689793d9a0ba499ead893a4cf0cd61e4a7852662e1",
+      "content": "原图未修改；图中文字、数字和业务例子不是冻结的产品数据或接口契约。"
+    },
+    {
+      "page_id": "P04",
+      "title": "核对功能草图",
+      "path": "assets/04-sketch-review.png",
+      "original_filename": "需求_agent_客户管理功能草图对比.png",
+      "width": 1672,
+      "height": 941,
+      "sha256": "07a54c8e895a7d1183c6e8b8e03a5b71cc36871d24c566d91e9101bf4071e66b",
+      "content": "原图未修改；图中文字、数字和业务例子不是冻结的产品数据或接口契约。"
+    },
+    {
+      "page_id": "P05",
+      "title": "评审 MRD 与 PRD",
+      "path": "assets/05-document-review.png",
+      "original_filename": "crm_项目文档评审工作台.png",
+      "width": 1672,
+      "height": 941,
+      "sha256": "848ad3db3689532d84f9876a859eb37db50059db9b751987a69f0a3c75d8cfae",
+      "content": "原图未修改；图中文字、数字和业务例子不是冻结的产品数据或接口契约。"
+    }
+  ],
+  "missing_design_screens": [
+    "P06 确认与交接",
+    "关键加载、空态、失败、前置阻塞、上游变更、材料抽屉与局部助手状态"
+  ],
+  "not_selected": [
+    "需求_agent_项目现状与诉求工作台.png：第一步早期版本，未作为实施主参考。"
+  ]
+}

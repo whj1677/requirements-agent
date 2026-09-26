@@ -19,7 +19,7 @@ def test_md_docx_canonical_and_actual_embedded_image(tmp_path):
         md=files[kind.upper()+'.md'].decode()
         for i in p['items']:
             assert i['statement'] in text and i['statement'] in md
-        assert '待确认' in text and '低保真模拟' in text
+        assert '待确认' in text and '需求草图，非最终UI设计' in text
         with zipfile.ZipFile(io.BytesIO(files[kind.upper()+'.docx'])) as z:
             assert any(name.startswith('word/media/') for name in z.namelist())
         assert '800X600' not in text and '撤销订单' not in text
@@ -117,6 +117,8 @@ def test_no_current_ui_and_cropped_picture_are_explicit(tmp_path):
 def test_handoff_canonical_and_manifest(tmp_path):
     import hashlib,json
     store=Store(tmp_path);p=prepared(store)
+    from tests.product_flow_helpers import check_prepared
+    p=check_prepared(store,p['id'])
     c=confirm(store,p['id'],dict(expected_revision=p['revision'],expected_hashes=hashes(p),scope_ids=[i['id'] for i in p['items']],idempotency_key='export-test'))
     e=handoff(store,p['id'],c['baseline_id'],'export-test')
     with zipfile.ZipFile(store.folder/'exports'/(e['id']+'.zip')) as z:
@@ -125,3 +127,34 @@ def test_handoff_canonical_and_manifest(tmp_path):
         for path in ('requirements.md','frontend_spec.md','backend_spec.md'):
             text=z.read(path).decode()
             assert all(i['statement'] in text for i in p['items'])
+
+
+def test_reader_tall_picture_keeps_legible_width_and_cross_references_shared_page(tmp_path,monkeypatch):
+    from PIL import Image
+    from app.exports import readable_picture_parts
+    original=Image.new('RGB',(1100,2500),'white')
+    # Distinct full-width stripes detect skipped or duplicated rows.
+    for y in range(2500):original.paste((y%255,160,200),(0,y,1100,y+1))
+    out=io.BytesIO();original.save(out,format='PNG');data=out.getvalue()
+    parts=readable_picture_parts(data)
+    images=[Image.open(io.BytesIO(b)) for b in parts]
+    assert len(parts)>1 and sum(i.height for i in images)==2500
+    rebuilt=Image.new('RGB',original.size);top=0
+    for part in images:
+        assert part.width==1100 and part.height<=1265
+        rebuilt.paste(part,(0,top));top+=part.height
+    assert rebuilt.tobytes()==original.tobytes()
+    p=prepared(Store(tmp_path))
+    p['documents']['prd']['item_snapshot']=copy.deepcopy(p['items'])
+    content=p['documents']['prd']['content']
+    content['sections'].append(dict(section_id='SHARED',level=1,parent_section_id=None,title='同页另一个功能',blocks=[dict(kind='narrative',ref_ids=[],text='此处仍保留功能说明。')]))
+    for m in content['reference_mapping']:
+        if m['profile_section_id']=='PRD-4.F.1':m['output_section_ids'].append('SHARED')
+    async def capture(_):return [(p['ui']['spec']['pages'][0]['page_id'],data)]
+    monkeypatch.setattr('app.exports.capture',capture)
+    files=asyncio.run(document_files(p,'prd',reader=True))
+    doc=Document(io.BytesIO(files['PRD.docx']))
+    assert len(doc.inline_shapes)==len(parts)
+    assert all(round(shape.width/914400,1)==6.4 for shape in doc.inline_shapes)
+    assert '本功能使用同一需求草图，参见' in files['PRD.md'].decode()
+    assert {b['section_id'] for b in json.loads(files['document_asset_bindings.json'])}=={'PRD-01','SHARED'}

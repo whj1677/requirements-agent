@@ -97,8 +97,13 @@
     },
     {
       "path": "examples/wireframe.schema.json",
-      "bytes": 14431,
-      "sha256": "688eeed84c3cf3cbb4bc5fcb5c4fdcc727ad227ae7d21b100a587ea2eb691863"
+      "bytes": 16106,
+      "sha256": "298df9514cda7268af4587eb0588a644bae737c4543f8acc542616b3cd4fba0e"
+    },
+    {
+      "path": "examples/wireframe.v1_1.example.json",
+      "bytes": 6737,
+      "sha256": "6b5fb052bc985f3f1a6035f1e1e5a393f1b600c32f5d50b81b595baac736158d"
     },
     {
       "path": "prompts/00_system.md",
@@ -127,8 +132,8 @@
     },
     {
       "path": "prompts/05_ui.md",
-      "bytes": 1606,
-      "sha256": "8a607e9f425f9c4c5231b0d131a42a50bc384dca8396dabb49d2f4a21eee5317"
+      "bytes": 2214,
+      "sha256": "780b9b4bee5c09c709375c1841d69fb4beb47c3d8b418cc8011fe4ace04710e1"
     },
     {
       "path": "prompts/06_prd.md",

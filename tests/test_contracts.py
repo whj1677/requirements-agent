@@ -53,10 +53,12 @@ def test_canonical_block_rewrite_refused():
     assert list(VALIDATOR.iter_errors(r))
 
 def test_gate_mrd_not_prd(state):
-    _,p=state;del p['documents']['prd'];assert 'PRD' in gate(p)[0]
+    _,p=state;del p['documents']['prd'];assert any('缺少 PRD' in issue for issue in gate(p))
 
 def test_confirmation_idempotency_staleness_and_history(state):
     store,p=state
+    from tests.product_flow_helpers import check_prepared
+    p=check_prepared(store,p['id'])
     assert gate(p)==[]
     body=confirmation(p);result=confirm(store,p['id'],body)
     assert confirm(store,p['id'],body)['id']==result['id']

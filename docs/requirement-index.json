@@ -163,6 +163,30 @@
         "AT-30",
         "AT-36"
       ]
+    },
+    {
+      "id": "UI-02",
+      "capability": "统一需求工作区与受控业务任务",
+      "acceptance": "五阶段导航、就地资料和授权、统一预算串行任务、输入与产物身份、原确认门禁；离线真实入口验证",
+      "acceptance_ids": [
+        "UI02-01",
+        "UI02-02",
+        "UI02-03",
+        "UI02-04",
+        "UI02-05",
+        "UI02-06",
+        "UI02-07",
+        "UI02-08",
+        "UI02-09",
+        "UI02-10",
+        "UI02-11",
+        "UI02-12",
+        "UI02-13",
+        "UI02-14",
+        "UI02-15",
+        "UI02-16"
+      ],
+      "implementation_record": "docs/UI-02-implementation.md"
     }
   ],
   "acceptance": [

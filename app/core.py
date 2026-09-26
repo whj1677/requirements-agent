@@ -43,10 +43,26 @@ def read_json(path):
 
 
 def brief_hash(p):
-    return digest({k: p[k] for k in ('items', 'questions', 'options')})
+    content={k:p[k] for k in ('items','questions','options')}
+    # Old snapshots retain their original hash; new scope statements are real inputs.
+    if 'product_context' in p:content['product_context']=p['product_context']
+    return digest(content)
+
+
+def execution_hash(p):
+    """Input identity for paid work, including sources and derived artifacts."""
+    return digest({k:p.get(k) for k in ('revision','items','questions','options','sources',
+        'documents','ui','messages','reference_mode','mode','product_context','stage_checks',
+        'sketch_review','delivery_scope','requirement_relations')})
 
 
 def hashes(p):
     return {'brief_hash': brief_hash(p),
             'prd_content_hash': digest(p['documents']['prd']['content']) if 'prd' in p['documents'] else None,
+            'mrd_content_hash': digest(p['documents']['mrd']['content']) if 'mrd' in p['documents'] else None,
             'ui_spec_hash': digest(p['ui']['spec']) if p.get('ui') else None}
+
+
+def ui_view_hash(spec):
+    """Visual/interaction content only; prose-only intent edits do not create a new UI draft."""
+    return digest({'title':spec['title'],'pages':spec['pages']})

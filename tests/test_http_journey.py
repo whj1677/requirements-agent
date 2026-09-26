@@ -27,6 +27,8 @@ def test_real_http_adapter_to_confirmation_and_export(tmp_path):
             stage=header['stage']
             value=dict(schema_version='1.1',stage=stage,summary='明确标记的 HTTP 合成测试响应',proposals=[],questions=[],findings=[],used_source_refs=[],limitations=[],result={})
             if stage=='ingest':
+                from app.product_flow import INTAKE, SCOPE
+                value['product_context_proposal']={k:'合成上下文 '+label for k,label in {**INTAKE,**SCOPE}.items()}
                 ex=ctx['excerpts'][0]
                 refs=[{'source_id':ex['source_id'],'excerpt_id':ex['id']}]
                 value['used_source_refs']=refs
@@ -39,9 +41,10 @@ def test_real_http_adapter_to_confirmation_and_export(tmp_path):
                 spec=json.loads(json.dumps(spec).replace('REQ-0001',req));spec['draft_revision']=header['current_revision']
                 value['result']={'spec':spec}
             elif stage=='prd':
-                kind=header['document_type'];sid=kind.upper()+'-1';prof=header['content_profile']
-                req=next(i['id'] for i in ctx['items'] if i['kind']=='requirement')
-                value['result']=dict(document_type=kind,content_profile_id=prof['id'],content_profile_version=prof['version'],title='合成时段需求 '+kind.upper(),sections=[dict(section_id=sid,level=1,parent_section_id=None,title='本期内容',blocks=[dict(kind=i['kind'],ref_ids=[i['id']],text=None) for i in ctx['items']])],coverage=[dict(item_id=i['id'],section_ids=[sid]) for i in ctx['items']],reference_mapping=[dict(profile_section_id=d['id'],scope_ref=req if d['repeat_per_function'] else None,disposition='pending',output_section_ids=[sid],reason='这是工程协议测试，业务维度未完成；实际发布需要真实业务评审。') for d in prof['sections'] if d['mapping_required']])
+                chosen=[i for group in ctx['A_normative'].values() for i in group]
+                value=dict(plan_version='2',sections=[dict(section_key='function',
+                    context_refs=header['plan_contract']['context_ref_ids'],
+                    normative_refs=[i['id'] for i in chosen],discussion_refs=[])])
             elif stage=='review':
                 value['result']=dict(assessment='ready_for_human_review',reviewed_refs=[i['id'] for i in ctx['items']],perspectives=[{'role':'合成工程审查','considerations':['只验证程序链路，不代表真实业务审查']}],required_decisions=[])
             payload=json.dumps(dict(model='SYNTHETIC_HTTP_FIXTURE',choices=[dict(message={'content':json.dumps(value,ensure_ascii=False)},finish_reason='stop')],usage={'prompt_tokens':120,'completion_tokens':100,'total_tokens':220}),ensure_ascii=False).encode()
@@ -79,7 +82,18 @@ def test_real_http_adapter_to_confirmation_and_export(tmp_path):
             for i in p['items']:
                 current=c.get(root).json()
                 assert c.post(root+'/items/'+i['id'],json={'expected_revision':current['revision'],'selection_status':'selected'}).status_code==200
-            stage('ui');stage('prd');stage('prd','mrd');stage('review')
+            from tests.product_flow_helpers import http_check
+            http_check(c,root,through=3)
+            p=c.get(root).json()
+            assert p['ui'] is None and '4' not in p.get('stage_checks',{})
+            assert p['product_flow'][4]['available']
+            stage('prd');stage('prd','mrd');stage('review')
+            p=c.get(root).json()
+            for kind,doc in p['documents'].items():
+                response=c.post(root+'/documents/'+kind+'/review',json=dict(expected_revision=c.get(root).json()['revision'],document_id=doc['id']))
+                assert response.status_code==200,response.text
+            p=c.get(root).json()
+            assert c.post(root+'/stage-checks/5',json=dict(expected_revision=p['revision'],expected_hash=p['product_flow'][4]['content_hash'])).status_code==200
             p=c.get(root).json();assert p['confirmation_issues']==[]
             response=c.post(root+'/confirmations',json={'expected_revision':p['revision'],'expected_hashes':p['hashes'],'scope_ids':[i['id'] for i in p['items']],'idempotency_key':'http-journey'})
             assert response.status_code==200,response.text
@@ -87,7 +101,8 @@ def test_real_http_adapter_to_confirmation_and_export(tmp_path):
             response=c.post(root+'/exports',json={'baseline_id':baseline,'idempotency_key':'http-export'})
             assert response.status_code==200,response.text
             assert c.get(root+'/exports/'+response.json()['id']).content.startswith(b'PK')
-            assert len(requests)==5
+            assert len(requests)==4  # Intake, PRD, MRD, review; no retired sketch request.
+            assert all(d['sketch_policy']=='excluded' for d in p['documents'].values())
             assert len(app.state.store.records(p['id'],'confirmation'))==1
             artifacts=c.get(root+'/artifacts')
             assert artifacts.status_code==200 and len(artifacts.json()['document_artifact'])==2

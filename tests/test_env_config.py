@@ -1,5 +1,6 @@
 """Synthetic credentials and endpoints only; no paid provider calls."""
 import asyncio
+import hashlib
 import os
 from pathlib import Path
 import subprocess
@@ -127,6 +128,18 @@ def test_key_stays_out_of_document_export_and_data_backup(tmp_path,monkeypatch):
     data=tmp_path/'db'
     app=create_app(data,env_path=path)
     project=prepared(app.state.store)
+    # This backup test needs a real synthetic source, while the shared prepared()
+    # fixture intentionally uses a lightweight placeholder for other tests.
+    source=project['sources'][0]
+    raw=source['excerpts'][0]['text'].encode('utf-8')
+    original=data/'sources'/source['id']
+    original.parent.mkdir(parents=True,exist_ok=True)
+    original.write_bytes(raw)
+    source_hash=hashlib.sha256(raw).hexdigest()
+    with app.state.store.edit(project['id'],project['revision'],'合成备份来源校准',bump=False) as (working,_):
+        working['sources'][0]['sha256']=source_hash
+        working['sources'][0]['excerpts'][0]['source_hash']=source_hash
+    project=app.state.store.get(project['id'])
     assert app.state.provider.key_status(DEFAULT)['key_source']=='.env'
     for kind in ('prd','mrd'):
         files=asyncio.run(document_files(project,kind))

@@ -1,3 +1,4 @@
+import copy
 import json
 import sqlite3
 from contextlib import contextmanager
@@ -20,7 +21,7 @@ class Store:
               INSERT OR IGNORE INTO migrations VALUES(1,datetime('now'));
             ''')
             # Never replay a possibly charged request after process death.
-            for row in db.execute("SELECT id,payload FROM records WHERE kind='run'").fetchall():
+            for row in db.execute("SELECT id,payload FROM records WHERE kind IN ('run','user_task')").fetchall():
                 run = json.loads(row['payload'])
                 if run['status'] in ('running', 'queued'):
                     run.update(status='paused_budget', error='RESTARTED', message='服务已重启。已发请求可能计费；请明确续跑。')
@@ -68,7 +69,18 @@ class Store:
             db.execute('BEGIN IMMEDIATE')
             p = self.get(pid, db)
             require(p['revision'] == revision, 'STALE_REVISION', '页面版本已过期，请查看最新内容及差异', 409)
+            before = copy.deepcopy(p)
             yield p, db
+            from .requirements import reconcile_items
+            changes = reconcile_items(before, p)
+            fresh={c['requirement_id'] for c in changes if c['before'] is None}
+            if fresh:
+                for row in db.execute('SELECT payload FROM projects WHERE id<>?',(pid,)):
+                    other=json.loads(row['payload'])
+                    collision=fresh & {i['id'] for i in other['items']}
+                    require(not collision,'IDENTITY_CONFLICT','其他项目已存在相同编号，未创建重复需求：'+'、'.join(sorted(collision)),409)
+            for change in changes:
+                self.record(pid, 'requirement_change', change, db=db)
             if bump:
                 p['revision'] += 1
             db.execute('UPDATE projects SET revision=?,payload=? WHERE id=?', (p['revision'], dumps(p), pid))
@@ -97,9 +109,12 @@ class Store:
             return dict(json.loads(row['payload']), id=rid)
 
     def update_run(self, pid, rid, **changes):
+        self.update_record(pid, rid, 'run', **changes)
+
+    def update_record(self, pid, rid, kind, **changes):
         with self.connect() as db:
             db.execute('BEGIN IMMEDIATE')
-            row = db.execute("SELECT payload FROM records WHERE id=? AND project_id=? AND kind='run'", (rid, pid)).fetchone()
+            row = db.execute("SELECT payload FROM records WHERE id=? AND project_id=? AND kind=?", (rid, pid, kind)).fetchone()
             require(row is not None, 'NOT_FOUND', '任务不存在', 404)
             run = json.loads(row[0])
             run.update(changes)
