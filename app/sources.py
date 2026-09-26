@@ -205,7 +205,8 @@ def parse_bounded(title,data):
     if Path(title).suffix.lower() in ('.txt','.md'):
         return parse_bytes(title,data)
     try:
-        result=subprocess.run([sys.executable,'-m','app.parse_worker',Path(title).suffix.lower()],input=data,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=30,cwd=ROOT,creationflags=subprocess.CREATE_NO_WINDOW if sys.platform=='win32' else 0)
+        command = [sys.executable, '--parse-worker'] if getattr(sys, 'frozen', False) else [sys.executable,'-m','app.parse_worker']
+        result=subprocess.run(command+[Path(title).suffix.lower()],input=data,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=30,cwd=ROOT,creationflags=subprocess.CREATE_NO_WINDOW if sys.platform=='win32' else 0)
     except subprocess.TimeoutExpired:
         raise Problem('SOURCE_FAILED','文件解析超过 30 秒，解析子进程已终止')
     import json

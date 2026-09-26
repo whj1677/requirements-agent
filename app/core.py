@@ -2,13 +2,16 @@
 import hashlib
 import json
 import os
+import sys
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 KIT = ROOT / 'requirements-agent-codex-kit-v1.1'
-DATA = Path(os.environ.get('RA_DATA_DIR', str(ROOT / 'data'))).resolve()
+FROZEN = bool(getattr(sys, 'frozen', False))
+USER_HOME = Path(os.environ['LOCALAPPDATA']) / 'RequirementsAgent' if FROZEN else ROOT
+DATA = USER_HOME / 'data' if FROZEN else Path(os.environ.get('RA_DATA_DIR', str(ROOT / 'data'))).resolve()
 
 
 def dumps(value):

@@ -15,7 +15,7 @@ export interface Project extends ProjectSummary {
   document_export_readiness?: Record<string, { ready: boolean; issues: { code: string; message: string; question_id?: string }[] }>;
   baselines: JsonObject[]; exports: JsonObject[]; active_baseline_id?: string;
 }
-export interface BackendInfo { runtime_id: string; started_at: string; capabilities: string[] }
+export interface BackendInfo { runtime_id: string; started_at: string; capabilities: string[]; distribution?: string }
 export interface SessionInfo { csrf: string; mode: string; version: string; backend?: BackendInfo }
 let csrf = '';
 export function setCsrf(value: string) { csrf = value; }

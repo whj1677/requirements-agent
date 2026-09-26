@@ -1,0 +1,169 @@
+name: Windows customer distribution
+
+# A successful build produces reviewable artifacts, never a GitHub Release.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-distribution-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      PYTHONUTF8: '1'
+      PIP_DISABLE_PIP_VERSION_CHECK: '1'
+
+    steps:
+      - name: Check out the exact selected commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.11.9 x64
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.11.9'
+          architecture: x64
+
+      - name: Set up Node.js 22 for the frontend build
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          package-manager-cache: false
+
+      - name: Prepare isolated build and log directories
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $base = Join-Path $env:RUNNER_TEMP 'requirements-agent-build'
+          $logs = Join-Path $base 'logs'
+          New-Item -ItemType Directory -Path $logs -Force | Out-Null
+          @{
+            RA_BUILD_BASE = $base
+            RA_BUILD_LOGS = $logs
+            RA_BUILD_OUTPUT = Join-Path $base 'output'
+            RA_BUILD_BROWSERS = Join-Path $base 'browsers'
+            RA_DATA_DIR = Join-Path $base 'isolated-test-data'
+          }.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" >> $env:GITHUB_ENV }
+
+      - name: Install locked Python and build dependencies
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -m pip install -r requirements.lock.txt -r packaging/requirements-build.txt 2>&1 |
+            Tee-Object -FilePath (Join-Path $env:RA_BUILD_LOGS 'python-dependencies.log')
+          if ($LASTEXITCODE -ne 0) { throw 'Locked Python dependency installation failed' }
+          python -m pip check
+          if ($LASTEXITCODE -ne 0) { throw 'Python dependency compatibility check failed' }
+
+      - name: Install locked frontend dependencies
+        working-directory: web
+        run: |
+          $ErrorActionPreference = 'Stop'
+          npm.cmd ci 2>&1 | Tee-Object -FilePath (Join-Path $env:RA_BUILD_LOGS 'frontend-dependencies.log')
+          if ($LASTEXITCODE -ne 0) { throw 'Locked frontend dependency installation failed' }
+
+      - name: Download the exact Playwright headless browser revision
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:PLAYWRIGHT_BROWSERS_PATH = $env:RA_BUILD_BROWSERS
+          python -m playwright install --only-shell chromium 2>&1 |
+            Tee-Object -FilePath (Join-Path $env:RA_BUILD_LOGS 'browser-download.log')
+          if ($LASTEXITCODE -ne 0) { throw 'Bundled browser download failed' }
+
+      - name: Download and verify Inno Setup 6.7.3
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tools = Join-Path $env:RA_BUILD_BASE 'tools'
+          New-Item -ItemType Directory -Path $tools -Force | Out-Null
+          $installer = Join-Path $tools 'innosetup-6.7.3.exe'
+          $url = 'https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe'
+          $expectedHash = '9c73c3bae7ed48d44112a0f48e66742c00090bdb5bef71d9d3c056c66e97b732'
+          Invoke-WebRequest -Uri $url -OutFile $installer
+          $actualHash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actualHash -ne $expectedHash) { throw 'Inno Setup download does not match the pinned SHA-256' }
+          $signature = Get-AuthenticodeSignature -LiteralPath $installer
+          if ($signature.Status -ne 'Valid' -or
+              $signature.SignerCertificate.Subject -notmatch '(^|,\s*)CN=Pyrsys B\.V\.(,|$)') {
+            throw 'Inno Setup publisher or Authenticode signature is invalid'
+          }
+          @{
+            source = $url
+            sha256 = $actualHash
+            signature_status = [string]$signature.Status
+            publisher = $signature.SignerCertificate.Subject
+          } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $env:RA_BUILD_LOGS 'inno-verification.json') -Encoding utf8
+          $inno = Join-Path $tools 'InnoSetup-6.7.3'
+          $arguments = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/CURRENTUSER',
+                         ('/DIR="' + $inno + '"'), '/NOICONS', '/TASKS=')
+          $process = Start-Process -FilePath $installer -ArgumentList $arguments -WindowStyle Hidden -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Inno Setup tool installation failed: $($process.ExitCode)" }
+          $compiler = Join-Path $inno 'ISCC.exe'
+          if (-not (Test-Path -LiteralPath $compiler)) { throw 'Inno Setup compiler was not installed' }
+          "RA_ISCC=$compiler" >> $env:GITHUB_ENV
+
+      - name: Execute offline license and packaging boundary checks
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $junit = Join-Path $env:RA_BUILD_LOGS 'boundary-tests.xml'
+          python -m pytest tests/test_licensing.py tests/test_desktop_distribution.py tests/test_windows_packaging.py -q `
+            "--junitxml=$junit" 2>&1 |
+            Tee-Object -FilePath (Join-Path $env:RA_BUILD_LOGS 'boundary-tests.log')
+          if ($LASTEXITCODE -ne 0) { throw 'Offline distribution boundary checks failed' }
+
+      - name: Build from the clean checkout
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $status = git status --porcelain --untracked-files=all
+          if ($LASTEXITCODE -ne 0 -or $status) { throw 'Release input checkout is not clean' }
+          python scripts/build_windows.py --output $env:RA_BUILD_OUTPUT --iscc $env:RA_ISCC `
+            --browser-cache $env:RA_BUILD_BROWSERS 2>&1 |
+            Tee-Object -FilePath (Join-Path $env:RA_BUILD_LOGS 'windows-build.log')
+          if ($LASTEXITCODE -ne 0) { throw 'Customer installer build failed' }
+          $result = Get-Content -LiteralPath (Join-Path $env:RA_BUILD_OUTPUT 'build-result.json') -Raw | ConvertFrom-Json
+          if ($result.working_tree_dirty -or $result.source_commit -ne $env:GITHUB_SHA) {
+            throw 'Build provenance does not match the selected clean commit'
+          }
+          "Built commit: $($result.source_commit)" >> $env:GITHUB_STEP_SUMMARY
+          "Installer SHA-256: $($result.installer_sha256)" >> $env:GITHUB_STEP_SUMMARY
+          'Status: BUILT_NOT_ACCEPTED. Installation, owner-issued activation and customer-runtime acceptance remain separate.' >> $env:GITHUB_STEP_SUMMARY
+
+      - name: Upload installer and release manifests
+        if: success()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: requirements-agent-windows-${{ github.sha }}
+          retention-days: 30
+          compression-level: 0
+          if-no-files-found: error
+          include-hidden-files: false
+          path: |
+            ${{ env.RA_BUILD_OUTPUT }}/installer/RequirementsAgent-1.2.0-windows-x64-setup.exe
+            ${{ env.RA_BUILD_OUTPUT }}/application/RequirementsAgent/release-manifest.json
+            ${{ env.RA_BUILD_OUTPUT }}/build-result.json
+            ${{ env.RA_BUILD_OUTPUT }}/native-byte-verification.json
+
+      - name: Upload allowlisted build diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: requirements-agent-windows-build-logs-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 30
+          if-no-files-found: warn
+          include-hidden-files: false
+          path: |
+            ${{ runner.temp }}/requirements-agent-build/logs/python-dependencies.log
+            ${{ runner.temp }}/requirements-agent-build/logs/frontend-dependencies.log
+            ${{ runner.temp }}/requirements-agent-build/logs/browser-download.log
+            ${{ runner.temp }}/requirements-agent-build/logs/inno-verification.json
+            ${{ runner.temp }}/requirements-agent-build/logs/boundary-tests.log
+            ${{ runner.temp }}/requirements-agent-build/logs/boundary-tests.xml
+            ${{ runner.temp }}/requirements-agent-build/logs/windows-build.log
+            ${{ runner.temp }}/requirements-agent-build/output/native-byte-verification.json

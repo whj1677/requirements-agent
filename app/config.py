@@ -4,7 +4,7 @@ from pathlib import Path
 
 from dotenv import dotenv_values
 
-from .core import ROOT
+from .core import ROOT, USER_HOME, FROZEN
 
 
 def usable_key(value):
@@ -21,7 +21,7 @@ def usable_key(value):
 
 class ProjectEnvironment:
     def __init__(self, path=None):
-        self.path = Path(path) if path is not None else ROOT / '.env'
+        self.path = Path(path) if path is not None else (USER_HOME if FROZEN else ROOT) / '.env'
         self.values = dotenv_values(dotenv_path=self.path, interpolate=False)
 
     def credential(self, name):

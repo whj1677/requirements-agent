@@ -1,0 +1,15 @@
+{
+  "schema": "offline-device-license/build-v1",
+  "artifacts": [
+    {
+      "sha256": "28d98ade39cf079b065861ae56e8150d1f2054a5cccdcda75211e5e6e06643bd",
+      "file": "DeviceLicense.dll"
+    },
+    {
+      "sha256": "606ad1ce435bf0e67dbb17849435a1d22f6ea95ac869dc51421f62078651c6f1",
+      "file": "DeviceLicense.Bridge.exe"
+    }
+  ],
+  "runtime": ".NET Framework 4.x",
+  "componentVersion": "1.0.0-rsa"
+}

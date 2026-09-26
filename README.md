@@ -4,6 +4,8 @@ Python 核心、中文本地 Web 工作台，面向已有平台的增量需求�
 
 完整操作步骤、合成练习和常见问题见 [使用说明](docs/user-guide.md)。该手册位于源码仓库，适用于当前五步工作台。
 
+Windows 客户安装版的安装、设备授权和自备模型 Key 说明见 [客户安装指南](docs/windows-installation.md)；运行环境打包、干净 Windows CI 和验收边界见 [Windows 构建说明](docs/windows-build.md)。客户授权约束交付的安装版，仓库继续公开。下文的源码安装与精简单机包说明保留各自适用范围，不代表客户安装版需要另装 Python 或 Node.js。
+
 本 README 同时说明源码仓库和精简单机包。单机包内可用的命令是 `start-local.cmd`、`scripts/install.ps1`、`scripts/start.ps1`、`scripts/stop.ps1`、`scripts/diagnose.ps1` 和 `scripts/backup.py`；包内附有 `web/dist` 和重建所需的 `web/` 源码。下文指向 `docs/`、`tests/`、浏览器回归及 `scripts/evaluate_live.py` 的链接或命令只适用于源码仓库，精简单机包不包含这些工程资料。实际打包文件与哈希以包内 `release-manifest.json` 为准。
 
 ## Windows 使用

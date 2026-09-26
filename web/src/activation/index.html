@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <title>设备授权 · 需求 Agent</title>
+    <link rel="stylesheet" href="/activation/assets/style.css" />
+    <script src="/activation/assets/app.js" defer></script>
+  </head>
+  <body>
+    <div class="page-shell">
+      <header class="topbar">
+        <a class="brand" href="/activation/" aria-label="需求 Agent 设备授权首页">
+          <span class="brand-mark" aria-hidden="true">需</span>
+          <span>需求 Agent<small>从需求到可交付的共识</small></span>
+        </a>
+        <span class="local-badge"><span aria-hidden="true"></span>本机工作台</span>
+      </header>
+
+      <main id="main-content">
+        <section class="intro" aria-labelledby="page-title">
+          <div>
+            <p class="eyebrow">开始之前 · 设备授权</p>
+            <h1 id="page-title">让每一个需求，<br />都有清晰的起点。</h1>
+            <p class="intro-copy">完成本机授权，即可进入需求工作台。<br class="wide-only" />准备好你的材料，接下来的五步，我们一起完成。</p>
+          </div>
+          <aside class="status-card" aria-labelledby="status-heading">
+            <div class="status-caption"><span class="status-dot" id="status-dot" aria-hidden="true"></span><h2 id="status-heading">本机授权状态</h2></div>
+            <p class="status-title" id="license-status" role="status" aria-live="polite">正在检查…</p>
+            <p class="status-description" id="license-description">正在读取本机的授权信息。</p>
+            <p class="subject" id="license-subject" hidden></p>
+            <button class="text-button" id="refresh-status" type="button">刷新状态 <span aria-hidden="true">↻</span></button>
+          </aside>
+        </section>
+
+        <div class="notice" id="notice" role="status" aria-live="polite" tabindex="-1" hidden></div>
+        <noscript><p class="notice notice-error">请在浏览器中启用 JavaScript，以完成本机授权和启动操作。</p></noscript>
+
+        <section class="activation-grid" id="activation-flow" aria-label="设备授权步骤">
+          <article class="step-card" id="request-card">
+            <div class="step-heading"><span class="step-number">01</span><span class="step-label">申请授权</span></div>
+            <h2>告诉我们，谁将使用它</h2>
+            <p class="card-copy">填写个人或单位名称，保存申请文件，再交给软件拥有者审核签发。</p>
+            <form id="request-form">
+              <label for="display-name">授权名称</label>
+              <input id="display-name" name="display_name" autocomplete="organization" maxlength="120" required placeholder="例如：某某公司 · 产品团队" aria-describedby="name-help" />
+              <p class="field-help" id="name-help">由你填写，最多 120 个字符。</p>
+              <button class="button button-secondary" id="request-button" type="submit" disabled><span aria-hidden="true">↓</span> 保存授权申请</button>
+            </form>
+            <div class="card-note"><span class="small-dot" aria-hidden="true"></span>生成申请并不代表已经获得授权。</div>
+          </article>
+
+          <article class="step-card" id="install-card">
+            <div class="step-heading"><span class="step-number">02</span><span class="step-label">导入许可证</span></div>
+            <h2>收到授权，完成激活</h2>
+            <p class="card-copy">选择软件拥有者返回的许可证文件。我们会在本机核验签名与设备。</p>
+            <form id="install-form">
+              <label class="file-zone" for="license-file">
+                <span class="file-icon" aria-hidden="true">↥</span>
+                <strong id="file-label">选择许可证 JSON 文件</strong>
+                <span id="file-description">保留收到的原始文件，无需编辑</span>
+                <input id="license-file" type="file" accept=".json,application/json" aria-describedby="file-description" />
+              </label>
+              <label class="replace-option"><input id="replace-license" type="checkbox" /><span>我确认替换本机已有的许可证</span></label>
+              <button class="button button-secondary" id="install-button" type="submit" disabled>导入并验证</button>
+            </form>
+            <div class="card-note"><span class="small-dot" aria-hidden="true"></span>许可证只适用于签发时绑定的设备。</div>
+          </article>
+
+          <article class="start-card" id="start-card">
+            <div class="start-content">
+              <div class="step-heading"><span class="step-number">03</span><span class="step-label">进入工作台</span></div>
+              <h2 id="start-heading">授权完成后，开始你的项目</h2>
+              <p id="start-description">现有授权会自动校验，无需每次重新申请。</p>
+            </div>
+            <button class="button button-primary" id="start-button" type="button" disabled>进入工作台 <span aria-hidden="true">→</span></button>
+          </article>
+        </section>
+
+        <section class="stopped-card" id="stopped-card" aria-labelledby="stopped-heading" hidden>
+          <div class="stopped-icon" aria-hidden="true">✓</div>
+          <h2 id="stopped-heading">本机服务已停止</h2>
+          <p>你可以关闭此页面。下次使用时，从“需求 Agent”快捷方式重新打开。</p>
+        </section>
+
+        <section class="help-grid" aria-label="使用前了解">
+          <div><h3>授权在本机完成</h3><p>申请包含授权名称与设备摘要，不包含主板原始序列号。离线永久许可证由软件拥有者签发。</p></div>
+          <div><h3>模型由你选择</h3><p>进入工作台后配置自己的模型 API Key。软件授权不含模型额度；调用费用由模型服务商收取。</p></div>
+          <div><h3>保留材料原貌</h3><p>普通材料读取环境已随包提供。旧版或企业保护的 Office 文件，可能需要本机已安装并获准使用的 Office。</p></div>
+        </section>
+      </main>
+
+      <footer class="footer">
+        <span>需求 Agent <span class="footer-divider" aria-hidden="true">/</span> 设备授权与启动</span>
+        <button class="text-button exit-button" id="shutdown-button" type="button" disabled>退出本机服务</button>
+      </footer>
+    </div>
+    <dialog id="shutdown-dialog" aria-labelledby="shutdown-title" aria-describedby="shutdown-description">
+      <h2 id="shutdown-title">退出本机工作台？</h2>
+      <p id="shutdown-description">请先保存其他标签页中的输入。正在执行的材料读取或模型任务结束后，才能停止服务。</p>
+      <div class="dialog-actions"><button class="button button-secondary" id="cancel-shutdown" type="button">继续使用</button><button class="button button-primary" id="confirm-shutdown" type="button">确认退出</button></div>
+    </dialog>
+  </body>
+</html>

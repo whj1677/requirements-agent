@@ -12,7 +12,7 @@ from fastapi import FastAPI, Request, UploadFile, File, Form
 from fastapi.responses import JSONResponse, HTMLResponse, Response, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
-from .core import DATA, ROOT, Problem, brief_hash, digest, hashes, ident, now, require, ui_view_hash
+from .core import DATA, ROOT, FROZEN, Problem, brief_hash, digest, hashes, ident, now, require, ui_view_hash
 from .store import Store
 from .contracts import gate, API_CAPABILITIES, PROFILES, review_target
 from .provider import Provider, DEFAULT, origin
@@ -176,11 +176,20 @@ class Grant(Revision):
 
 def runtime_fingerprint():
     """启动时对 app 包源码算一次指纹；进程内固定，不在请求时重读磁盘。"""
+    if FROZEN:
+        import sys
+        with open(sys.executable, 'rb') as executable:
+            return hashlib.file_digest(executable, 'sha256').hexdigest()[:16]
     payload = b''.join(p.read_bytes() for p in sorted((ROOT / 'app').glob('*.py')))
     return hashlib.sha256(payload).hexdigest()[:16]
 
 
 def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
+    license_manager = None
+    if FROZEN:
+        from .licensing import LicenseManager
+        license_manager = LicenseManager()
+        license_manager.verify_cached()  # Before Store initialization or recovery of paid tasks.
     store = Store(folder)
     provider = provider or Provider(env_path=env_path)
     for slot in ('model','vision'):
@@ -193,7 +202,7 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
             provider.env_origins[name] = endpoint
     workflow = Workflow(store, provider)
     actions = Actions(store, workflow)
-    # RA_ACCESS_TOKEN=off 为临时的本机无令牌模式，待硬件绑定方案替换；其余情况保持强制令牌
+    # Session token and customer device licensing are independent gates.
     if access_token is None and os.environ.get('RA_ACCESS_TOKEN')=='off':
         token=None
     else:
@@ -205,6 +214,8 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
     app.state.access_token = token
     app.state.runtime = {'runtime_id': runtime_fingerprint(), 'started_at': now(),
                          'capabilities': list(API_CAPABILITIES)}
+    if FROZEN:
+        app.state.runtime['distribution'] = 'requirements-agent-windows'
 
     def attach_document_snapshot(pid, artifact):
         if any(k not in artifact for k in ('item_snapshot','question_snapshot','requirement_name','source_snapshot')):
@@ -226,6 +237,12 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
 
     @app.middleware('http')
     async def local_security(request, call_next):
+        if license_manager is not None:
+            from .licensing import LicenseError
+            try:
+                await asyncio.to_thread(license_manager.verify_cached)
+            except LicenseError as error:
+                return JSONResponse({'code':error.code,'message':error.message},status_code=403)
         host = request.headers.get('host','')
         parsed_host = urlsplit('http://' + host).hostname
         if parsed_host not in ('127.0.0.1','localhost','testserver'):
