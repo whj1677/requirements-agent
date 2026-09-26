@@ -70,7 +70,9 @@ def model_server():
                 value['result']={'spec':spec}
             elif stage=='prd':
                 chosen=[i for group in ctx['A_normative'].values() for i in group]
-                value=dict(plan_version='1',title=topic+'需求讨论稿',sections=[dict(title='本期内容与未决规则',normative_refs=[i['id'] for i in chosen],discussion_refs=[],narration=f'{topic}讨论稿；未采纳建议不是确定规则。')],limitations=[])
+                discussion=[i['id'] for i in ctx['C_discussion']['items']] if not chosen else []
+                value=dict(plan_version='2',sections=[dict(section_key='function',context_refs=header['plan_contract']['context_ref_ids'],
+                    normative_refs=[i['id'] for i in chosen],discussion_refs=discussion)])
             elif stage=='review':
                 value['result']=dict(assessment='ready_for_human_review',reviewed_refs=[i['id'] for i in ctx['items']],perspectives=[dict(role='合成工程审查',considerations=['不代表真人审查'])],required_decisions=[q['question'] for q in ctx['questions'] if q['status']=='open'])
             if state.get('transform'):

@@ -50,6 +50,11 @@ def http_check(client,root,through=3):
     p=client.get(root).json()
     reqs=[i for i in p['items'] if i['kind']=='requirement' and i['applies_to']=='to_be']
     post('/product-context',dict(values={k:'合成明确输入：'+v for k,v in {**INTAKE,**SCOPE}.items()},scope_ids=[i['id'] for i in reqs]))
+    # Explicit synthetic PM decision at scope review; unknown model classification
+    # cannot silently count as a completed scope checkpoint.
+    if through>=2:
+        for i in reqs:
+            if i.get('change_type')=='unspecified':post('/items/'+i['id']+'/behavior',dict(values={},change_type='modified'))
     if through>=3:
         for i in reqs:post('/items/'+i['id']+'/behavior',dict(values={k:'合成已给出的 '+v for k,v in BEHAVIOR.items()},change_type='modified'))
     for n in (1,2):

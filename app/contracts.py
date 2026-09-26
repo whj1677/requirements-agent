@@ -59,9 +59,12 @@ def validate_response(value, stage, project, excerpts, document_type='prd'):
     errors = sorted(VALIDATOR.iter_errors(value), key=lambda e: str(e.path))
     require(not errors, 'SCHEMA_INVALID', '模型响应不匹配 Schema：' + (describe_schema_error(errors) if errors else ''))
     require(value['stage'] == stage, 'SCHEMA_INVALID', '模型返回了错误阶段')
+    if stage=='review':
+        require(not value['proposals'] and not value['questions'] and 'product_context_proposal' not in value,
+                'SEMANTIC_BLOCKED','语义审查只报告发现，不能创建候选、问题或替换产品上下文；请在澄清阶段处理修订')
     item_ids = {i['id'] for i in project['items']}
     question_ids = {q['id'] for q in project['questions']}
-    temps = [i['temp_id'] for i in value['proposals']] + [q['temp_id'] for q in value['questions']]
+    temps = [i['temp_id'] for i in value['proposals']] + [q['temp_id'] for q in value['questions']] + [q['temp_id'] for parent in value['questions'] for q in parent.get('decision_points',[])]
     require(len(set(temps)) == len(temps), 'REFERENCE_INVALID', '临时 ID 重复')
     allowed = item_ids | question_ids | set(temps)
     if project.get('ui'):
@@ -81,6 +84,8 @@ def validate_response(value, stage, project, excerpts, document_type='prd'):
         require((proposal['action'] == 'add' and proposal['target_item_id'] is None) or
                 (proposal['action'] == 'revise' and proposal['target_item_id'] in item_ids),
                 'REFERENCE_INVALID', '修订目标必须存在；新增不能覆盖旧条目')
+    from .understanding import validate as validate_understanding
+    validate_understanding(value,project,excerpts)
     if stage == 'ui':
         validate_ui(value['result']['spec'], project)
     if stage == 'prd':
@@ -217,8 +222,16 @@ def gate(p):
     review = p.get('review')
     if not review or review['target_hash'] != review_target(p):
         issues.append('需要审查当前底稿和文档')
-    elif review['response']['result']['assessment'] != 'ready_for_human_review' or any(f['severity'] == 'blocker' for f in review['response']['findings']):
-        issues.append('语义审查仍有阻塞项')
+    else:
+        result=review['response']['result']
+        if result['assessment'] != 'ready_for_human_review' or any(f['severity'] == 'blocker' for f in review['response']['findings']):
+            issues.append('语义审查仍有阻塞项')
+        if result.get('required_decisions'):
+            issues.append('语义审查仍有必要决定待产品处理：'+'；'.join(result['required_decisions']))
+        reviewed=set(result.get('reviewed_refs',[]))
+        uncovered=[i['id'] for i in delivery_items(p) if i['kind']=='requirement' and i['id'] not in reviewed]
+        if uncovered or not result.get('perspectives'):
+            issues.append('语义审查覆盖不足：'+('未审查需求 '+ '、'.join(uncovered) if uncovered else '缺少审查视角'))
     if not any(i['selection_status'] == 'selected' and i['applies_to']=='to_be' and i['kind'] == 'requirement' for i in p['items']):
         issues.append('本期没有已选需求')
     if not any(i['selection_status'] == 'selected' and i['applies_to']=='to_be' and i['kind'] == 'acceptance' for i in p['items']):

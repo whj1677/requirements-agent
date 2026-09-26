@@ -64,7 +64,7 @@ def test_identical_revision_already_in_body_is_not_appended_as_pending(tmp_path)
     target=p['items'][0]
     candidate=dict(copy.deepcopy(target),id='REQ-revision-copy',target_item_id=target['id'],selection_status='deferred')
     p['items'].append(candidate);before=copy.deepcopy(p)
-    plan=dict(plan_version='1',title='合成讨论稿',sections=[dict(title='功能',normative_refs=[target['id']],discussion_refs=[],narration='')],limitations=[])
+    plan=dict(plan_version='2',sections=[dict(section_key='function',context_refs=[],normative_refs=[target['id']],discussion_refs=[])])
     doc=compile_plan(plan,p,'prd')['result']
     assert not any(candidate['id'] in b['ref_ids'] for s in doc['sections'] for b in s['blocks'])
     assert p==before

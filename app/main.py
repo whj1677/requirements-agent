@@ -19,6 +19,8 @@ from .provider import Provider, DEFAULT, origin
 from .workflow import Workflow, confirm
 from .actions import Actions
 from .sources import MAX_BYTES, SOURCE_EXTENSIONS, save_source, webpage
+from .material_images import append_source
+from .understanding import record_answer, accept_answer_update
 from .preview import prototype
 from .exports import document_files, handoff, zip_files
 from .document_reader import reader_document, export_readiness, filename
@@ -78,7 +80,7 @@ class Decision(Revision):
     selection_status: Literal['candidate','selected','rejected','deferred']
     statement: str | None = Field(default=None,min_length=1,max_length=6000)
     title: str | None = Field(default=None,min_length=1,max_length=200)
-    change_type: Literal['new','modified','preserved','existing'] | None = None
+    change_type: Literal['new','modified','preserved','existing','unspecified'] | None = None
 
 class DirectionDecision(Revision):
     direction_status: Literal['selected','deferred','rejected']
@@ -102,6 +104,10 @@ class Candidate(Revision):
     statement: str = Field(min_length=1,max_length=6000)
     change_type: Literal['new','modified','preserved'] = 'new'
 
+class AcceptanceCandidate(Revision):
+    title: str = Field(min_length=1,max_length=200)
+    statement: str = Field(min_length=1,max_length=6000)
+
 class DocumentReview(Revision):
     document_id: str
 
@@ -111,7 +117,7 @@ class ContextEdit(Revision):
 
 class BehaviorEdit(Revision):
     values: dict[str,str]
-    change_type: Literal['new','modified','preserved','existing']
+    change_type: Literal['new','modified','preserved','existing','unspecified']
 
 class StageCheck(Revision):
     expected_hash: str
@@ -149,10 +155,11 @@ class ModelConfig(Strict):
     json_mode: bool = True
     timeout: int = Field(default=120,ge=1,le=600)
     max_calls: int = Field(default=8,ge=1,le=30)
-    max_tokens: int = Field(default=6000,ge=100,le=50000)
+    max_tokens: int = Field(default=16000,ge=100,le=50000)
     context_chars: int = Field(default=180000,ge=10000,le=2000000)
     action_seconds: int = Field(default=300,ge=5,le=1800)
     thinking_disabled: bool = True
+    review_thinking: bool = True
     documented_at: str | None = None
     local_allowed: bool = False
     proxy: str = Field(default='',max_length=2000)
@@ -277,7 +284,15 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
             issues=gate(p)
         except Problem as e:
             issues=[e.message]
-        result=dict(p, hashes=hashes(p), confirmation_issues=issues, baselines=store.records(pid,'baseline'), exports=store.records(pid,'export'))
+        # Reader/source progress are response projections; keep canonical review hashes intact.
+        result=copy.deepcopy(p)
+        result.update(hashes=hashes(p), confirmation_issues=issues,
+                      baselines=store.records(pid,'baseline'), exports=store.records(pid,'export'))
+        for source in result['sources']:
+            if source.get('embedded_image_ids'):
+                children=[s for s in result['sources'] if s.get('container_source_id')==source['id']]
+                source['image_progress']=dict(extracted=len(children),analyzed=sum(bool(s.get('vision_run_id')) for s in children),
+                    limited=sum(s['parse_status']=='partial' for s in children),pending=sum(not s.get('vision_run_id') for s in children))
         for artifact in result['documents'].values():
             attach_document_snapshot(pid,artifact)
         result['document_export_readiness']={kind:export_readiness(p,kind) for kind in p['documents']}
@@ -313,6 +328,21 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
                 source_refs=[dict(source_id=source['id'],excerpt_id=e['id']) for e in source['excerpts']],related_refs=[],revision=p['revision']))
         return p
 
+    @app.post('/api/projects/{pid}/items/{iid}/acceptance')
+    async def create_acceptance_candidate(pid:str,iid:str,body:AcceptanceCandidate):
+        with store.edit(pid,body.expected_revision,'人工新增关联验收候选') as (p,db):
+            requirement=next((i for i in p['items'] if i['id']==iid and i['kind']=='requirement' and i['applies_to']=='to_be'),None)
+            require(requirement is not None and iid in p.get('product_context',{}).get('scope_ids',[]),
+                    'REFERENCE_INVALID','请选择当前本期范围内的实际需求编号')
+            require(body.title.strip() and body.statement.strip(),'INPUT_REQUIRED','验收名称与原文不能为空')
+            source=save_source(store,'人工新增验收条件.txt',body.statement.encode('utf-8'),'goal')
+            p['sources'].append(source)
+            p['items'].append(dict(id=ident('AC'),kind='acceptance',title=body.title,statement=body.statement,
+                applies_to='to_be',epistemic_status='reported',selection_status='candidate',
+                source_refs=[dict(source_id=source['id'],excerpt_id=e['id']) for e in source['excerpts']],
+                related_refs=[iid],revision=p['revision']))
+        return p
+
     @app.post('/api/projects/{pid}/documents/{kind}/review')
     async def record_document_review(pid:str,kind:str,body:DocumentReview):
         require(kind in ('mrd','prd'),'NOT_FOUND','文档类型不存在',404)
@@ -328,6 +358,8 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
             require(all(v.strip() and len(v)<=6000 for v in body.answers.values()),'INPUT_REQUIRED','回答不能为空或超过6000字符')
             for qid,value in body.answers.items():
                 q=questions[qid]
+                require(not q.get('superseded_by'),'QUESTION_SPLIT','请回答拆分后的具体问题',409)
+                record_answer(q)
                 source=save_source(store,'问题回答.txt',value.encode('utf-8'),'goal');p['sources'].append(source)
                 q.update(answer=value,status='answered',answered_at=now(),
                     answer_source_refs=[dict(source_id=source['id'],excerpt_id=e['id']) for e in source['excerpts']],
@@ -435,7 +467,7 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
         require(p['revision']==expected_revision,'STALE_REVISION','页面已过期',409)
         s=await asyncio.to_thread(save_source,store,Path(file.filename or 'unknown').name,data,purpose)
         with store.edit(pid,expected_revision,'添加文件材料') as (p,db):
-            p['sources'].append(s)
+            append_source(p,s)
         return s
 
     @app.post('/api/projects/{pid}/sources/url')
@@ -447,6 +479,7 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
             s=save_source(store,body.url,raw,body.purpose,final,([(method,text)],'partial' if 'partial' in method else 'read','部分子资源被阻止' if 'partial' in method else '',None))
         except Exception as e:
             s=dict(id=ident('SRC'),title=body.url,purpose=body.purpose,uri=body.url,sha256=None,created=now(),version=1,excluded=False,excerpts=[],parse_status='failed',failure_reason=e.message if isinstance(e,Problem) else '网页读取失败：'+type(e).__name__,image_mime=None)
+        s['dynamic']=body.dynamic
         with store.edit(pid,body.expected_revision,'添加网页材料') as (p,db):
             p['sources'].append(s)
         return s
@@ -457,6 +490,8 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
             s=next((x for x in p['sources'] if x['id']==sid),None)
             require(s is not None,'NOT_FOUND','材料不存在',404)
             s['excluded']=not s['excluded']
+            for child in p['sources']:
+                if child.get('container_source_id')==sid:child['excluded']=s['excluded']
         return s
 
     @app.get('/api/projects/{pid}/sources/{sid}/image')
@@ -473,16 +508,25 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
         old=next((x for x in p['sources'] if x['id']==sid),None)
         require(old is not None,'NOT_FOUND','材料不存在',404)
         if old.get('uri'):
+            # Older successful records retain the extraction method in the locator.
+            # If no strategy can be established, keep the old source unchanged.
+            dynamic=old.get('dynamic')
+            if dynamic is None:
+                locators=[e.get('locator','') for e in old.get('excerpts',[])]
+                if any('controlled-browser' in value for value in locators):dynamic=True
+                elif any('http-text' in value for value in locators):dynamic=False
+                else:raise Problem('SOURCE_FAILED','旧网页记录没有读取策略；请按明确的静态或动态方式重新添加，原记录保留')
             try:
-                raw,text,method,final=await asyncio.wait_for(webpage(old['uri']),30)
-                s=save_source(store,old['title'],raw,old['purpose'],final,([(method,text)],'read','',None))
+                raw,text,method,final=await asyncio.wait_for(webpage(old['uri'],dynamic),30)
+                s=save_source(store,old['title'],raw,old['purpose'],final,([(method,text)],'partial' if 'partial' in method else 'read','部分子资源被阻止' if 'partial' in method else '',None))
+                s['dynamic']=dynamic
             except Exception:
                 raise Problem('SOURCE_FAILED','网页重试失败；原失败记录保留')
         else:
             s=await asyncio.to_thread(save_source,store,old['title'],(store.folder/'sources'/old['id']).read_bytes(),old['purpose'])
         s['version']=old['version']+1
         s['parent_source_id']=old['id']
-        with store.edit(pid,body.expected_revision,'重新读取材料，保留原记录') as (p,db):p['sources'].append(s)
+        with store.edit(pid,body.expected_revision,'重新读取材料，保留原记录') as (p,db):append_source(p,s)
         return s
 
     @app.post('/api/projects/{pid}/items/{iid}')
@@ -499,11 +543,12 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
                     i['source_refs']=i.get('source_refs',[])+[dict(source_id=s['id'],excerpt_id=ex['id']) for ex in s['excerpts']]
                 i['statement']=body.statement
             if i.get('target_item_id') and body.selection_status=='selected':
+                accept_answer_update(p,i)
                 target=next(x for x in p['items'] if x['id']==i['target_item_id'])
                 # Preserve stable business identity for a selected revision.
                 for key in ('title','statement','applies_to','epistemic_status','source_refs','related_refs'):
                     target[key]=copy.deepcopy(i[key])
-                for key in ('behavior','change_type'):
+                for key in ('behavior','change_type','scope_evidence','classification_reason'):
                     if key in i:target[key]=copy.deepcopy(i[key])
                 target['selection_status']='selected'
                 i['selection_status']='deferred'
@@ -556,6 +601,8 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
         with store.edit(pid,body.expected_revision,'人工回答问题') as (p,db):
             q=next((x for x in p['questions'] if x['id']==qid),None)
             require(q is not None,'NOT_FOUND','问题不存在',404)
+            require(not q.get('superseded_by'),'QUESTION_SPLIT','请回答拆分后的具体问题',409)
+            record_answer(q)
             q.update(answer=body.answer,status='answered',answered_at=now())
             source=save_source(store,'问题回答.txt',body.answer.encode(),'goal')
             p['sources'].append(source)

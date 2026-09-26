@@ -13,3 +13,5 @@
 验收候选应包含前提、动作/触发、可观察结果；对“更好/快速/友好”要求提出量化或可判定方式，不能自己定数值。重要规则尚未决定时，保留问题，不能先写一个默认答案让开发照做。
 
 输出 stage=clarify；result 包含 scope_summary、outstanding_decisions、next_focus。新增/修订候选放 proposals，问题放 questions，冲突放 findings。
+
+修订候选保留功能的真实变化身份：action=revise 是编辑需求记录，不能据此把原来的新增功能改成 change_type=modified。候选已存在不代表功能已经在业务系统存在。依据当前系统现状与本期变化分类，逐字引用原始材料；一条完整修订的 source_refs 需覆盖其保留和补入的全部事实，包括行为、权限与异常，不只引用本轮答案。

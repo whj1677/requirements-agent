@@ -8,3 +8,5 @@ __pycache__/
 .env.*
 !.env.example
 evidence/
+# Duplicate delivery archive; the expanded design source is versioned.
+/docs/requirements-agent-ui-handoff-v0.9.zip

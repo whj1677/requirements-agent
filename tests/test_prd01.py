@@ -16,9 +16,9 @@ from tests.test_ui02_actions import case, plan as action_plan, start, finished
 
 
 def plan(refs=None, discussion=None):
-    return dict(plan_version='1', title='合成联系人讨论稿', sections=[dict(
-        title='联系人维护', normative_refs=refs or [], discussion_refs=discussion or [],
-        narration='现有资料的组织建议，仍须核对。')], limitations=[])
+    return dict(plan_version='2', sections=[dict(
+        section_key='function', context_refs=[], normative_refs=refs or [],
+        discussion_refs=discussion or [])])
 
 
 def state(tmp_path):
@@ -121,10 +121,10 @@ def test_empty_section_is_not_coverage_and_source_limit_stays_visible(tmp_path):
     from app.prd import compile_plan
     _,p=state(tmp_path)
     p['sources'][0].update(parse_status='partial',failure_reason='仅部分段落可读')
-    r=compile_plan(plan(),p,'prd',omitted=['EX-OMITTED'])
-    assert r['result']['coverage']==[]
+    p['items'][0]['selection_status']='candidate'
+    r=compile_plan(plan(discussion=['REQ-0001']),p,'prd',omitted=['EX-OMITTED'])
+    assert all(c['item_id']!='REQ-0001' for c in r['result']['coverage'])
     assert all(m['disposition']=='pending' for m in r['result']['reference_mapping'])
-    assert '未成文规范条目：REQ-0001' in r['limitations']
     rendered=dumps(r)
     assert '仅部分段落可读' in rendered and 'EX-OMITTED' in rendered
 
@@ -167,13 +167,14 @@ def test_http_failed_schema_repair_keeps_each_request_and_input_identity(case):
     assert task['calls']==2 and task['status']=='succeeded'
     run=app.state.store.get_record(root.rsplit('/',1)[-1],task['run_ids'][0])
     assert task['approved_plan_hash']==preview['plan_hash']
-    assert task['authorized_configs']['prd']['max_tokens']==6000
+    approved_tokens=task['authorized_configs']['prd']['max_tokens']
+    assert approved_tokens==model['config']['max_tokens']>0
     entries=[json.loads((app.state.store.folder/'evidence/model-calls'/(a['call_id']+'.json')).read_text('utf-8')) for a in run['attempts']]
     assert entries[0]['validation_result']=='SCHEMA_INVALID' and entries[0]['final_output']=='{invalid first response'
     assert entries[1]['repair_of']==entries[0]['call_id'] and entries[1]['validation_result']=='accepted'
     assert entries[0]['actual_input_hash']!=entries[1]['actual_input_hash']
     for e in entries:
-        assert e['max_tokens']==e['authorization']['approved_max_tokens']==6000
+        assert e['max_tokens']==e['authorization']['approved_max_tokens']==approved_tokens
         assert e['authorization']['schema_hash'] and e['authorization']['prompt_hash'] and e['authorization']['config_hash']
         assert e['usage']==dict(prompt_tokens=10,completion_tokens=10,total_tokens=20)
         assert 'ui02-synthetic-key' not in dumps(e)

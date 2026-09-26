@@ -4,7 +4,7 @@ import { ArtifactTabs } from './workbench';
 import { SourcePanel, VersionHistory, ConfirmationPanel, DocumentStudio } from './panels';
 import { useDialog } from './shell';
 import { ProductCheckpoint, QuestionList } from './product-flow';
-import { useDirty, useNavigation } from './editing';
+import { DraftConflictError, EditProof, useDirty, useNavigation } from './editing';
 import { Icon } from './ui-icons';
 import { phases, TaskStatus, ActionDialog, OptionDecision } from './guided';
 type Obj = Record<string, any>;
@@ -23,49 +23,75 @@ export function Workspace({ id, active, models, onProjectsChanged, compat, onExi
   const [budget, setBudget] = useState(8), [focusRefs, setFocusRefs] = useState<Obj[]>([]);
   const [fatal, setFatal] = useState<ApiError | null>(null), [stale, setStale] = useState<string[]>([]), [staleNotice, setStaleNotice] = useState(''), [tasksLoaded, setTasksLoaded] = useState(false), [compatDismissed, setCompatDismissed] = useState(false);
   const [help,setHelp]=useState<Obj|null>(null),[helpText,setHelpText]=useState(''),[candidateOpen,setCandidateOpen]=useState(false),[candidateTitle,setCandidateTitle]=useState(''),[candidateText,setCandidateText]=useState('');
+  const [acceptanceOpen,setAcceptanceOpen]=useState(false),[acceptanceRequirement,setAcceptanceRequirement]=useState(''),[acceptanceTitle,setAcceptanceTitle]=useState(''),[acceptanceText,setAcceptanceText]=useState('');
   const guard=useNavigation();
   function go(n:number){if(n===3)n=4;guard(()=>{setPhase(n);sessionStorage.setItem('ra-phase-'+id,String(n));});}
   const projectRef=useRef<Project|null>(null);
-  const serial = useRef(0), root = '/projects/' + id;
+  const refreshTail = useRef<Promise<void>>(Promise.resolve()), root = '/projects/' + id;
   const mainScroll = useRef<HTMLElement | null>(null), scrollPositions = useRef<Record<number, number>>({});
   useEffect(() => { if (mainScroll.current) mainScroll.current.scrollTop = scrollPositions.current[phase] || 0; }, [phase]);
   useDialog(sourcesOpen, () => guard(()=>setSourcesOpen(false)));
   useDialog(!!help,()=>guard(()=>setHelp(null)));
   useDialog(candidateOpen,()=>guard(()=>setCandidateOpen(false)));
-  async function saveSourceDraft(){if(sourceText.trim()) {await mutate('/sources/text',{text:sourceText,purpose});setSourceText('');}if(url.trim()){await mutate('/sources/url',{url,dynamic,authorized_public:true,purpose});setUrl('');}}
+  useDialog(acceptanceOpen,()=>guard(()=>setAcceptanceOpen(false)));
+  async function saveSourceDraft(){if(sourceText.trim()) {const submitted=sourceText;await mutate('/sources/text',{text:submitted,purpose});setSourceText(current=>current===submitted?'':current);}if(url.trim()){const submitted=url;if(projectRef.current?.sources.some(s=>s.uri===submitted&&s.parse_status==='failed'))throw Error('该网址已留下读取失败记录。请修改网址或在资料中重新读取。');const source=await mutate('/sources/url',{url:submitted,dynamic,authorized_public:true,purpose}) as Obj;if(source.parse_status==='failed')throw Error('网址已留下读取失败记录，输入已保留。请核对失败原因或重新读取。');setUrl(current=>current===submitted?'':current);}}
   useDirty(id+'-sources',Boolean(sourceText.trim()||url.trim()),'项目资料',saveSourceDraft,()=>{setSourceText('');setUrl('');});
   useDirty(id+'-help',Boolean(helpText.trim()),'对象讨论输入',async()=>{await mutate('/sources/text',{text:help?.label+'\n'+helpText,purpose:'goal'});setHelpText('');},()=>setHelpText(''));
   async function saveCandidate(){await mutate('/items',{title:candidateTitle,statement:candidateText,change_type:'new'});setCandidateTitle('');setCandidateText('');setCandidateOpen(false);}
   useDirty(id+'-candidate',Boolean(candidateTitle||candidateText),'候选需求',saveCandidate,()=>{setCandidateTitle('');setCandidateText('');});
+  async function saveAcceptance(){if(!acceptanceRequirement)throw Error('请先选择本期需求');const submitted={requirement:acceptanceRequirement,title:acceptanceTitle,text:acceptanceText};await mutate('/items/'+submitted.requirement+'/acceptance',{title:submitted.title,statement:submitted.text});setAcceptanceTitle('');setAcceptanceText('');setAcceptanceRequirement('');setAcceptanceOpen(false);}
+  useDirty(id+'-acceptance',Boolean(acceptanceTitle||acceptanceText),'关联验收候选',saveAcceptance,()=>{setAcceptanceTitle('');setAcceptanceText('');setAcceptanceRequirement('');setAcceptanceOpen(false);});
   useDialog(historyOpen, () => setHistoryOpen(false));
   useDialog(renameOpen, () => setRenameOpen(false));
-  async function refresh() {
-    const n = ++serial.current;
-    // Read task status before its result snapshot: a fast completion must not
-    // stop polling while leaving the previously fetched project on screen.
-    const responses=await Promise.allSettled([api<Run[]>(root+'/runs'),api<UserTask[]>(root+'/actions'),api<Obj>(root+'/artifacts')]);
-    let project: Project;
-    try { project = await api<Project>(root); }
-    catch (e) { if (n === serial.current) setFatal(e as ApiError); throw e; }
-    if (n !== serial.current) return;
-    projectRef.current=project; setFatal(null); setStaleNotice(''); setP(project);
-    const failed: string[] = [];
-    if(n!==serial.current)return;
-    responses.forEach((result,index)=>{if(result.status==='rejected'){failed.push(['运行记录','任务列表','产物记录'][index]);return;}if(index===0)setRuns(result.value as Run[]);if(index===1){setTasks(result.value as UserTask[]);setTasksLoaded(true);}if(index===2)setArtifacts(result.value as Obj);});
-    setStale(failed);
+  function refresh():Promise<void> {
+    // Queue every batch, including mutation-triggered and manual reads. A save
+    // must observe its own new revision even when a slow poll was already open.
+    const run=refreshTail.current.then(async()=>{
+      const responses=await Promise.allSettled([api<Run[]>(root+'/runs'),api<UserTask[]>(root+'/actions'),api<Obj>(root+'/artifacts')]);
+      let project:Project;
+      try{project=await api<Project>(root);}catch(e){setFatal(e as ApiError);throw e;}
+      projectRef.current=project;setFatal(null);setStaleNotice('');setP(project);
+      const failed:string[]=[];
+      responses.forEach((result,index)=>{if(result.status==='rejected'){failed.push(['运行记录','任务列表','产物记录'][index]);return;}if(index===0)setRuns(result.value as Run[]);if(index===1){setTasks(result.value as UserTask[]);setTasksLoaded(true);}if(index===2)setArtifacts(result.value as Obj);});
+      setStale(failed);
+    });
+    refreshTail.current=run.then(()=>{},()=>{});
+    return run;
   }
   function onRefreshFail(e: unknown) { setStaleNotice(categoryText[categorizeError(e)]); }
   function retry() { setBusy(true); refresh().catch(onRefreshFail).finally(() => setBusy(false)); }
   async function act(fn: () => Promise<unknown>) { setBusy(true); setError(''); try { await fn(); } catch(e) { setError((e as Error).message); } finally { setBusy(false); } }
   useEffect(() => { if (active) refresh().catch(onRefreshFail); }, [active]);
   const running = tasks.some(t => ['queued','running'].includes(t.status)) || runs.some(r => ['queued','running'].includes(r.status));
-  useEffect(() => { if (!active || !running) return; const timer = setInterval(() => refresh().catch(onRefreshFail), 800); return () => clearInterval(timer); }, [active, running]);
+  useEffect(() => { if (!active || !running) return; let stopped=false; let timer:ReturnType<typeof setTimeout>;
+    async function poll(){try{await refresh();}catch(e){onRefreshFail(e);}finally{if(!stopped)timer=setTimeout(poll,800);}}
+    timer=setTimeout(poll,800);return()=>{stopped=true;clearTimeout(timer);};
+  }, [active, running]);
   useEffect(() => {
     if (!sourcesOpen || !focusRefs.length) return;
     const timer = setTimeout(() => { const el = document.getElementById('excerpt-' + focusRefs[0].excerpt_id); const details = el?.closest('details'); if (details) details.open = true; el?.scrollIntoView({ block: 'center' }); el?.classList.add('source-highlight'); }, 50);
     return () => {clearTimeout(timer);document.querySelectorAll('.source-highlight').forEach(el=>el.classList.remove('source-highlight'));};
   }, [sourcesOpen, focusRefs]);
-  async function mutate(path: string, body: Obj, method = 'POST') { try{await api(root + path, method, { expected_revision: projectRef.current?.revision, ...body });await refresh();}catch(e){if(e instanceof ApiError&&e.status===409)await refresh().catch(onRefreshFail);throw e;} }
+  function editValue(project:Project, proof:EditProof):unknown {
+    if(proof.kind==='answers')return Object.fromEntries(Object.keys(proof.mine as Obj).map(id=>[id,project.questions.find(q=>q.id===id)?.answer||'']));
+    if(proof.kind==='behavior'){const item=project.items.find(i=>i.id===proof.id);return {values:item?.behavior||{},change_type:item?.change_type||'unspecified'};}
+    if(proof.kind==='item'){const item=project.items.find(i=>i.id===proof.id);return item&&{title:item.title,statement:item.statement,change_type:item.change_type||''};}
+    if(proof.kind==='context')return {values:project.product_context||{},scope_ids:project.product_context?.scope_ids||[]};
+    if(proof.kind==='intake')return (project as Obj).intake||{};
+    return project.questions.find(q=>q.id===proof.id)?.out_of_scope_reason||'';
+  }
+  const equal=(a:unknown,b:unknown)=>JSON.stringify(a)===JSON.stringify(b);
+  async function mutate(path: string, body: Obj, method = 'POST') {
+    const {__edit,...payload}=body;const proof=__edit as EditProof|undefined;
+    const current=projectRef.current;
+    if(proof&&current&&payload.expected_revision!==undefined&&payload.expected_revision!==current.revision){
+      const latest=editValue(current,proof);
+      if(!equal(latest,proof.before))throw new DraftConflictError(proof.before,latest,proof.mine);
+      payload.expected_revision=current.revision;
+    }
+    try{const result=await api(root + path, method, { expected_revision: current?.revision, ...payload });await refresh();return result;}
+    catch(e){if(e instanceof ApiError&&e.status===409){await refresh().catch(onRefreshFail);const latest=proof&&projectRef.current&&editValue(projectRef.current,proof);if(proof&&latest!==undefined)throw new DraftConflictError(proof.before,latest,proof.mine);}throw e;}
+  }
   async function planAction(action: BusinessAction, optionId?: string, target?: Obj, text = '') {
     const current=projectRef.current;
     if (!current) return;
@@ -127,7 +153,7 @@ export function Workspace({ id, active, models, onProjectsChanged, compat, onExi
           <QuestionList p={p} mutate={mutate} busy={busy||running} onHelp={openHelp}/>
           <details className="secondary-tools"><summary>核对条目与业务行为，或根据回答更新理解</summary><div className="toolbar"><button disabled={busy||running||!!actionBlockReason} onClick={()=>act(()=>planAction('clarify'))}>根据已保存回答更新理解</button><small>明确的模型任务，发送前核对范围。</small></div>
           <ArtifactTabs {...shared} tab="summary"/>
-          </details><ProductCheckpoint p={p} phase={2} busy={busy||running} mutate={mutate} go={go}/>
+          </details><ProductCheckpoint p={p} phase={2} busy={busy||running} mutate={mutate} go={go} onAcceptance={()=>setAcceptanceOpen(true)}/>
         </div>
         <div className="document-stage" hidden={phase!==4} id={'document-result-'+id}>
           <DocumentStudio taskStatus={latest?.status==='partial'?taskStatus:undefined} p={p} docType={docType} setDocType={setDocType} selectedDocId={selectedDocId} setSelectedDocId={setSelectedDocId} artifacts={artifacts} setStage={setStage} setShowAdvanced={setShowAdvanced} setTab={navigate} setOutcome={()=>{}} root={root} act={act} mutate={mutate} busy={busy||running} onHelp={openHelp} onGenerate={()=>act(()=>planAction('document'))}/>
@@ -139,6 +165,7 @@ export function Workspace({ id, active, models, onProjectsChanged, compat, onExi
     </div>
     {help&&<div className="drawer-backdrop"><section className="source-drawer context-help" role="dialog" aria-modal="true" aria-label="当前对象的 AI 帮助"><button onClick={()=>guard(()=>setHelp(null))}>关闭帮助</button><p className="eyebrow">只围绕当前对象</p><h2>{help.label}</h2><small>{help.id}{help.section_id?' · '+help.section_id:''}</small><p>建议形成后仍需核对，不会自动回答问题或采纳条目。</p><label>希望怎样调整或澄清<textarea rows={5} value={helpText} onChange={e=>setHelpText(e.target.value)}/></label><button className="primary" disabled={busy||running||!helpText.trim()} onClick={()=>act(()=>planAction(help.kind==='ui'?'change':'clarify',undefined,help,helpText))}>核对本次讨论任务</button><details><summary>任务预算</summary><label>本次最多请求数<input type="number" min="1" max="30" value={budget} onChange={e=>setBudget(Number(e.target.value))}/></label></details><details><summary>已保存的讨论历史 · {p.messages.length}</summary>{p.messages.map((m,n)=><article key={n}><b>{m.role==='user'?'用户输入':'助手建议'} · {m.stage}</b><p>{m.text}</p></article>)}</details></section></div>}
     {candidateOpen&&<div className="modal-backdrop"><form className="modal" role="dialog" aria-modal="true" aria-label="补充候选需求" onSubmit={e=>{e.preventDefault();act(saveCandidate);}}><h2>补充一条候选需求</h2><p>保留你的原文和来源；保存不会自动采纳。</p><label>需求名称<input required maxLength={200} value={candidateTitle} onChange={e=>setCandidateTitle(e.target.value)}/></label><label>需求原文<textarea required maxLength={6000} value={candidateText} onChange={e=>setCandidateText(e.target.value)}/></label>{error&&<p role="alert">{error}</p>}<div className="toolbar"><button type="button" onClick={()=>guard(()=>setCandidateOpen(false))}>取消</button><button disabled={busy} className="primary">保存候选</button></div></form></div>}
+    {acceptanceOpen&&<div className="modal-backdrop"><form className="modal" role="dialog" aria-modal="true" aria-label="补充关联验收条件" onSubmit={e=>{e.preventDefault();act(saveAcceptance);}}><h2>补充关联验收条件</h2><p>请写明可观察的操作和预期结果。保存为候选，仍需在本步“待采纳候选”中明确采纳。</p><label>关联的本期需求<select required disabled={busy} value={acceptanceRequirement} onChange={e=>setAcceptanceRequirement(e.target.value)}><option value="">选择需求</option>{p.items.filter(i=>i.kind==='requirement'&&i.applies_to==='to_be'&&p.product_context?.scope_ids?.includes(i.id)).map(i=><option key={i.id} value={i.id}>{i.id}｜{i.title}</option>)}</select></label><label>验收名称<input required disabled={busy} maxLength={200} value={acceptanceTitle} onChange={e=>setAcceptanceTitle(e.target.value)}/></label><label>验收原文<textarea required disabled={busy} maxLength={6000} value={acceptanceText} onChange={e=>setAcceptanceText(e.target.value)}/></label>{error&&<p role="alert" className="error">{error}</p>}<div className="toolbar"><button type="button" disabled={busy} onClick={()=>guard(()=>setAcceptanceOpen(false))}>取消</button><button disabled={busy} className="primary">保存验收候选</button></div></form></div>}
     {sourcesOpen && <div className="drawer-backdrop"><section className="source-drawer" role="dialog" aria-modal="true" aria-label="项目资料"><button onClick={() => guard(()=>setSourcesOpen(false))}>关闭项目资料</button><SourcePanel p={p} models={models} purpose={purpose} setPurpose={setPurpose} sourceText={sourceText} setSourceText={setSourceText} url={url} setUrl={setUrl} dynamic={dynamic} setDynamic={setDynamic} busy={busy} act={act} error={error} mutate={mutate} refresh={refresh} root={root} pendingGrant={null} setPendingGrant={() => {}} guided /></section></div>}
     {historyOpen && <div className="drawer-backdrop"><section className="source-drawer" role="dialog" aria-modal="true" aria-label="历史版本"><button onClick={() => setHistoryOpen(false)}>返回当前任务</button><VersionHistory history={history} /><details><summary>完整讨论记录 · {p.messages.length}</summary>{p.messages.map((m,n)=><article className="card" key={n}><b>{m.role==='user'?'用户输入':'助手建议'} · {m.stage}</b><p>{m.text}</p></article>)}</details></section></div>}
     {renameOpen && <div className="modal-backdrop"><form className="modal" role="dialog" aria-label="重命名项目" onSubmit={e => { e.preventDefault(); if (!rename.trim()) return; act(async () => { await mutate('', { name: rename.trim() }, 'PATCH'); setRenameOpen(false); await onProjectsChanged(); }); }}><h2>重命名项目</h2><label>项目名称<input value={rename} onChange={e => setRename(e.target.value)} /></label><button type="button" onClick={() => setRenameOpen(false)}>取消</button><button disabled={!rename.trim() || busy}>保存</button></form></div>}

@@ -1,5 +1,7 @@
 # UI-02 第一批实施记录
 
+> 历史阶段记录：下文方案/原型界面和浏览器结果属于 UI-02 当时版本。当前产品为五步文档流程，业务草图已取消；以 [README](../README.md) 和 [当前修复验收](agent-repair-20260925.md) 为准。历史运行结果未改写为当前验证。
+
 ## 状态卡
 
 基线 `34cb978c13c6be5a98e83d24e64fed903f7b792c`，PR #1 仍 OPEN；分支 `codex/ui-02-guided-workflow`，PR base 使用 `codex/ui-01-workbench-prototype`。

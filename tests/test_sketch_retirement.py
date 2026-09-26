@@ -66,7 +66,7 @@ def test_new_document_assembly_and_exports_exclude_old_sketch_without_rewriting_
     ctx=context(p,include_sketch=False)
     assert ctx['D_unknowns_limits']['active_ui'] is None and not ctx['sketch_check']
     assert ctx['D_unknowns_limits']['questions']==p['questions']
-    plan=dict(plan_version='1',title='本期需求',sections=[dict(title='功能与约束',normative_refs=[i['id'] for i in p['items']],discussion_refs=[],narration='')],limitations=[])
+    plan=dict(plan_version='2',sections=[dict(section_key='function',context_refs=[],normative_refs=[i['id'] for i in p['items']],discussion_refs=[])])
     value=compile_plan(plan,p,'prd',include_sketch=False)
     validate_document(value['result'],p,'prd')
     picture=next(m for m in value['result']['reference_mapping'] if m['profile_section_id']=='PRD-4.F.1')

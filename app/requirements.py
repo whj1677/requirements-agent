@@ -4,7 +4,7 @@ from .core import digest, require, now, read_json, KIT
 import jsonschema
 
 TRACKED = ('requirement','rule','acceptance')
-CONTENT_FIELDS = ('kind','title','statement','applies_to','epistemic_status','source_refs','related_refs','change_type','behavior')
+CONTENT_FIELDS = ('kind','title','statement','applies_to','epistemic_status','source_refs','related_refs','change_type','behavior','scope_evidence','classification_reason')
 RELATIONS = ('parent_of','refines','replaces','depends_on','implements','verifies')
 
 

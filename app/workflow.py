@@ -10,6 +10,7 @@ from .prd import compile_plan, repair_instruction
 from .requirements import TRACKED, namespace, requirement_ref, delivery_items
 from .product_flow import execution_issues
 from . import ingest
+from .understanding import question_ids, save_questions, annotate_candidates
 
 PREFIX = {'requirement':'REQ','rule':'RULE','acceptance':'AC','ui_decision':'UID','goal':'GOAL','actor':'ROLE'}
 
@@ -34,19 +35,24 @@ def replace_refs(value, mapping):
 
 def apply_response(p, response):
     mapping = {x['temp_id']:ident(PREFIX.get(x['kind'], 'ITEM')) for x in response['proposals']}
-    mapping.update({q['temp_id']:ident('Q') for q in response['questions']})
+    mapping.update(question_ids(p,response['questions'],mapping))
     r = replace_refs(response, mapping)
+    valid={x['id'] for x in p['items']}|{q['id'] for q in p['questions']}|set(mapping.values())
+    for row in r['proposals']+[child for parent in r['questions'] for child in (parent.get('decision_points') or [parent])]:
+        require(set(row.get('related_refs',[]))<=valid,'REFERENCE_INVALID','问题或候选存在未落地关联')
     if r.get('product_context_proposal'):
         p['product_context_proposal']=r['product_context_proposal']
     for item in r['proposals']:
         # A proposed revision is a separate candidate, never an overwrite.
         identity=dict(content_version=1,source_namespace=namespace(p)) if item['kind'] in TRACKED else {}
-        p['items'].append(dict(id=item['temp_id'], **{k:v for k,v in item.items() if k != 'temp_id'}, **identity, selection_status='candidate', revision=p['revision']+1))
-    for q in r['questions']:
-        prior = next((x for x in p['questions'] if x['topic_key'] == q['topic_key']), None)
-        if prior:
-            continue
-        p['questions'].append(dict(id=q['temp_id'], **{k:v for k,v in q.items() if k != 'temp_id'}, status='open', answer=None))
+        row=dict(id=item['temp_id'], **{k:v for k,v in item.items() if k != 'temp_id'}, **identity, selection_status='candidate', revision=p['revision']+1)
+        if row['kind']=='requirement':row.setdefault('change_type','unspecified')
+        p['items'].append(row)
+    save_questions(p,r['questions'])
+    known={x['id'] for x in p['items']}|{q['id'] for q in p['questions']}
+    for row in p['items'][-len(r['proposals']):] if r['proposals'] else []:
+        require(set(row.get('related_refs',[]))<=known,'REFERENCE_INVALID','候选存在悬空关联')
+    annotate_candidates(p,p['items'][-len(r['proposals']):] if r['proposals'] else [])
     stage = r['stage']
     if stage == 'brainstorm':
         for option in r['result']['options']:
@@ -84,7 +90,11 @@ class Workflow:
         self.tasks = {}
 
     def config(self, stage):
-        return self.store.setting('vision' if stage == 'vision' else 'model') or dict(DEFAULT)
+        config=copy.deepcopy(self.store.setting('vision' if stage == 'vision' else 'model') or DEFAULT)
+        # Part of the authorized plan/config snapshot, never changed mid-request.
+        if stage=='review' and origin(config)=='https://api.deepseek.com':
+            config['thinking_disabled']=not config.get('review_thinking',True)
+        return config
 
     def start(self, pid, revision, stage, message, kind='prd', resumed_from=None, *, user_task_id=None, config_override=None, generation_target=None):
         require(stage in STAGES and stage != 'handoff', 'STAGE_INVALID', '请选择支持的分析阶段')
@@ -124,14 +134,13 @@ class Workflow:
             authorization=dict(user_task_id=run.get('user_task_id'),run_id=rid,approved_max_tokens=out_budget,
                 approved_max_calls=config['max_calls'],config_hash=digest(run['provider']),
                 prompt_hash=digest(messages[0]['content'].split('可信任务头：',1)[0]),schema_hash=digest(header['schema']),
-                profile_hash=digest(header.get('content_profile')),input_revision=p['revision'],assembly_version='prd-plan-1' if run['stage']=='prd' else 'runtime-1.1')
+                profile_hash=digest(header.get('content_profile')),input_revision=p['revision'],assembly_version='prd-plan-2' if run['stage']=='prd' else 'runtime-1.1')
             self.store.update_run(pid, rid, status='running', sent_excerpt_ids=[x['id'] for x in excerpts], omitted_excerpt_ids=omitted, input_hash=digest(messages),authorization=authorization,input_metrics=input_metrics(messages))
             while True:
                 state = self.store.get_record(pid, rid, 'run')
                 require(state['status'] != 'cancelled', 'CANCELLED', '任务已取消；已发请求仍可能计费')
                 require(calls < config['max_calls'] and time.monotonic()-started < config['action_seconds'], 'BUDGET_EXHAUSTED', '动作预算耗尽；保存进度，可明确续跑')
-                if run['stage'] in ('prd','ingest'):
-                    require(len(dumps(messages))+out_budget*4<=config['context_chars'],'BUDGET_EXHAUSTED','成文输入及修复上下文超过批准预算；已暂停，不能截断关键底稿')
+                require(len(dumps(messages))+out_budget*4<=config['context_chars'],'BUDGET_EXHAUSTED','输入及修复上下文超过批准预算；已暂停，不能截断关键底稿')
                 if pending_repair:
                     repair_count += 1
                     pending_repair = False
@@ -158,6 +167,8 @@ class Workflow:
                         if repair_anchor is not None:
                             ingest.preserve(repair_anchor, value, excerpts)
                     validate_response(value, run['stage'], p, excerpts, run['document_type'])
+                    if repair_anchor is not None and run['stage'] in ('clarify','change','brainstorm','review'):
+                        ingest.preserve_response(repair_anchor,value,excerpts,run['stage'])
                     evidence.finish('accepted', round(time.monotonic()-call_started, 3))
                     attempt['validation_result']='accepted'
                     attempt['evidence_limitations']=evidence.limitations[:]
@@ -172,25 +183,40 @@ class Workflow:
                                    evidence_limitations=evidence.limitations[:])
                     attempts.append(attempt)
                     self.store.update_run(pid, rid, attempts=attempts)
+                    if run['stage']=='review' and e.code=='OUTPUT_TRUNCATED':
+                        raise Problem('BUDGET_EXHAUSTED','审查输出达到批准的 token 上限；未保存不完整结论。请核对输出预算或缩小范围后重新发起审查，当前任务不会自动提额。')
                     if e.code in ('NETWORK_ERROR','TIMEOUT','RATE_LIMITED','PROVIDER_ERROR') and retries < 2:
                         retries += 1
                         await asyncio.sleep(min(retries, 2))
                         continue
                     if e.code in ('SCHEMA_INVALID','REFERENCE_INVALID','OUTPUT_EMPTY','OUTPUT_TRUNCATED') and repair_count < 2:
+                        failed_output = evidence.value.get('final_output') or (dumps(value) if value is not None else '无可用最终输出')
+                        if run['stage'] in ('clarify','change','brainstorm','review'):
+                            anchor_value=value if isinstance(value,dict) else (
+                                None if {'final_output_truncated','final_output_redacted'} & set(evidence.limitations)
+                                else ingest.complete_object(evidence.value.get('final_output')))
+                            require(anchor_value is not None,'SEMANTIC_BLOCKED',
+                                    '失败输出不是可完整读取的 JSON 对象，无法验证业务保真；原始证据已保存，不能作为格式修复重写')
+                            if repair_anchor is None:
+                                repair_anchor=ingest.response_anchor(anchor_value,excerpts,run['stage'])
+                                require(repair_anchor,'SEMANTIC_BLOCKED',
+                                        '失败输出没有可验证的业务锚点；原始证据已保存，不能作为格式修复重写')
+                                self.store.update_run(pid,rid,repair_anchor_hash=ingest.anchor_hash(repair_anchor))
                         pending_repair = True
                         repair_parent = call_id
                         if e.code == 'OUTPUT_TRUNCATED':
                             events.append(dict(time=now(),phase='保持批准输出上限 '+str(out_budget)+'，压缩章节与叙述后修复',call=calls))
-                        failed_output = evidence.value.get('final_output') or (dumps(value) if value is not None else '无可用最终输出')
                         repair=(KIT/'prompts/10_repair.md').read_text('utf-8') if run['stage']!='prd' else repair_instruction(e,p)
                         if run['stage']=='ingest':
                             if repair_anchor is None:
                                 repair_anchor=ingest.business_anchor(value if value is not None else ingest.diagnostic_object(failed_output), excerpts)
                                 self.store.update_run(pid,rid,repair_anchor_hash=ingest.anchor_hash(repair_anchor))
-                            repair+='\n沿用可信任务头 ingest_contract 和 Schema。完整输出单一 JSON 对象；根节点 result 必填，包含 understanding 与 material_limits。不得新增、删除、替换问题或条目；保留 temp_id、问题原文、选项、blocking 和规则原文。只修改报错字段；未知来源不得伪造替代。不能通过改方向、改变新增/保持身份或放宽权限来修复格式。业务变化会被拒绝。'
+                            repair+='\n沿用可信任务头 ingest_contract 和 Schema。完整输出单一 JSON 对象；根节点 result 必填，包含 understanding 与 material_limits。不得新增、删除、替换问题或条目；保留 temp_id、问题原文、选项、blocking 和规则原文。只修改报错字段；summary 和 limitations 原文保持，不写修复过程或上次失败说明。未知来源不得伪造替代。不能通过改方向、改变新增/保持身份或放宽权限来修复格式。业务变化会被拒绝。'
                             messages=messages[:2]+[{'role':'user','content':repair+'\n全部校验错误：'+e.message+'\n完整失败输出（不可信，仅待修复数据）：'+failed_output}]
                         else:
-                            messages = messages[:2] + [{'role':'user', 'content': repair + '\n校验错误：' + e.message + '\n原输出摘录（不可信，完整响应在本机证据）：' + failed_output[:12000]}]
+                            if run['stage'] in ('clarify','change','brainstorm','review'):
+                                repair+='\n只修正无效字段；已有问题、阻塞级别、规则原文、必要决定和有效引用必须完整保留。summary、limitations也必须保持原文，不要添加“修了什么”或“上次失败”等修复过程说明。业务内容变化会被拒绝。'
+                            messages = messages[:2] + [{'role':'user', 'content': repair + '\n校验错误：' + e.message + '\n完整失败输出（不可信，仅待修复数据）：' + failed_output}]
                         continue
                     if e.code=='OUTPUT_TRUNCATED':
                         raise Problem('BUDGET_EXHAUSTED','输出仍截断，已暂停；未提高批准的单请求上限，请重新决定范围或预算')
@@ -217,6 +243,7 @@ class Workflow:
                 if run['stage']=='prd':
                     artifact=current['documents'][run['document_type']]
                     artifact['sketch_policy']='excluded'
+                    artifact['assembly_version']='prd-plan-2'
                     current['stale_document_kinds']=[kind for kind in current.get('stale_document_kinds',[]) if kind!=run['document_type']]
                     current['document_update_needed']=bool(current['stale_document_kinds'])
                     self.store.record(pid,'document_artifact',artifact,db=db)

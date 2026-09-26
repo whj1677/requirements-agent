@@ -88,6 +88,23 @@ def test_total_budget_does_not_reset_for_next_stage(case):
     assert c.get(root).json()['sources'][0]['parse_status']=='read'
 
 
+def test_image_batches_share_budget_and_do_not_resend_previous_batch(case):
+    c,app,model,root=case
+    for _ in range(4):image(c,root)
+    body,preview=plan(c,root,max_calls=2)
+    assert preview['stages']==['vision','vision','ingest']
+    assert start(c,root,body,preview).status_code==200
+    task=finished(c,root)
+    assert task['status']=='paused_budget' and task['calls']==2 and len(model['requests'])==2
+    contexts=[json.loads(r['messages'][1]['content'][0]['text']) for r in model['requests']]
+    batches=[{e['source_id'] for e in ctx['excerpts']} for ctx in contexts]
+    # The saved task message is text; compare only image identities.
+    image_ids={s['id'] for s in c.get(root).json()['sources'] if s.get('image_mime')}
+    batches=[b & image_ids for b in batches]
+    assert len(batches[0])==3 and len(batches[1])==1 and not batches[0]&batches[1]
+    assert all(s.get('vision_run_id') for s in c.get(root).json()['sources'] if s.get('image_mime'))
+
+
 def test_cancel_external_change_and_restart_do_not_replay(case):
     c,app,model,root=case
     image(c,root);model['delay']=.15
@@ -134,7 +151,9 @@ def test_draft_with_unknowns_direct_document_and_option_identity(case,topic):
         assert start(c,root,body,preview,False).status_code==200
         assert finished(c,root)['status']=='succeeded'
     p=c.get(root).json()
-    assert p['documents']['prd']['content']['title']==topic+'需求讨论稿'
+    assert p['documents']['prd']['content']['title']==p['name']
+    readable='\n'.join(b['text'] for s in p['documents']['prd']['reader']['sections'] for b in s['blocks'])
+    assert f'管理员维护{topic}列表。' in readable
     assert any(b['kind']=='open_question' for s in p['documents']['prd']['content']['sections'] for b in s['blocks'])
     assert all(i['selection_status']=='candidate' for i in p['items'])
     assert p['confirmation_issues'] and not p['active_baseline_id']

@@ -388,8 +388,52 @@
             "new",
             "modified",
             "preserved",
-            "existing"
+            "existing",
+            "unspecified"
           ]
+        },
+        "scope_evidence": {
+          "type": "array",
+          "maxItems": 30,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "state",
+              "quote",
+              "source_ref"
+            ],
+            "properties": {
+              "state": {
+                "enum": [
+                  "current",
+                  "change",
+                  "preserve"
+                ]
+              },
+              "quote": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 6000
+              },
+              "source_ref": {
+                "$ref": "#/$defs/EvidenceRef"
+              }
+            }
+          }
+        },
+        "classification_reason": {
+          "type": "string",
+          "maxLength": 2000
+        },
+        "answer_refs": {
+          "description": "仅用于根据已回答问题修订原requirement：kind=requirement、action=revise、target_item_id为该问题related_refs中的原requirement ID。rule修订和新增acceptance不写answer_refs；其回答依据放source_refs并用related_refs关联原需求。",
+          "type": "array",
+          "uniqueItems": true,
+          "maxItems": 30,
+          "items": {
+            "type": "string"
+          }
         }
       },
       "required": [
@@ -403,6 +447,21 @@
         "epistemic_status",
         "source_refs",
         "related_refs"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {"const": "requirement"},
+              "change_type": {"enum": ["new", "modified", "preserved", "existing"]}
+            },
+            "required": ["kind", "change_type"]
+          },
+          "then": {
+            "required": ["scope_evidence"],
+            "properties": {"scope_evidence": {"minItems": 1}}
+          }
+        }
       ],
       "additionalProperties": false
     },
@@ -481,6 +540,107 @@
           "type": "integer",
           "minimum": 2,
           "maximum": 5
+        },
+        "decision_points": {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 8,
+          "not": {"minItems": 1, "maxItems": 1},
+          "items": {
+            "type": "object",
+            "properties": {
+              "temp_id": {
+                "type": "string",
+                "pattern": "^QTMP-[A-Za-z0-9_-]+$",
+                "maxLength": 120
+              },
+              "topic_key": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "question": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000
+              },
+              "why": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000
+              },
+              "options": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 0,
+                  "maxLength": 1000
+                },
+                "minItems": 0,
+                "maxItems": 8
+              },
+              "blocking": {
+                "type": "boolean"
+              },
+              "related_refs": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 120
+                },
+                "minItems": 0,
+                "maxItems": 100
+              },
+              "source_refs": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "source_id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 120
+                    },
+                    "excerpt_id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 120
+                    }
+                  },
+                  "required": [
+                    "source_id",
+                    "excerpt_id"
+                  ],
+                  "additionalProperties": false
+                },
+                "minItems": 0,
+                "maxItems": 50
+              },
+              "blocking_stage": {
+                "type": "integer",
+                "minimum": 2,
+                "maximum": 5
+              }
+            },
+            "required": [
+              "temp_id",
+              "topic_key",
+              "question",
+              "why",
+              "options",
+              "blocking",
+              "related_refs",
+              "source_refs"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "target_question_id": {
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [

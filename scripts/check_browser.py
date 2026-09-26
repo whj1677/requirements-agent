@@ -1,7 +1,13 @@
-"""Real browser engineering tests with an explicitly synthetic test project."""
+"""Historical UI02 browser script for the former layout.
+
+Use check_five_step_browser.py with an isolated --web-dist for the current UI.
+This file remains to preserve the historical test and its evidence boundary.
+"""
 import asyncio
 import json
 import sys
+if __name__ == '__main__':
+    raise SystemExit('Historical UI selectors; run scripts/check_five_step_browser.py --web-dist evidence/repair-20260925/dist-frontend')
 import threading
 import time
 import uuid

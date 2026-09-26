@@ -11,6 +11,7 @@ if ($CleanupOwner) {
 }
 $rows = [Collections.Generic.List[object]]::new()
 $limits = [Collections.Generic.List[string]]::new()
+$images = [Collections.Generic.List[object]]::new()
 $charCount = 0
 $app = $null; $document = $null; $owned = $false; $priorLinks = $null
 $result = @{status='office_required'; reason='当前本机 Office 无法提取内容；请确认登录、激活和文件读取权限。'; rows=@(); code='OFFICE_OPEN_FAILED'}
@@ -72,7 +73,26 @@ try {
                     Add-Text "表格 $t / 单元格 $cellIndex / 行 $($cell.RowIndex) 列 $($cell.ColumnIndex)" $cell.Range.Text
                 }
             }
-            $limits.Add("正文和表格已提取；$($document.InlineShapes.Count) 个内嵌对象和 $($document.Shapes.Count) 个浮动对象未作视觉识别；页眉页脚、批注和修订未单独提取")
+            Add-Type -AssemblyName System.Drawing
+            for ($i=1; $i -le $document.InlineShapes.Count; $i++) {
+                $shape=$document.InlineShapes.Item($i)
+                $location="内嵌对象 $i / 页 $($shape.Range.Information(3)) / 字符 $($shape.Range.Start)"
+                if ($shape.Type -ne 3) { $limits.Add("$location 不是内嵌图片，未提取（不执行对象或外链）"); continue }
+                try {
+                    # Public read-only range rendering; no clipboard or original save.
+                    $bits=[byte[]]$shape.Range.EnhMetaFileBits
+                    $stream=[IO.MemoryStream]::new($bits,$false)
+                    $image=[Drawing.Image]::FromStream($stream)
+                    $bitmap=[Drawing.Bitmap]::new($image)
+                    $output=[IO.MemoryStream]::new()
+                    try {
+                        $bitmap.Save($output,[Drawing.Imaging.ImageFormat]::Png)
+                        if ($output.Length -gt 12MB -or $bitmap.Width*$bitmap.Height -gt 25000000) { throw 'IMAGE_LIMIT' }
+                        $images.Add(@{locator=$location;mime='image/png';data_base64=[Convert]::ToBase64String($output.ToArray())})
+                    } finally { $output.Dispose(); $bitmap.Dispose(); $image.Dispose(); $stream.Dispose() }
+                } catch { $limits.Add("$location 本机 Office 未能导出图片（HRESULT=$($_.Exception.HResult)），未进入视觉分析") }
+            }
+            $limits.Add("正文和表格已提取；已提取 $($images.Count) 张图片，待视觉分析；$($document.Shapes.Count) 个浮动对象、页眉页脚、批注和修订未单独提取")
             $document.Close(0); $document=$null
         }
         'Excel' {
@@ -102,8 +122,9 @@ try {
             $document.Close(); $document=$null
         }
     }
-    if ($rows.Count) {
-        $result=@{status='partial'; reason=($limits | Select-Object -Unique) -join '；'; rows=@($rows.ToArray()); code='OFFICE_EXTRACTED'; office=$kind; method='local-office'; text_extraction='extracted'; structure_extraction='partial'; visual_review='not_run'; manual_open='not_verified'}
+    if ($rows.Count -or $images.Count) {
+        if (-not $rows.Count) { Add-Text '读取限制' '未取得正文文字；已提取的图片尚未视觉分析。' }
+        $result=@{status='partial'; reason=($limits | Select-Object -Unique) -join '；'; rows=@($rows.ToArray()); images=@($images.ToArray()); code='OFFICE_EXTRACTED'; office=$kind; method='local-office'; text_extraction='extracted'; structure_extraction='partial'; visual_review='not_run'; manual_open='not_verified'}
     } else { $result.reason='本机 Office 已打开文件，但没有取得可用正文或表格；图片等对象尚未识别。'; $result.code='OFFICE_EMPTY' }
 } catch {
     $code=$_.Exception.HResult

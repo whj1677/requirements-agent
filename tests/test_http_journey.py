@@ -42,7 +42,9 @@ def test_real_http_adapter_to_confirmation_and_export(tmp_path):
                 value['result']={'spec':spec}
             elif stage=='prd':
                 chosen=[i for group in ctx['A_normative'].values() for i in group]
-                value=dict(plan_version='1',title='合成时段需求 '+header['document_type'].upper(),sections=[dict(title='本期内容',normative_refs=[i['id'] for i in chosen],discussion_refs=[],narration='工程协议检查，不代表真实业务批准。')],limitations=[])
+                value=dict(plan_version='2',sections=[dict(section_key='function',
+                    context_refs=header['plan_contract']['context_ref_ids'],
+                    normative_refs=[i['id'] for i in chosen],discussion_refs=[])])
             elif stage=='review':
                 value['result']=dict(assessment='ready_for_human_review',reviewed_refs=[i['id'] for i in ctx['items']],perspectives=[{'role':'合成工程审查','considerations':['只验证程序链路，不代表真实业务审查']}],required_decisions=[])
             payload=json.dumps(dict(model='SYNTHETIC_HTTP_FIXTURE',choices=[dict(message={'content':json.dumps(value,ensure_ascii=False)},finish_reason='stop')],usage={'prompt_tokens':120,'completion_tokens':100,'total_tokens':220}),ensure_ascii=False).encode()

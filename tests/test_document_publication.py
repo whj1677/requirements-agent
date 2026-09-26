@@ -23,9 +23,8 @@ def setup(tmp_path, monkeypatch):
 
 def generate(store, pid):
     p = store.get(pid)
-    plan = dict(plan_version='1', title='需求讨论稿', limitations=[], sections=[dict(
-        title='时段配置与保存', normative_refs=[i['id'] for i in p['items']],
-        discussion_refs=[], narration='管理员在现有平台中配置时段，保存后查看结果。')])
+    plan = dict(plan_version='2', sections=[dict(section_key='function', context_refs=[],
+        normative_refs=[i['id'] for i in p['items']], discussion_refs=[])])
     with store.edit(pid, p['revision'], '合成章节组装', bump=False) as (state, db):
         apply_response(state, compile_plan(plan, state, 'prd'))
         store.record(pid, 'document_artifact', copy.deepcopy(state['documents']['prd']), db=db)
@@ -120,16 +119,43 @@ def test_reader_keeps_candidate_and_inference_identity_and_original_evidence(tmp
     candidate.update(id='REQ-CANDIDATE', selection_status='candidate', epistemic_status='inferred',
                      statement='建议增加联系人备注；是否必填尚未决定。')
     p['items'].append(candidate)
-    plan = dict(plan_version='1', title='讨论稿', limitations=['Q-0001 仍待澄清。'], sections=[dict(
-        title='新增建议', normative_refs=[], discussion_refs=[candidate['id']], narration='')])
+    p['sources'][0].update(parse_status='partial',failure_reason='Q-0001 仍待澄清。')
+    plan = dict(plan_version='2', sections=[dict(section_key='discussion', context_refs=[],
+        normative_refs=[], discussion_refs=[candidate['id']])])
     apply_response(p, compile_plan(plan, p, 'prd'))
     artifact = copy.deepcopy(p['documents']['prd'])
     content = reader_document(artifact)
     text = '\n'.join(b['text'] for s in content['sections'] for b in s['blocks'])
-    assert '尚未采纳：待核实的推断：'+candidate['statement'] in text
-    assert '澄清记录 1 仍待澄清。' in text and 'Q-0001' not in text
+    assert '候选，尚未采纳：待核实的推断：'+candidate['statement'] in text
+    assert '澄清记录 1 仍待澄清。' in text
     assert artifact == p['documents']['prd']
     assert p['items'][-1]['selection_status']=='candidate'
+
+
+def test_answer_reader_distinguishes_saved_candidate_and_applied_revision(tmp_path, monkeypatch):
+    from app.document_reader import reader_document
+    app,p=setup(tmp_path,monkeypatch)
+    original=copy.deepcopy(p['questions'][0])
+    p['questions']=[dict(original,id='Q-PENDING',status='answered',answer='已保存但尚未理解。',
+                         understanding_status='pending',applied_requirement_ids=[]),
+                    dict(original,id='Q-CANDIDATE',status='answered',answer='修订候选待采纳。',
+                         understanding_status='candidate_ready',applied_requirement_ids=[]),
+                    dict(original,id='Q-APPLIED',status='answered',answer='已写入稳定条款。',
+                         understanding_status='applied',applied_requirement_ids=['REQ-0001']),
+                    dict(original,id='Q-UNBOUND',status='answered',answer='标记应用但目标未选。',
+                         understanding_status='applied',applied_requirement_ids=['REQ-NOT-SELECTED'])]
+    before=copy.deepcopy(p)
+    apply_response(p,compile_plan(dict(plan_version='2',sections=[dict(section_key='function',
+        context_refs=[],normative_refs=['REQ-0001'],discussion_refs=[])]),p,'prd'))
+    artifact=copy.deepcopy(p['documents']['prd'])
+    blocks={b['ref_ids'][0]:b['text'] for s in reader_document(artifact)['sections'] for b in s['blocks']
+            if len(b['ref_ids'])==1 and b['ref_ids'][0].startswith('Q-')}
+    assert blocks['Q-PENDING'].startswith('已有回答，关联条款修订待核对采纳：')
+    assert blocks['Q-CANDIDATE'].startswith('已有回答，关联条款修订待核对采纳：')
+    assert blocks['Q-APPLIED'].startswith('已应用于当前草稿条款的回答：')
+    assert blocks['Q-UNBOUND'].startswith('已有回答，关联条款更新状态未核实：')
+    assert all('关联条目当前快照：' in b and '当前决定：' not in b for b in blocks.values())
+    assert p['items']==before['items'] and p['questions']==before['questions']
 
 
 def test_source_diagnostics_use_artifact_snapshot_names_without_changing_original(tmp_path, monkeypatch):

@@ -69,6 +69,6 @@ def test_saved_scope_excludes_old_selected_requirement_without_revoking_decision
     p['items'].append(old);before=copy.deepcopy(p['items'])
     assert old['id'] not in plan_contract(p)['normative_item_ids']
     assert old['id'] not in [i['id'] for i in delivery_items(p)]
-    plan=dict(plan_version='1',title='本期',sections=[dict(title='错误范围',normative_refs=[old['id']],discussion_refs=[],narration='')],limitations=[])
+    plan=dict(plan_version='2',sections=[dict(section_key='scope',context_refs=[],normative_refs=[old['id']],discussion_refs=[])])
     with pytest.raises(Problem) as error:compile_plan(plan,p,'prd')
     assert error.value.code=='SEMANTIC_BLOCKED' and p['items']==before

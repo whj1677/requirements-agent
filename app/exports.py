@@ -103,8 +103,14 @@ async def document_files(p, kind, status='草稿／待产品经理内容确认',
     metadata_style.font.size = Pt(9)
     metadata_style.font.color.rgb = RGBColor(100,115,107)
     metadata_style.paragraph_format.space_after = Pt(7)
+    cover_metadata_style = doc.styles.add_style('Document Cover Metadata', WD_STYLE_TYPE.PARAGRAPH)
+    cover_metadata_style.base_style = doc.styles['Normal']
+    cover_metadata_style.font.size = Pt(10)
+    cover_metadata_style.font.color.rgb = RGBColor(70,80,74)
+    cover_metadata_style.paragraph_format.line_spacing = 1.4
+    cover_metadata_style.paragraph_format.space_after = Pt(10)
     doc.add_paragraph(content['title'], 'Title')
-    doc.add_paragraph(meta, 'Document Metadata')
+    doc.add_paragraph(meta.replace(' · ', '\n'), 'Document Cover Metadata')
     doc.add_paragraph(md[2])
     ui_current = bool(sketches_included and p.get('ui') and p['ui']['brief_hash'] == brief_hash(p))
     images = await capture(p['ui']['spec']) if ui_current else []

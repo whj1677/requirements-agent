@@ -19,15 +19,16 @@ def hierarchy_project(tmp_path):
                 behavior=dict(actor='管理员', entry='既有列表入口', flow='先核对，再保存。',
                               data='原有字段保持。', permissions='权限规则保持。',
                               result='结果以原文为准。', exceptions='未知分支仍未定义。'))
-    plan = dict(plan_version='1', title='层级工程夹具', limitations=[], sections=[dict(
-        title='并列主题甲', normative_refs=[i['id'] for i in p['items']], discussion_refs=[],
-        narration='REQ 是此处的普通短句。'),dict(title='并列主题乙', normative_refs=[], discussion_refs=[], narration='短句。')])
+    plan = dict(plan_version='2', sections=[dict(section_key='function',context_refs=[],
+        normative_refs=[i['id'] for i in p['items']],discussion_refs=[])])
     apply_response(p, compile_plan(plan, p, 'prd', include_sketch=False))
     artifact=p['documents']['prd'];artifact['sketch_policy']='excluded'
     first=artifact['content']['sections'][0]
     child=dict(section_id='PRD-explicit-child',title='原已存在的子章',level=2,
                parent_section_id=first['section_id'],blocks=[dict(kind='narrative',ref_ids=[],text='普通说明，不是标题。')])
     artifact['content']['sections'].insert(1,child)
+    artifact['content']['sections'].insert(2,dict(section_id='PRD-explicit-sibling',title='并列主题乙',
+        level=1,parent_section_id=None,blocks=[dict(kind='narrative',ref_ids=[],text='短句。')]))
     return p
 
 

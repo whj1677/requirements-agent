@@ -1,6 +1,7 @@
 """Small, explicit business actions over existing runs; no autonomous routing."""
 import asyncio
 import copy
+import math
 
 from .core import Problem, digest, dumps, execution_hash, ident, now, require
 from .provider import origin
@@ -48,8 +49,8 @@ class Actions:
         target_label=target_context(p,body.get('target'))
         require(not target_label or body['action'] in ('clarify','change','prototype'), 'TARGET_INVALID','此动作不支持局部修改')
         active=[s for s in p['sources'] if not s['excluded']]
-        images=[s for s in active if s.get('image_mime') and s['parse_status']!='read']
-        stages=STAGES.get(body['action']) or (['vision'] if images else []) + ['ingest']
+        images=[s for s in active if s.get('image_mime') and not s.get('vision_run_id')]
+        stages=STAGES.get(body['action']) or ['vision']*math.ceil(len(images)/3) + ['ingest']
         configs={s:self.workflow.config(s) for s in stages}
         if config_snapshot is not None:
             config_snapshot.update(copy.deepcopy(configs))

@@ -1,4 +1,6 @@
-"""Synthetic fault-injection scenarios for version-compat and API error handling.
+"""Historical synthetic fault-injection scenarios for the former UI.
+
+Current five-step entry: check_five_step_browser.py --web-dist PATH.
 
 Uses a synthetic loopback model server, an isolated data directory and synthetic
 credentials. No real model requests are made; the script asserts they stay zero.
@@ -11,6 +13,8 @@ import os
 import re
 import socket
 import sys
+if __name__ == '__main__':
+    raise SystemExit('Historical UI selectors; run scripts/check_five_step_browser.py --web-dist evidence/repair-20260925/dist-frontend')
 import threading
 import uuid
 from pathlib import Path

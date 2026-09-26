@@ -76,13 +76,30 @@ def reader_document(artifact):
     content['title'] = name + ('｜产品需求文档（PRD）' if content['document_type']=='prd' else '｜市场需求文档（MRD）')
     items = {i['id']:i for i in artifact.get('item_snapshot', [])}
     questions = {q['id']:q for q in artifact.get('question_snapshot', [])}
+    covered={c['item_id'] for c in content.get('coverage',[])}
+    delivered=set(artifact.get('delivery_item_ids',covered))
+    stable=[i for i in items.values() if i['id'] in covered and i['id'] in delivered
+            and i.get('selection_status')=='selected' and i.get('applies_to')=='to_be'
+            and i.get('kind') in ('requirement','rule','acceptance')]
+    business_fields=('kind','statement','behavior','applies_to','epistemic_status')
+    def same_stable(item):
+        matches=[candidate for candidate in stable if candidate['id']!=item['id']
+                 and all(candidate.get(key)==item.get(key) for key in business_fields)]
+        exact=next((candidate for candidate in matches
+                    if candidate.get('change_type')==item.get('change_type')),None)
+        if exact:return exact,False
+        return (matches[0],True) if item['kind']=='acceptance' and matches else (None,False)
     sections = []
+    appendix_blocks=[]
+    appendix_section=None
+    appendix_title='附录：未采纳与历史讨论（不作为本期要求）'
     for section in content['sections']:
         if section['title'] == '历史分析提示（非当前事实）':
             continue
         blocks = []
         for block in section['blocks']:
             text = block.get('text') or ''
+            generated_discussion=False
             refs = block['ref_ids']
             item = items.get(refs[0]) if len(refs)==1 else None
             question = questions.get(refs[0]) if len(refs)==1 else None
@@ -92,33 +109,64 @@ def reader_document(artifact):
                     from .product_flow import BEHAVIOR
                     text += ''.join('\n'+label+'：'+item['behavior'][key] for key,label in BEHAVIOR.items() if item.get('behavior',{}).get(key))
             elif item:
+                from .prd import discussion_status
                 provenance = '；来源：'+('、'.join(r['source_id']+'/'+r['excerpt_id'] for r in item.get('source_refs',[])) or '未提供')
-                status = '未采纳' if item['selection_status']!='selected' else '已在草稿采纳，不代表业务负责人批准'
+                status = discussion_status(item)
                 outside=item['kind'] in ('requirement','rule','acceptance') and item['selection_status']=='selected' and 'delivery_item_ids' in artifact and item['id'] not in artifact['delivery_item_ids']
                 if outside:status='已草稿采纳但不在本期规范范围'
                 generated = f'【{status}；{item["epistemic_status"]}；{item["applies_to"]}】{item["id"]} — {item["statement"]}'+provenance
                 audit = f'{item["id"]}：{item["epistemic_status"]}；草稿采纳不代表业务负责人批准'+provenance
                 if text == audit:
                     continue
-                if text == generated:
-                    label = ('材料陈述，待纳入本期：' if item['epistemic_status']=='reported' else '尚未采纳：') if item['selection_status']!='selected' else ''
+                legacy_generated = text.startswith('【未采纳；') and text.endswith(item['statement']+provenance)
+                if text == generated or legacy_generated:
+                    generated_discussion=True
+                    if item['selection_status']=='rejected':label='已拒绝：'
+                    elif item['selection_status']=='deferred':label='已暂缓：'
+                    elif item['selection_status']=='candidate':label='独立条目尚未采纳（不改变已核对的产品上下文）：' if item['epistemic_status']=='reported' else '候选，尚未采纳：'
+                    else:label=''
                     if outside:label='不在本期规范范围：'
                     if item['epistemic_status']=='inferred':
                         label += '待核实的推断：'
                     elif item['epistemic_status']=='proposed':
                         label += '方案建议：'
-                    text = label + item['statement']
+                    match,different_classification=same_stable(item) if item['selection_status'] in ('rejected','deferred') else (None,False)
+                    identity=''
+                    if match:
+                        decision='已拒绝' if item['selection_status']=='rejected' else '已暂缓'
+                        if different_classification:
+                            old=item.get('change_type') or 'unspecified'
+                            current=match.get('change_type') or 'unspecified'
+                            identity=(f'验收预期原文与已采纳 {match["id"]} 相同；本独立草稿{decision}，'
+                                      f'不撤销 {match["id"]} 的验收要求；两条分类记录不同（{old}/{current}）。')
+                        else:
+                            identity=f'本草稿{decision}；规范原文与 {match["id"]} 相同，以该已采纳条目为准。'
+                    text = item['id']+'｜'+label+item['statement']+('（'+identity+'）' if identity else '')
                 elif text.startswith('参见「') and text.endswith(('原文与依据不变。','身份及原文不变。')):
-                    text = text.split('」中的 ')[0]+'」。'
+                    generated_discussion=text.endswith('身份及原文不变。')
+                    text = item['id']+'｜'+status+'；'+text.split('」中的 ')[0]+'」。'
             elif question and section['title']=='已有回答与未决问题':
                 text = question['question']
                 if question['status']=='answered':
-                    text = '当前决定：'+question['answer']
+                    applied=[r for r in question.get('applied_requirement_ids',[])
+                             if r in items and items[r].get('selection_status')=='selected']
+                    if question.get('understanding_status')=='applied' and applied:
+                        label='已应用于当前草稿条款的回答：'
+                    elif question.get('understanding_status') in ('pending','candidate_ready'):
+                        label='已有回答，关联条款修订待核对采纳：'
+                    else:
+                        label='已有回答，关联条款更新状态未核实：'
+                    text = label+question['answer']
                     related = [items[r]['statement'] for r in question.get('related_refs',[]) if r in items]
                     if related:
-                        text += '\n相关原记录（与答复并列保留）：'+'；'.join(related)
+                        text += '\n关联条目当前快照：'+'\n'.join(related)
                 else:
-                    text += '（本期以外，仍未知：'+question['out_of_scope_reason']+'）' if question.get('out_of_scope_reason') else '（待澄清）'
+                    if question.get('superseded_by'):
+                        text += '（已拆分，具体子问题见工作台）'
+                    elif question.get('out_of_scope_reason'):
+                        text += '（本期以外，仍未知：'+question['out_of_scope_reason']+'）'
+                    else:
+                        text += '（待澄清）'
             prefix = '【模型讨论说明，未核实；不构成规范或批准】'
             if text.startswith(prefix):
                 text = text[len(prefix):]
@@ -139,12 +187,24 @@ def reader_document(artifact):
                 if text.startswith('未成文规范条目：'):
                     iid = text.split('：',1)[1]
                     text = '尚未编入正文：'+items.get(iid,{}).get('statement','存在尚未编入正文的需求。')
-            if not any(b['text']==text for b in blocks):
-                blocks.append(dict(block, text=text))
+            destination=appendix_blocks if generated_discussion else blocks
+            if not any(b['text']==text and b['ref_ids']==refs for b in destination):
+                destination.append(dict(block, text=text))
+        if section['title']==appendix_title and not blocks:
+            appendix_section=section
+            continue
         if blocks or any(s.get('parent_section_id')==section['section_id'] for s in content['sections']):
+            active_questions=[q for q in questions.values() if not q.get('superseded_by')]
+            if any(q['status']!='answered' for q in active_questions):question_title='当前决定与未决事项'
+            elif active_questions and all(q.get('understanding_status')=='applied' for q in active_questions):question_title='当前决定'
+            else:question_title='已有回答与待核对修订'
             titles = {'材料陈述、未成文条目与讨论建议':'补充背景与讨论建议',
-                      '已有回答与未决问题':'当前决定与未决事项', '限制及参考维度待核对':'文档边界与补充说明'}
+                      '已有回答与未决问题':question_title, '限制及参考维度待核对':'文档边界与补充说明'}
             sections.append(dict(section, title=titles.get(section['title'],section['title']), blocks=blocks))
+    if appendix_blocks:
+        base=appendix_section or dict(section_id=content['document_type'].upper()+'-READER-DISCUSSION-APPENDIX',
+                                      level=1,parent_section_id=None)
+        sections.append(dict(base,title=appendix_title,blocks=appendix_blocks))
     content['sections'] = sections
     return reading_structure(content, items, artifact.get('source_snapshot', []))
 

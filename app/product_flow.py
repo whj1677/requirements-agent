@@ -22,7 +22,48 @@ def question_stage(q):
 
 
 def question_open(q):
-    return q['status']!='answered' and not q.get('out_of_scope_reason')
+    return q['status']!='answered' and not q.get('out_of_scope_reason') and not q.get('superseded_by')
+
+
+def clarification_focus(p):
+    """Expose candidate gaps without treating a proposal as an adopted requirement."""
+    scope = p.get('product_context', {}).get('scope_ids')
+    reqs = [i for i in p['items'] if i['kind'] == 'requirement' and i['applies_to'] == 'to_be'
+            and i['selection_status'] in ('candidate', 'selected') and not i.get('target_item_id')
+            and (scope is None or i['id'] in scope)]
+    rows, gaps, adoption = [], [], []
+    if not reqs:
+        gaps.append('本期尚无可核对的独立需求候选；根据材料表达实际改动，缺少范围依据时保留未知。')
+    for req in reqs:
+        rid = req['id']
+        absent = [k for k in BEHAVIOR if not str(req.get('behavior', {}).get(k, '')).strip()]
+        acceptance = [i for i in p['items'] if i['kind'] == 'acceptance'
+                      and i['selection_status'] in ('candidate', 'selected') and i['applies_to'] == 'to_be'
+                      and (rid in i.get('related_refs', []) or i['id'] in req.get('related_refs', []))]
+        revisions = [i['id'] for i in p['items'] if i.get('target_item_id') == rid
+                     and i['selection_status'] == 'candidate']
+        rows.append(dict(requirement_id=rid, selection_status=req['selection_status'],
+                         missing_behavior_fields=absent, acceptance_candidate_ids=[i['id'] for i in acceptance],
+                         pending_revision_ids=revisions))
+        if absent:
+            gaps.append(rid + ' 尚缺：' + '、'.join(BEHAVIOR[k] for k in absent)
+                        + '；先核对来源及待采纳修订，真正未知才提问，确实不适用需有依据。')
+        if not acceptance:
+            gaps.append(rid + ' 缺少关联验收候选；仅用已明确行为和来源提出可核对的操作及预期结果。')
+        if req['selection_status'] != 'selected':
+            adoption.append(rid + ' 尚待人工采纳；模型不能改变采纳状态。')
+        if acceptance and not any(i['selection_status'] == 'selected' for i in acceptance):
+            adoption.append(rid + ' 的关联验收候选尚待人工采纳。')
+    return dict(requirements=rows, content_gaps=gaps, adoption_gaps=adoption,
+                answer_revision_targets=[dict(question_id=q['id'], requirement_ids=[r['id'] for r in reqs
+                                              if r['id'] in q.get('related_refs', [])])
+                                         for q in p['questions'] if q['status'] == 'answered'
+                                         and q.get('understanding_status') != 'applied'],
+                unresolved_questions=[q['id'] for q in p['questions'] if question_open(q)],
+                answer_updates_pending=[q['id'] for q in p['questions']
+                                        if q.get('understanding_status') in ('pending', 'candidate_ready')],
+                deferred_questions=[dict(id=q['id'],reason=q['out_of_scope_reason'])
+                                    for q in p['questions'] if q.get('out_of_scope_reason')])
 
 
 def fingerprint(p, step):
@@ -57,11 +98,15 @@ def missing(p, step):
         actual={i['id'] for i in p['items'] if i['kind']=='requirement' and i['applies_to']=='to_be'}
         if not scope or not set(scope)<=actual:
             issues.append('尚未形成带编号的独立本期需求；背景或目标条目不能代替功能需求。')
+        issues += [i['id']+' 改动性质无法确定，请核对依据' for i in p['items'] if i['id'] in scope and i.get('change_type')=='unspecified']
     elif step==3:
         reqs=selected_requirements(p)
         if not reqs:issues.append('请明确采纳至少一条本期功能或可独立验证的非功能需求。')
         unselected=set(ctx.get('scope_ids',[]))-{i['id'] for i in reqs}
         if unselected:issues.append('本期范围内仍有需求未明确采纳：'+'、'.join(sorted(unselected)))
+        issues += [q['id']+' 已保存回答，关联需求修订仍待核对采纳' for q in p['questions']
+                   if q.get('understanding_status') in ('pending','candidate_ready') and q.get('blocking')
+                   and set(q.get('related_refs',[])) & {i['id'] for i in reqs}]
         for req in reqs:
             absent=[label for key,label in BEHAVIOR.items() if not str(req.get('behavior',{}).get(key,'')).strip()]
             if absent:issues.append(req['id']+' 尚缺：'+'、'.join(absent)+'；确实不适用的维度应说明原因。')

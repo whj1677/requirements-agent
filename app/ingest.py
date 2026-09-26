@@ -88,6 +88,15 @@ def diagnostic_object(output):
         return None
 
 
+def complete_object(output):
+    """Only a fully decoded JSON object can anchor a non-ingest format repair."""
+    try:
+        value=json.loads(output,parse_constant=lambda x: (_ for _ in ()).throw(ValueError(x)))
+    except (ValueError,TypeError):
+        return None
+    return value if isinstance(value,dict) else None
+
+
 def business_anchor(value, excerpts=()):
     """Lock valid business fields; missing/invalid fields may still be repaired."""
     if not isinstance(value, dict):
@@ -140,3 +149,63 @@ def preserve(anchor, value, excerpts=()):
 
 def anchor_hash(anchor):
     return digest([[list(k), v] for k, v in anchor.items()])
+
+
+def response_anchor(value, excerpts, stage):
+    """Conservatively retain valid business fields in a malformed non-ingest reply."""
+    if not isinstance(value, dict):
+        return {}
+    definitions=SCHEMA['$defs']
+    pairs={(e['source_id'],e['id']) for e in excerpts}
+    locked={}
+
+    def rule_valid(rule, field):
+        return jsonschema.Draft202012Validator({'$defs':definitions,**rule}).is_valid(field)
+
+    def fields(node, properties, prefix):
+        if not isinstance(node,dict):return
+        for key,rule in properties.items():
+            if key not in node:continue
+            field=node[key]
+            if key in ('source_refs','used_source_refs') and isinstance(field,list):
+                valid=[(r['source_id'],r['excerpt_id']) for r in field if isinstance(r,dict)
+                       and isinstance(r.get('source_id'),str) and isinstance(r.get('excerpt_id'),str)
+                       and (r['source_id'],r['excerpt_id']) in pairs]
+                locked[(*prefix,key)]=valid
+            elif key=='decision_points' and isinstance(field,list):
+                ids=[r.get('temp_id') for r in field if isinstance(r,dict)]
+                if len(ids)==len(field) and all(isinstance(i,str) for i in ids) and len(ids)==len(set(ids)):
+                    locked[(*prefix,key,'@ids')]=ids
+                    child_properties=rule['items']['properties']
+                    for child in field:fields(child,child_properties,(*prefix,key,child['temp_id']))
+            elif rule_valid(rule,field):
+                locked[(*prefix,key)]=copy.deepcopy(field)
+            elif isinstance(field,dict) and '$ref' in rule:
+                definition=definitions[rule['$ref'].rsplit('/',1)[1]]
+                fields(field,definition.get('properties',{}),(*prefix,key))
+
+    for name,definition in (('proposals','Proposal'),('questions','Question')):
+        rows=value.get(name)
+        if not isinstance(rows,list):continue
+        ids=[r.get('temp_id') for r in rows if isinstance(r,dict)]
+        if len(ids)!=len(rows) or any(not isinstance(i,str) for i in ids) or len(ids)!=len(set(ids)):continue
+        locked[(name,'@ids')]=ids
+        for row in rows:fields(row,definitions[definition]['properties'],(name,row['temp_id']))
+    findings=value.get('findings')
+    if isinstance(findings,list):
+        locked[('findings','@count')]=len(findings)
+        for index,row in enumerate(findings):fields(row,definitions['Finding']['properties'],('findings',index))
+    result_rule=next((branch['properties']['result'] for branch in SCHEMA['oneOf']
+                      if branch['properties']['stage']['const']==stage),None)
+    if result_rule:
+        result_def=definitions[result_rule['$ref'].rsplit('/',1)[1]]
+        fields(value.get('result'),result_def.get('properties',{}),('result',))
+    fields(value,{k:SCHEMA['properties'][k] for k in ('summary','limitations','used_source_refs','product_context_proposal')},())
+    return locked
+
+
+def preserve_response(anchor, value, excerpts, stage):
+    current=response_anchor(value,excerpts,stage)
+    changed=[list(path) for path,original in anchor.items() if current.get(path)!=original]
+    require(not changed,'SEMANTIC_BLOCKED',
+            '格式修复改变了已有问题、规则、决定或引用，结果未采纳；请单独核对：'+str(changed))
