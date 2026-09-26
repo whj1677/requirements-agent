@@ -10,11 +10,15 @@
 
 1. 将实现、测试、构建脚本、固定公钥模块与文档一并提交。不要提交 `.env`、用户数据、授权申请、客户许可证或签发私钥。
 2. 在 GitHub 仓库的 **Actions → Windows customer distribution → Run workflow** 选择已审核分支并启动。任务实际检出的提交作为该包版本事实源。
-3. 等待构建结果；成功后下载 `requirements-agent-windows-<提交SHA>` 工件。该工件只包含安装器、文件哈希清单、构建结果与原生字节检查报告。
+3. 等待构建和未授权安装验证结果；成功后下载 `requirements-agent-windows-<提交SHA>` 工件。该工件只包含安装器、文件哈希清单、构建结果、原生字节检查和安装验证报告。
 4. 另一个 `requirements-agent-windows-build-logs-<运行编号>-<尝试编号>` 工件保存白名单内的依赖安装、浏览器下载、Inno 校验、边界测试和构建日志。失败时也尽量保留这些日志。
 5. 核对安装器 SHA-256、`source_commit`、`working_tree_dirty=false` 和 `native_file_bytes_verified=true`。构建成功的状态仍为 `BUILT_NOT_ACCEPTED`，须完成下文安装版验收，才能决定对客户交付。
 
 流程只需要仓库读取权限与 GitHub Actions 自带的工件上传能力，无需配置模型 Secret、授权私钥或签发凭据。不要将拥有者的 DPAPI 私钥搬到 CI。正式签发仍在拥有者自己的环境完成。
+
+CI 在构建后实际静默安装到新的临时目录，禁用快捷方式，逐文件核对安装内容。客户 EXE 使用独立 `LOCALAPPDATA` 且 PATH 仅含 Windows 系统目录；验证未授权命令拒绝、8765 网页激活入口可访问、业务接口被拦截且不创建业务数据库，再通过 Origin 和 CSRF 保护的网页接口正常退出。最后真实卸载，核对程序与注册项已移除，同时保留独立用户目录和授权目录中的测试哨兵文件。哨兵不是有效许可证，流程不签发许可证、不发送模型请求。
+
+这部分由 `scripts/verify_windows_install.py --installer <安装器> --output <新输出目录>` 执行。脚本发现相同 AppId 的已有安装、已有输出目录或已占用的 8765 端口时拒绝开始；超时清理只处理本次创建并核实映像和创建时间的进程。只上传 `installation-verification.json` 与简要执行日志，`private/` 中的临时用户目录及安装器原始日志不上传。`UNLICENSED_INSTALLATION_VERIFIED` 仅代表这部分实际安装验证，仍不代表合法授权后的业务验证或最终客户验收。
 
 ## 固定输入与构建工具
 

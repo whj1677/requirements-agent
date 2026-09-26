@@ -113,7 +113,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $junit = Join-Path $env:RA_BUILD_LOGS 'boundary-tests.xml'
-          python -m pytest tests/test_licensing.py tests/test_desktop_distribution.py tests/test_windows_packaging.py -q `
+          python -m pytest tests/test_licensing.py tests/test_desktop_distribution.py tests/test_windows_packaging.py tests/test_windows_install_verifier.py -q `
             "--junitxml=$junit" 2>&1 |
             Tee-Object -FilePath (Join-Path $env:RA_BUILD_LOGS 'boundary-tests.log')
           if ($LASTEXITCODE -ne 0) { throw 'Offline distribution boundary checks failed' }
@@ -135,6 +135,16 @@ jobs:
           "Installer SHA-256: $($result.installer_sha256)" >> $env:GITHUB_STEP_SUMMARY
           'Status: BUILT_NOT_ACCEPTED. Installation, owner-issued activation and customer-runtime acceptance remain separate.' >> $env:GITHUB_STEP_SUMMARY
 
+      - name: Verify a real unlicensed installation with an isolated user profile
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $installer = Join-Path $env:RA_BUILD_OUTPUT 'installer/RequirementsAgent-1.2.0-windows-x64-setup.exe'
+          $verification = Join-Path $env:RA_BUILD_BASE 'installation-verification'
+          python scripts/verify_windows_install.py --installer $installer --output $verification 2>&1 |
+            Tee-Object -FilePath (Join-Path $env:RA_BUILD_LOGS 'installation-verification.log')
+          if ($LASTEXITCODE -ne 0) { throw 'Real installation or unlicensed runtime verification failed' }
+          'Unlicensed installation: VERIFIED. Signed customer authorization and licensed business validation remain separate.' >> $env:GITHUB_STEP_SUMMARY
+
       - name: Upload installer and release manifests
         if: success()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -149,6 +159,7 @@ jobs:
             ${{ env.RA_BUILD_OUTPUT }}/application/RequirementsAgent/release-manifest.json
             ${{ env.RA_BUILD_OUTPUT }}/build-result.json
             ${{ env.RA_BUILD_OUTPUT }}/native-byte-verification.json
+            ${{ runner.temp }}/requirements-agent-build/installation-verification/installation-verification.json
 
       - name: Upload allowlisted build diagnostics
         if: always()
@@ -167,3 +178,5 @@ jobs:
             ${{ runner.temp }}/requirements-agent-build/logs/boundary-tests.xml
             ${{ runner.temp }}/requirements-agent-build/logs/windows-build.log
             ${{ runner.temp }}/requirements-agent-build/output/native-byte-verification.json
+            ${{ runner.temp }}/requirements-agent-build/logs/installation-verification.log
+            ${{ runner.temp }}/requirements-agent-build/installation-verification/installation-verification.json

@@ -146,6 +146,23 @@ def test_office_timeout_cleanup_is_scoped(tmp_path, monkeypatch):
     assert not list(tmp_path.iterdir())
 
 
+def test_office_fallback_finds_system_powershell_without_developer_path(tmp_path, monkeypatch):
+    from app import office
+    if os.name != 'nt': pytest.skip('Windows PowerShell discovery')
+    monkeypatch.setenv('ProgramFiles', str(tmp_path / 'no-powershell-seven'))
+    monkeypatch.setenv('SystemRoot', str(tmp_path / 'Windows'))
+    monkeypatch.setattr(office.shutil, 'which', lambda _name: None)
+    commands = []
+    def run(command, **kwargs):
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 1)
+    monkeypatch.setattr(office.subprocess, 'run', run)
+    result = extract_office('synthetic.docx', b'synthetic', tmp_path)
+    assert commands[0][0] == str(tmp_path / 'Windows/System32/WindowsPowerShell/v1.0/powershell.exe')
+    assert '-File' in commands[0] and '-ExecutionPolicy' not in commands[0]
+    assert result['code'] == 'OFFICE_NO_RESULT'
+
+
 @pytest.mark.skipif(os.environ.get('RA_TEST_LOCAL_OFFICE') != '1', reason='Explicit opt-in: starts local installed Office with synthetic documents')
 @pytest.mark.parametrize('extension', ['.docx','.xlsx','.pptx'])
 def test_installed_office_reads_synthetic_document(tmp_path, extension):

@@ -23,7 +23,8 @@ def extract_office(title, data, folder):
         source.write_bytes(data)
         output, owner = temp / 'result.json', temp / 'owner.json'
         modern = Path(os.environ.get('ProgramFiles', 'C:/Program Files')) / 'PowerShell/7/pwsh.exe'
-        shell = shutil.which('pwsh.exe') or (str(modern) if modern.exists() else 'powershell.exe')
+        legacy = Path(os.environ.get('SystemRoot', 'C:/Windows')) / 'System32/WindowsPowerShell/v1.0/powershell.exe'
+        shell = shutil.which('pwsh.exe') or (str(modern) if modern.exists() else str(legacy))
         # Honor the selected host's execution policy; do not use ExecutionPolicy Bypass.
         command = [shell, '-NoProfile', '-NonInteractive', '-File', str(WORKER)]
         flags = subprocess.CREATE_NO_WINDOW
