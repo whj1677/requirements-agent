@@ -2,6 +2,8 @@
 
 Python 核心、中文本地 Web 工作台，面向已有平台的增量需求。当前五步操作见本 README；需求编号方案和原始实施记录见 [PRODUCT-01](docs/PRODUCT-01.md)，该记录中的旧六步/草图内容为历史方案，草图已取消。原始开发规格保留在 `requirements-agent-codex-kit-v1.1/`，旧验收报告保留各自历史边界。
 
+完整操作步骤、合成练习和常见问题见 [使用说明](docs/user-guide.md)。该手册位于源码仓库，适用于当前五步工作台。
+
 本 README 同时说明源码仓库和精简单机包。单机包内可用的命令是 `start-local.cmd`、`scripts/install.ps1`、`scripts/start.ps1`、`scripts/stop.ps1`、`scripts/diagnose.ps1` 和 `scripts/backup.py`；包内附有 `web/dist` 和重建所需的 `web/` 源码。下文指向 `docs/`、`tests/`、浏览器回归及 `scripts/evaluate_live.py` 的链接或命令只适用于源码仓库，精简单机包不包含这些工程资料。实际打包文件与哈希以包内 `release-manifest.json` 为准。
 
 ## Windows 使用
