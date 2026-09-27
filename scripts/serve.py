@@ -1,12 +1,36 @@
 """The one local workbench entry point; tests use isolated app factories."""
+import atexit
+import faulthandler
 import os
 from pathlib import Path
 import re
 import socket
 import sys
+import threading
+import traceback
 
 ROOT = Path(__file__).resolve().parent.parent
 PORT = 8765
+
+
+def install_crash_logging():
+    """Record observable exceptions and shutdown; missing logs do not prove cause."""
+    faulthandler.enable(file=sys.stderr)
+
+    def excepthook(exc_type, exc, tb):
+        print('未捕获异常，进程即将退出：', file=sys.stderr, flush=True)
+        traceback.print_exception(exc_type, exc, tb, file=sys.stderr)
+        sys.stderr.flush()
+        sys.__excepthook__(exc_type, exc, tb)
+
+    def thread_hook(args):
+        print('线程未捕获异常（%s）：' % (args.thread,), file=sys.stderr, flush=True)
+        traceback.print_exception(args.exc_type, args.exc_value, args.exc_traceback, file=sys.stderr)
+        sys.stderr.flush()
+
+    sys.excepthook = excepthook
+    threading.excepthook = thread_hook
+    atexit.register(lambda: print('进程执行 Python 退出清理；此标记不代表退出原因或退出码', flush=True))
 
 
 def reserve_listener(port=PORT):
@@ -24,6 +48,7 @@ def reserve_listener(port=PORT):
 
 
 def main():
+    install_crash_logging()
     if os.environ.get('RA_PORT', str(PORT)) != str(PORT):
         raise SystemExit('工作台统一使用 http://127.0.0.1:8765/，不再支持其他工作台端口。')
     try:

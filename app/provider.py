@@ -6,17 +6,19 @@ from PIL import Image
 import time
 from urllib.parse import urlsplit
 import httpx
-from .core import KIT, Problem, brief_hash, dumps, now, read_json, require
+from .core import KIT, Problem, brief_hash, digest, dumps, now, read_json, require
 from .contracts import SCHEMA, WIRE, profile
 from .config import ProjectEnvironment, usable_key
 from .prd import PLAN_SCHEMA, plan_contract, context as document_context
 from . import ingest
-from .understanding import contract as understanding_contract
+from .understanding import contract as understanding_contract, answer_target, answer_targets
+from .budgets import POLICY_DEFAULTS, input_allowance, input_size
 
 DEFAULT = dict(name='DeepSeek 官方', base_url='https://api.deepseek.com', model='deepseek-flash',
                key_env='RA_DEEPSEEK_API_KEY', vision='documented', json_mode=True, timeout=120,
-               max_calls=8, max_tokens=16000, context_chars=180000, action_seconds=300,
-               thinking_disabled=True, review_thinking=True, documented_at='2026-09-23', local_allowed=False, proxy='', input_price=None, output_price=None)
+               max_calls=8, max_tokens=48000, context_chars=520000, action_seconds=300,
+               thinking_disabled=True, review_thinking=True, documented_at='2026-09-27', local_allowed=False, proxy='', input_price=None, output_price=None,
+               **POLICY_DEFAULTS)
 STAGES = read_json(KIT / 'prompts/registry.json')['stage_files']
 
 
@@ -175,12 +177,45 @@ def ui_structure_example():
         result=dict(spec=dict(schema_version='1.1',title='结构示例',draft_revision=0,design_intent='仅演示协议结构',demo_data_label='模拟数据，仅用于原型演示',pages=[page])))
 
 
+def answer_binding_tasks(p):
+    """Expose factual answer/target pairs without adopting or rewriting clauses."""
+    tasks=[]
+    questions={q['id']:q for q in p['questions']}
+
+    def all_answer_bindings_current(candidate):
+        for qid in candidate.get('answer_refs') or []:
+            bound=questions.get(qid)
+            if (not bound or bound.get('status')!='answered' or bound.get('out_of_scope_reason')
+                    or bound.get('superseded_by') or answer_target(p,bound,candidate) is None
+                    or (candidate.get('answer_versions') or {}).get(qid)!=digest(bound.get('answer'))):
+                return False
+        return True
+
+    for q in p['questions']:
+        if (q.get('status')!='answered' or q.get('understanding_status')=='applied'
+                or q.get('out_of_scope_reason') or q.get('superseded_by')):continue
+        applied=set(q.get('applied_item_ids',q.get('applied_requirement_ids',[])))
+        version=digest(q.get('answer'))
+        for item in answer_targets(p,q):
+            if item['id'] in applied:continue
+            reusable=[i['id'] for i in p['items'] if i.get('action')=='revise'
+                      and i.get('target_item_id')==item['id'] and i['kind']==item['kind']
+                      and i.get('selection_status')=='candidate' and q['id'] in (i.get('answer_refs') or [])
+                      and all_answer_bindings_current(i)]
+            tasks.append(dict(question_id=q['id'],target_item_id=item['id'],kind=item['kind'],
+                              answer_version=version,answer_source_refs=q.get('answer_source_refs',[]),
+                              reusable_candidate_ids=reusable))
+    return tasks
+
+
 def assemble(p, stage, user_message, config, folder, kind='prd', generation_target=None, pending_images_only=False):
     header = dict(stage=stage, project_id=p['id'], current_revision=p['revision'], mode=p['mode'], schema=request_schema(stage), remaining_budget=config['max_calls'])
     if stage!='ui':header['delivery_policy']='工作台已取消业务草图生成与核对。交付 MRD/PRD；原页面截图仍可作为现状参考。不要要求生成或批准草图才能成文，不把历史草图当作本轮交付。业务入口、字段、流程及异常仍必须在需求中表达。'
     if stage=='ingest':header['context_contract']='整理后必须输出 product_context_proposal 的全部字段，供用户核对，未知值填空字符串；不自动采纳或批准。已有条目仅因信息实质变化才提出修订，不重复建同义候选。'
     if stage=='ingest':header['ingest_contract']=ingest.contract()
     if stage in ('ingest','clarify','change'):header['understanding_contract']=understanding_contract()
+    if stage=='clarify':
+        header['current_answer_binding_policy']='stage_focus.answer_binding_tasks 是全量待办清单，不扩大本轮授权范围。先根据本轮 user_message 中的任务指定对象和用户明确要求限定范围，仅处理范围内的回答与目标，范围外保持原状；无明确局部范围时，按当前澄清任务处理。本轮范围内的回答绑定以当前清单和 questions 的已保存回答为准。历史消息和旧文档仍用于核对业务事实，持续有效的业务范围与保持约束必须保留；仅与当前契约或本轮明确指令冲突的历史操作指令（例如旧的“规则不填 answer_refs”）不再适用。范围内每个尚无 reusable_candidate_ids 的绑定任务需由本轮同 kind revise 候选覆盖：target_item_id 对应该目标，answer_refs 必须包含该 question_id，source_refs 引用实际送入的回答来源。同一目标的多个范围内回答合并到一个候选的 answer_refs。规则原文已正确或原条目 selected 均不等于该回答已应用；保留完整业务原文，生成待人工核对的绑定候选，不自动采纳。仅有相同目标、同一回答版本并已记录 answer_refs 的待采纳候选才可复用。'
     if generation_target:
         header['generation_target']=generation_target
     if stage == 'prd':
@@ -203,12 +238,21 @@ def assemble(p, stage, user_message, config, folder, kind='prd', generation_targ
     context['recent_messages'] = p['messages'][-8:]
     if stage=='clarify':
         from .product_flow import clarification_focus
-        context['stage_focus']=dict(**clarification_focus(p),
+        context['documents']=review_documents(p)
+        focus=clarification_focus(p)
+        current_answer_ids={q['id'] for q in p['questions'] if q.get('status')=='answered'
+                            and not q.get('out_of_scope_reason') and not q.get('superseded_by')}
+        focus['answer_revision_targets']=[row for row in focus['answer_revision_targets']
+                                          if row['question_id'] in current_answer_ids]
+        focus['answer_updates_pending']=[qid for qid in focus['answer_updates_pending'] if qid in current_answer_ids]
+        context['stage_focus']=dict(**focus,answer_binding_tasks=answer_binding_tasks(p),
             instruction='content_gaps 检查本期候选内容，adoption_gaps 仅是人工采纳状态；不得因尚未采纳而忽略候选的行为和验收缺项。'
-            '优先核对已发送材料、已有回答及待采纳修订，提出保留原编号的完整修订候选；已有同义候选不重复建立。'
+            '候选临时编号使用 TMP-1、TMP-2 等，问题临时编号使用 QTMP-1 等；编号只能含字母、数字、下划线、连字符，不含空格。已有稳定条目和来源编号必须原样引用。'
+            'answer_binding_tasks 是全量待办，不是本轮必须全部处理的授权。先按本轮用户与任务指定对象限定范围，仅逐项核对范围内任务，范围外保持；无明确局部范围时，按当前澄清任务处理。每项以 question_id 和 target_item_id 明确标识。reusable_candidate_ids 非空才表示同一回答版本已有可复用的待采纳修订；范围内没有可复用候选时必须提出绑定候选，不因原规则 selected 或历史修订原文相同而跳过。'
+            '同一 target_item_id 可合并多个范围内 question_id 到同一候选 answer_refs，逐项覆盖本轮范围内的待绑定回答；不得输出空 answer_refs 后宣称回答已承载。原文已正确时完整保留，不为产生修订而虚构业务变化。其它无关同义候选不重复建立。'
             '已明确行为须同时提出 acceptance 候选，用 related_refs 指向原需求并引用支持预期结果的来源；把前提、操作、可观察结果写清，不编造时限、数量、权限或异常规则。'
-            'answer_refs 是原需求的回答应用跟踪字段：仅在 kind=requirement、action=revise 且 target_item_id 位于 answer_revision_targets 对应 requirement_ids 时填写。'
-            '规则修订和新增 acceptance 不填写 answer_refs；它们通过 source_refs 引用实际回答片段（见问题的 answer_source_refs 及本轮 excerpts），通过 related_refs 关联原需求。'
+            'answer_refs 是回答应用跟踪字段：仅在 action=revise、target_item_id 位于 answer_revision_targets 对应 item_ids 且与原条目同 kind 时填写，可修订直接关联的 requirement/rule/acceptance。'
+            '新增条目不填写 answer_refs；所有修订通过 source_refs 引用实际回答片段（见问题的 answer_source_refs 及本轮 excerpts），通过 related_refs 保留真实业务关联。'
             '核对已回答问题的每个 related_refs：其中 rule 仍写待决定或旧口径时，也需为该 rule 提出 revise 候选，用回答来源补齐规则原文。只修订 requirement 的 behavior 不能解除关联规则中的冲突；不得一面说已定、一面保留未决规范。'
             '同一功能的字段/默认值/筛选组合优先在该需求 behavior 及关联 rule/acceptance 表达，不机械拆成缺少上下文的独立功能。'
             '回答 understanding_status=applied 时不再重复提交相同需求修订或 answer_refs；仅补真实内容差异。已有相同验收（含 candidate 和 selected）则复用其编号，不再 action=add。规则修订也不需要顺带复制已经完整的需求与验收。'
@@ -217,8 +261,12 @@ def assemble(p, stage, user_message, config, folder, kind='prd', generation_targ
             '只有材料确实没有答案才提问；缺少结构关联不等于缺少业务决定。移出范围的问题仍未知，不再次当成本期前提。'
             '不要把材料未要求的额外量化指标提升为本期成文前置决定。'
             'summary 说明实际补齐内容及仍待人工核对事项，不替程序宣布成文或正式确认已满足。')
-        context['recent_messages']=[{k:m.get(k) for k in ('role','stage','text','created')} for m in p['messages'][-8:]]
-        context['context_notice']='当前条目、问题、范围理由和实际材料优先；历史摘要可能过期，旧结构化输出不重复发送。'
+        context['recent_messages']=[dict(
+            **{k:m.get(k) for k in ('role','stage','created')},
+            **({'text':m.get('text'),'use':'历史用户业务资料；持续有效的业务范围与保持约束须保留，只有相冲突的历史操作指令不能覆盖本轮明确指令与当前契约。'}
+               if m.get('role')=='user' else {'use':'历史模型事件；旧摘要正文未重复提供，当前条目与问题保留在本轮上下文。'}))
+            for m in p['messages'][-8:]]
+        context['context_notice']='当前条目、问题、范围理由和实际材料优先；documents保留各文档实际可读正文及版本，去除重复存储快照，不以当前条款改写旧正文。历史用户消息中的持续业务范围与保持约束仍须保留；只有与当前契约或本轮明确指令冲突的历史操作指令不再适用。旧 assistant 摘要和结构化输出不重复发送。answer_binding_tasks 仅列待办，不扩大本轮指定范围；范围内的原条目 selected 和旧摘要自报完成不能代替该回答版本的应用记录。'
     if stage=='ui':
         context['document_status']={kind:{k:doc.get(k) for k in ('id','draft_revision','brief_hash')} for kind,doc in context.pop('documents').items() if doc}
         context['recent_messages']=[{k:m.get(k) for k in ('role','stage','text','created')} for m in p['messages'][-8:]]
@@ -252,14 +300,14 @@ def assemble(p, stage, user_message, config, folder, kind='prd', generation_targ
     if stage=='prd':
         context=document_context(p, include_sketch=False)
         context['user_message']=user_message
-    remaining = config['context_chars'] - len(system) - len(dumps(context)) - config['max_tokens'] * 4 - 4000
+    remaining = input_allowance(config) - input_size(system, config) - input_size(dumps(context), config) - 4000
     require(remaining > 0, 'BUDGET_EXHAUSTED', '关键底稿与输出预留已超过上下文预算；不能截断已选规则')
     selected, omitted, images = [], [], []
     for source in p['sources']:
         if source['excluded'] or (stage=='vision' and pending_images_only and source.get('image_mime') and source.get('vision_run_id')):
             continue
         for ex in source['excerpts']:
-            cost = len(dumps(ex)) + (12000 if source['image_mime'] and stage == 'vision' else 0)
+            cost = input_size(dumps(ex), config) + (12000 if source['image_mime'] and stage == 'vision' else 0)
             if cost > remaining or (source['image_mime'] and stage=='vision' and len(images)>=3) or (source['image_mime'] and stage != 'vision' and not source.get('vision_run_id')):
                 omitted.append(ex['id'])
                 continue

@@ -427,7 +427,7 @@
           "maxLength": 2000
         },
         "answer_refs": {
-          "description": "仅用于根据已回答问题修订原requirement：kind=requirement、action=revise、target_item_id为该问题related_refs中的原requirement ID。rule修订和新增acceptance不写answer_refs；其回答依据放source_refs并用related_refs关联原需求。",
+          "description": "仅用于根据已回答问题修订其直接关联的原requirement/rule/acceptance：action=revise、target_item_id必须在该问题related_refs中，kind与原目标一致，不能指向另一修订候选。新增acceptance等action=add条目不写answer_refs；其回答依据放source_refs并用related_refs关联原需求。回答不会自动采纳候选。",
           "type": "array",
           "uniqueItems": true,
           "maxItems": 30,

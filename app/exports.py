@@ -1,5 +1,8 @@
 import hashlib
 import io
+import os
+import tempfile
+from pathlib import Path
 import zipfile
 from docx import Document
 from docx.shared import Inches, Pt, RGBColor
@@ -210,60 +213,100 @@ def zip_files(files):
 
 
 def handoff(store, pid, baseline_id, idempotency_key):
+    # Capture one read snapshot; rendering and compression must not retain a
+    # SQLite write transaction or block unrelated workbench edits.
     with store.connect() as db:
-        db.execute('BEGIN IMMEDIATE')
+        db.execute('BEGIN')
         prior = [r for r in store.records(pid,'export',db) if r['idempotency_key'] == idempotency_key]
         if prior:
             require(prior[0]['baseline_id'] == baseline_id, 'IDEMPOTENCY_CONFLICT', '导出幂等键冲突', 409)
             return prior[0]
         baseline = next((b for b in store.records(pid,'baseline',db) if b['id'] == baseline_id),None)
         require(baseline is not None, 'CONFIRMATION_REQUIRED', '需要有效人工确认基线', 409)
-        p = baseline['project']
-        items = delivery_items(p)
-        canonical = '\n\n'.join(f'## {i["id"]}｜{i["title"]} · v{i.get("content_version",1)}\n\n{i["statement"]}' for i in items)
-        refs = {i['id']: i for i in items}
-        traces = []
-        for req in [i for i in items if i['kind']=='requirement']:
-            related = [i for i in items if i['id'] in req['related_refs'] or req['id'] in i['related_refs']]
-            traces.append(dict(requirement_id=req['id'], rule_ids=[i['id'] for i in related if i['kind']=='rule'], ac_ids=[i['id'] for i in related if i['kind']=='acceptance'], ui_page_ids=[page['page_id'] for page in p['ui']['spec']['pages'] if req['id'] in page['requirement_refs']] if p['ui'] else [], frontend_sections=[req['id']], backend_sections=[req['id']], open_question_ids=[q['id'] for q in p['questions'] if req['id'] in q['related_refs'] and q['status']!='answered']))
-        files = {
-            'README.md': f'# 研发交接\n\n基线 {baseline_id}\n\n产品经理内容确认记录 {baseline["confirmation_id"]}。内容确认不代表技术设计或测试验收通过。\n\n本包为中性交接；ai-engineer-context 私有格式适配未验证。',
-            'requirements.md': '# 共同需求\n\n'+canonical,
-            'frontend_spec.md': '# 前端交接\n\n以下为同一基线原文；页面结构与模拟交互见 ui_spec.json / prototype.html。接口及技术实现由开发确认。\n\n'+canonical,
-            'backend_spec.md': '# 后端交接\n\n以下为同一基线原文；不得以界面隐藏代替权限规则。接口路径、表结构和事务方案未由本包代定。\n\n'+canonical,
-            'acceptance_criteria.md': '# 验收条件\n\n'+'\n\n'.join(f'{i["id"]} — {i["statement"]}' for i in items if i['kind']=='acceptance'),
-            'open_questions.md': '# 未决事项\n\n'+'\n\n'.join(q['question']+'\n影响：'+q['why'] for q in p['questions'] if q['status']!='answered'),
-            'ui_spec.json': dumps(p['ui']['spec'] if p['ui'] else None),
-            'prototype.html': prototype(p['ui']['spec']) if p['ui'] else '<!doctype html><meta charset="utf-8"><p>本基线未包含 UI 方案</p>',
-            'traceability.json': dumps(traces)}
-        from .requirements import exchange, requirement_ref
-        payload=exchange(p,baseline_id)
-        payload['change_records']=[r for r in store.records(pid,'requirement_change',db) if any(
-            i['id']==r['requirement_id'] and r['version']<=i.get('content_version',1) for i in p['items'])]
-        files['requirements-exchange.json']=dumps(payload)
-        for kind,artifact in p['documents'].items():
-            content=reader_document(artifact)
-            files[kind.upper()+'.content.json']=dumps(artifact)
-            files[kind.upper()+'.md']='# '+content['title']+'\n\n'+'\n\n'.join(
-                '## '+s['title']+'\n\n'+'\n\n'.join(b['text'] for b in s['blocks']) for s in content['sections'])
-        for role,keys in (('frontend',('actor','entry','flow','result','exceptions')),('backend',('data','permissions','result','exceptions'))):
-            from .product_flow import BEHAVIOR
-            details=[]
-            for req in (i for i in items if i['kind']=='requirement'):
-                details.append('\n\n### '+req['id']+' · v'+str(req.get('content_version',1))+' 的相关行为\n'+
-                    '\n'.join(BEHAVIOR[k]+'：'+req.get('behavior',{}).get(k,'未指定，需技术设计时核对') for k in keys))
-            files[role+'_spec.md']+=''.join(details)
-        for trace in traces:
-            trace['requirement']=requirement_ref(p,refs[trace['requirement_id']])
-            trace['test_case_refs']=[]
-            trace['test_execution_status']='not_run'
-        files['traceability.json']=dumps(traces)
-        files = {k:v.encode('utf-8') for k,v in files.items()}
-        manifest = dict(schema_version='1.1', baseline_id=baseline_id, baseline_hash=digest(baseline['hashes']), confirmation_id=baseline['confirmation_id'], generator_version='1.1', prompt_version='1.1', created=now(), artifacts={k:dict(sha256=hashlib.sha256(v).hexdigest(), role=k) for k,v in files.items()})
-        files['manifest.json'] = dumps(manifest).encode()
-        eid = ident('EXPORT')
-        folder=store.folder/'exports'; folder.mkdir(exist_ok=True)
-        (folder/(eid+'.zip')).write_bytes(zip_files(files))
-        result=dict(baseline_id=baseline_id, confirmation_id=baseline['confirmation_id'], idempotency_key=idempotency_key, manifest=manifest)
-        store.record(pid,'export',result,eid,db)
+        changes = store.records(pid,'requirement_change',db)
+    baseline_identity = digest(baseline)
+    files, manifest = handoff_files(baseline, changes)
+    archive = zip_files(files)
+    eid = ident('EXPORT')
+    folder = store.folder / 'exports'
+    folder.mkdir(exist_ok=True)
+    destination = folder / (eid + '.zip')
+    temporary = None
+    published = committed = False
+    try:
+        # Only a committed export record grants download access. The temporary
+        # path is never exposed, and rename publishes a complete archive at once.
+        with tempfile.NamedTemporaryFile(dir=folder, prefix='.handoff-', suffix='.tmp', delete=False) as out:
+            temporary = out.name
+            out.write(archive)
+            out.flush()
+            os.fsync(out.fileno())
+        with store.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            prior = [r for r in store.records(pid,'export',db) if r['idempotency_key'] == idempotency_key]
+            if prior:
+                require(prior[0]['baseline_id'] == baseline_id, 'IDEMPOTENCY_CONFLICT', '导出幂等键冲突', 409)
+                return prior[0]
+            current = next((b for b in store.records(pid,'baseline',db) if b['id'] == baseline_id),None)
+            require(current is not None and digest(current) == baseline_identity,
+                    'STALE_BASELINE', '确认基线在导出期间发生变化，请重新核对后导出', 409)
+            os.replace(temporary, destination)
+            published = True
+            result = dict(baseline_id=baseline_id, confirmation_id=baseline['confirmation_id'],
+                          idempotency_key=idempotency_key, manifest=manifest)
+            store.record(pid,'export',result,eid,db)
+        committed = True
         return dict(id=eid,**result)
+    finally:
+        if temporary is not None:
+            Path(temporary).unlink(missing_ok=True)
+        if published and not committed:
+            destination.unlink(missing_ok=True)
+
+
+def handoff_files(baseline, changes):
+    baseline_id = baseline['id']
+    p = baseline['project']
+    items = delivery_items(p)
+    canonical = '\n\n'.join(f'## {i["id"]}｜{i["title"]} · v{i.get("content_version",1)}\n\n{i["statement"]}' for i in items)
+    refs = {i['id']: i for i in items}
+    traces = []
+    for req in [i for i in items if i['kind']=='requirement']:
+        related = [i for i in items if i['id'] in req['related_refs'] or req['id'] in i['related_refs']]
+        traces.append(dict(requirement_id=req['id'], rule_ids=[i['id'] for i in related if i['kind']=='rule'], ac_ids=[i['id'] for i in related if i['kind']=='acceptance'], ui_page_ids=[page['page_id'] for page in p['ui']['spec']['pages'] if req['id'] in page['requirement_refs']] if p['ui'] else [], frontend_sections=[req['id']], backend_sections=[req['id']], open_question_ids=[q['id'] for q in p['questions'] if req['id'] in q['related_refs'] and q['status']!='answered']))
+    files = {
+        'README.md': f'# 研发交接\n\n基线 {baseline_id}\n\n产品经理内容确认记录 {baseline["confirmation_id"]}。内容确认不代表技术设计或测试验收通过。\n\n本包为中性交接；ai-engineer-context 私有格式适配未验证。',
+        'requirements.md': '# 共同需求\n\n'+canonical,
+        'frontend_spec.md': '# 前端交接\n\n以下为同一基线原文；页面结构与模拟交互见 ui_spec.json / prototype.html。接口及技术实现由开发确认。\n\n'+canonical,
+        'backend_spec.md': '# 后端交接\n\n以下为同一基线原文；不得以界面隐藏代替权限规则。接口路径、表结构和事务方案未由本包代定。\n\n'+canonical,
+        'acceptance_criteria.md': '# 验收条件\n\n'+'\n\n'.join(f'{i["id"]} — {i["statement"]}' for i in items if i['kind']=='acceptance'),
+        'open_questions.md': '# 未决事项\n\n'+'\n\n'.join(q['question']+'\n影响：'+q['why'] for q in p['questions'] if q['status']!='answered'),
+        'ui_spec.json': dumps(p['ui']['spec'] if p['ui'] else None),
+        'prototype.html': prototype(p['ui']['spec']) if p['ui'] else '<!doctype html><meta charset="utf-8"><p>本基线未包含 UI 方案</p>',
+        'traceability.json': dumps(traces)}
+    from .requirements import exchange, requirement_ref
+    payload=exchange(p,baseline_id)
+    payload['change_records']=[r for r in changes if any(
+        i['id']==r['requirement_id'] and r['version']<=i.get('content_version',1) for i in p['items'])]
+    files['requirements-exchange.json']=dumps(payload)
+    for kind,artifact in p['documents'].items():
+        content=reader_document(artifact)
+        files[kind.upper()+'.content.json']=dumps(artifact)
+        files[kind.upper()+'.md']='# '+content['title']+'\n\n'+'\n\n'.join(
+            '## '+s['title']+'\n\n'+'\n\n'.join(b['text'] for b in s['blocks']) for s in content['sections'])
+    for role,keys in (('frontend',('actor','entry','flow','result','exceptions')),('backend',('data','permissions','result','exceptions'))):
+        from .product_flow import BEHAVIOR
+        details=[]
+        for req in (i for i in items if i['kind']=='requirement'):
+            details.append('\n\n### '+req['id']+' · v'+str(req.get('content_version',1))+' 的相关行为\n'+
+                '\n'.join(BEHAVIOR[k]+'：'+req.get('behavior',{}).get(k,'未指定，需技术设计时核对') for k in keys))
+        files[role+'_spec.md']+=''.join(details)
+    for trace in traces:
+        trace['requirement']=requirement_ref(p,refs[trace['requirement_id']])
+        trace['test_case_refs']=[]
+        trace['test_execution_status']='not_run'
+    files['traceability.json']=dumps(traces)
+    files = {k:v.encode('utf-8') for k,v in files.items()}
+    manifest = dict(schema_version='1.1', baseline_id=baseline_id, baseline_hash=digest(baseline['hashes']), confirmation_id=baseline['confirmation_id'], generator_version='1.1', prompt_version='1.1', created=now(), artifacts={k:dict(sha256=hashlib.sha256(v).hexdigest(), role=k) for k,v in files.items()})
+    files['manifest.json'] = dumps(manifest).encode()
+    return files, manifest

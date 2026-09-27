@@ -1,4 +1,4 @@
-"""Quality mode is authorized before execution and never raises user budgets."""
+"""Fixed mode never escalates; function-first mode uses a preapproved ceiling."""
 from app.provider import DEFAULT, Provider
 from app.store import Store
 from app.workflow import Workflow
@@ -6,7 +6,7 @@ from app.workflow import Workflow
 
 def test_review_uses_thinking_without_mutating_saved_settings_or_budgets(tmp_path):
     store=Store(tmp_path)
-    settings=dict(DEFAULT,thinking_disabled=True,max_tokens=1234,max_calls=2,timeout=17)
+    settings=dict(DEFAULT,budget_mode='fixed',thinking_disabled=True,max_tokens=1234,max_calls=2,timeout=17)
     store.setting('model',settings)
     workflow=Workflow(store,Provider())
     review=workflow.config('review')
@@ -21,7 +21,7 @@ def test_review_uses_thinking_without_mutating_saved_settings_or_budgets(tmp_pat
 def test_explicit_optout_and_other_providers_keep_their_config(tmp_path):
     store=Store(tmp_path)
     workflow=Workflow(store,Provider())
-    for config in (dict(DEFAULT,review_thinking=False),
+    for config in (dict(DEFAULT,budget_mode='fixed',review_thinking=False),
                    dict(DEFAULT,base_url='https://synthetic-provider.example',review_thinking=True)):
         store.setting('model',config)
         assert workflow.config('review')==config
@@ -40,6 +40,7 @@ def test_truncated_review_pauses_once_and_keeps_previous_result(tmp_path):
     from tests.helpers import prepared
     from tests.product_flow_helpers import check_prepared
     store=Store(tmp_path)
+    store.setting('model',dict(DEFAULT,budget_mode='fixed'))
     p=prepared(store)
     p=check_prepared(store,p['id'],through=3)
     with store.edit(p['id'],p['revision'],'Synthetic review authorization',bump=False) as (draft,_):

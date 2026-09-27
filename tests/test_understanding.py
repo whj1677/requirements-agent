@@ -108,17 +108,17 @@ def test_answer_ref_error_identifies_candidate_question_target_and_correct_struc
     assert caught.value.code=='REFERENCE_INVALID'
     for text in ('TMP-rule-answer','RULE-old','Q-answered','REQ-old','source_refs','related_refs'):
         assert text in caught.value.message
-    assert 'kind=requirement、action=revise' in contract()['answer_binding']
-    assert 'rule修订和新增acceptance不写answer_refs' in SCHEMA['$defs']['Proposal']['properties']['answer_refs']['description']
+    assert '原requirement/rule/acceptance' in contract()['answer_binding']
+    assert '新增acceptance等action=add条目不写answer_refs' in SCHEMA['$defs']['Proposal']['properties']['answer_refs']['description']
 
 
 def test_legacy_rule_candidate_cannot_mark_requirement_answer_applied():
     from app.understanding import accept_answer_update
     from app.core import digest
-    question=dict(id='Q',status='answered',answer='保留字段',related_refs=['REQ','RULE'],understanding_status='pending')
+    question=dict(id='Q',status='answered',answer='保留字段',related_refs=['REQ'],understanding_status='pending')
     project=dict(items=[dict(id='REQ',kind='requirement'),dict(id='RULE',kind='rule')],questions=[question])
-    candidate=dict(kind='rule',target_item_id='RULE',answer_refs=['Q'],answer_versions={'Q':digest(question['answer'])})
-    with pytest.raises(Problem,match='原需求修订'):
+    candidate=dict(kind='rule',action='revise',target_item_id='RULE',answer_refs=['Q'],answer_versions={'Q':digest(question['answer'])})
+    with pytest.raises(Problem,match='直接关联'):
         accept_answer_update(project,candidate)
     assert question['understanding_status']=='pending' and 'applied_requirement_ids' not in question
 
@@ -133,7 +133,7 @@ def test_answer_revision_requires_explicit_acceptance_and_latest_answer(tmp_path
     question=p['questions'][0];question.update(blocking=True)
     record_answer(question);question.update(status='answered',answer='预先准备：允许相接。')
     assert any('修订仍待核对' in s for s in missing(p,3))
-    candidate=dict(id='C',target_item_id='REQ-0001',answer_refs=[question['id']])
+    candidate=dict(id='C',kind='requirement',action='revise',target_item_id='REQ-0001',answer_refs=[question['id']])
     annotate_candidates(p,[candidate])
     assert question['understanding_status']=='candidate_ready' and '允许相接' not in p['items'][0]['statement']
     accept_answer_update(p,candidate)
@@ -152,7 +152,7 @@ def test_shared_answer_requires_each_affected_requirement_update():
     from app.understanding import annotate_candidates,accept_answer_update,record_answer
     question=dict(id='Q',related_refs=['R1','R2'],answer='合成回答',status='answered')
     p=dict(questions=[question],items=[dict(id=r,kind='requirement') for r in ('R1','R2')])
-    candidates=[dict(target_item_id=r,answer_refs=['Q']) for r in ('R1','R2')]
+    candidates=[dict(kind='requirement',action='revise',target_item_id=r,answer_refs=['Q']) for r in ('R1','R2')]
     annotate_candidates(p,candidates)
     accept_answer_update(p,candidates[0])
     assert question['understanding_status']=='candidate_ready'

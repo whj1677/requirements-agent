@@ -28,7 +28,8 @@ def documents(tmp_path):
     return p
 
 
-def test_review_fits_two_documents_without_losing_current_or_frozen_text(tmp_path):
+@pytest.mark.parametrize('stage',['review','clarify'])
+def test_review_fits_two_documents_without_losing_current_or_frozen_text(tmp_path,stage):
     p=documents(tmp_path)
     # Full historical responses and snapshots used to exceed context without even
     # sending a request. They repeat facts already present in current structures.
@@ -36,10 +37,11 @@ def test_review_fits_two_documents_without_losing_current_or_frozen_text(tmp_pat
     old=p['items'][0]['statement']
     p['items'][0]['statement']='当前规则已变：只有授权管理员能够维护电价时段。'
     before=copy.deepcopy(p)
-    messages,excerpts,omitted=assemble(p,'review','',dict(DEFAULT,max_tokens=16000),tmp_path)
+    messages,excerpts,omitted=assemble(p,stage,'',dict(DEFAULT,max_tokens=16000),tmp_path)
     text=dumps(messages);ctx=json.loads(messages[1]['content'][0]['text'])
     assert p==before
-    assert 'REPEATED_OLD_ARTIFACT' not in text and 'OLD_SUMMARY' not in text
+    assert 'REPEATED_OLD_ARTIFACT' not in text
+    if stage=='review':assert 'OLD_SUMMARY' not in text
     assert old in text and p['items'][0]['statement'] in text
     assert '相接边界允许。' in text
     assert '不得被程序静默删除' in ctx['documents']['mrd']['content']['sections'][0]['blocks'][-1]['text']
@@ -65,7 +67,10 @@ def test_review_schema_is_self_contained_and_cannot_propose_mutations():
 
 def test_review_still_refuses_to_truncate_large_current_facts(tmp_path):
     p=documents(tmp_path)
-    p['items'][0]['statement']='必须保留的当前规范原文'*22000
+    # Sized from the configured budget so the contract (refuse, never truncate)
+    # survives budget changes; literal 22000 was pinned to the old 180000 default.
+    repeat=DEFAULT['context_chars']//11+1000
+    p['items'][0]['statement']='必须保留的当前规范原文'*repeat
     with pytest.raises(Problem) as error:
         assemble(p,'review','',DEFAULT,tmp_path)
     assert error.value.code=='BUDGET_EXHAUSTED'

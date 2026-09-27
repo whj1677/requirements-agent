@@ -68,7 +68,7 @@ def test_real_image_block_and_capability(tmp_path):
     with pytest.raises(Problem,match='视觉'):assemble(p,'vision','',config,tmp_path)
 
 def test_context_preserves_rules_or_refuses(tmp_path):
-    store=Store(tmp_path);p=prepared(store);config=dict(DEFAULT,context_chars=100)
+    store=Store(tmp_path);p=prepared(store);config=dict(DEFAULT,budget_mode='fixed',context_chars=100)
     with pytest.raises(Problem,match='关键底稿'):assemble(p,'clarify','',config,tmp_path)
 
 def test_questions_not_repeated_and_candidate_not_auto_approved(tmp_path):

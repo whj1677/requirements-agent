@@ -3,8 +3,8 @@ import copy
 import json
 import jsonschema
 
-from .contracts import SCHEMA
-from .core import digest, require
+from .contracts import SCHEMA, VALIDATOR
+from .core import digest, dumps, require
 
 
 def schema():
@@ -204,7 +204,97 @@ def response_anchor(value, excerpts, stage):
     return locked
 
 
-def preserve_response(anchor, value, excerpts, stage):
+TEMPORARY_REFERENCE_FIELDS = frozenset(('related_refs','ref_ids','canonical_refs',
+    'proposed_item_refs','reviewed_refs','impacted_refs','unimpacted_refs',
+    'requirement_refs','rule_ids','ac_ids'))
+STABLE_REFERENCE_FIELDS = frozenset(('target_item_id','target_question_id','source_id',
+    'excerpt_id','requirement_id','item_id','scope_ref','target_ref','id'))
+
+
+def temporary_id_repair(original, value, stage):
+    """Return an alpha-renamed original only for a pure temporary-ID syntax fix.
+
+    Stable IDs, all business text and non-reference values remain byte-for-byte
+    equal as JSON values. The original response and call evidence are untouched.
+    Anything outside this narrow proof falls back to the usual repair guard.
+    """
+    if not isinstance(original,dict) or not isinstance(value,dict):return None
+    if original.get('stage')!=stage or value.get('stage')!=stage:return None
+    if not VALIDATOR.is_valid(value):return None
+
+    def declarations(response):
+        rows={}
+        for key,definition in (('proposals','Proposal'),('questions','Question')):
+            for index,row in enumerate(response.get(key,[])):
+                if not isinstance(row,dict):return None
+                properties=SCHEMA['$defs'][definition]['properties']
+                rows[(key,index,'temp_id')]=(row.get('temp_id'),properties['temp_id'])
+                if key=='questions':
+                    for child_index,child in enumerate(row.get('decision_points',[])):
+                        if not isinstance(child,dict):return None
+                        rule=properties['decision_points']['items']['properties']['temp_id']
+                        rows[(key,index,'decision_points',child_index,'temp_id')]=(child.get('temp_id'),rule)
+        return rows
+
+    # Before traversing malformed arrays, exclude every non-ID schema defect.
+    errors=list(VALIDATOR.iter_errors(original))
+    if not errors or any(e.validator not in ('pattern','maxLength')
+                         or not e.absolute_path or e.absolute_path[-1]!='temp_id' for e in errors):
+        return None
+    before=declarations(original);after=declarations(value)
+    if before is None or after is None or before.keys()!=after.keys():return None
+    if any(tuple(e.absolute_path) not in before for e in errors):return None
+    old_ids=[row[0] for row in before.values()]
+    new_ids=[row[0] for row in after.values()]
+    if any(not isinstance(i,str) for i in old_ids+new_ids):return None
+    if len(old_ids)!=len(set(old_ids)) or len(new_ids)!=len(set(new_ids)):return None
+    mapping={}
+    for path,(old,rule) in before.items():
+        new=after[path][0]
+        if old==new:continue
+        validator=jsonschema.Draft202012Validator(rule)
+        prefix='TMP-' if path[0]=='proposals' else 'QTMP-'
+        if not old.startswith(prefix) or validator.is_valid(old) or not validator.is_valid(new):return None
+        mapping[old]=new
+    if not mapping:return None
+
+    def original_references(node):
+        if isinstance(node,list):
+            for child in node:yield from original_references(child)
+        elif isinstance(node,dict):
+            for key,child in node.items():
+                if key in TEMPORARY_REFERENCE_FIELDS or key=='answer_refs':
+                    if isinstance(child,list):yield from (ref for ref in child if isinstance(ref,str))
+                elif key in STABLE_REFERENCE_FIELDS and isinstance(child,str):yield child
+                yield from original_references(child)
+
+    # A newly named temporary ID must not capture an existing stable reference.
+    existing=set(original_references(original)) | set(old_ids)
+    if set(mapping.values()) & (existing-set(mapping)):return None
+    normalized=copy.deepcopy(original)
+    for path in before:
+        node=normalized
+        for segment in path[:-1]:node=node[segment]
+        node['temp_id']=mapping.get(node['temp_id'],node['temp_id'])
+
+    def rewrite_references(node):
+        if isinstance(node,list):
+            for child in node:rewrite_references(child)
+        elif isinstance(node,dict):
+            for key,child in node.items():
+                if key in TEMPORARY_REFERENCE_FIELDS and isinstance(child,list):
+                    node[key]=[mapping.get(ref,ref) if isinstance(ref,str) else ref for ref in child]
+                else:rewrite_references(child)
+
+    rewrite_references(normalized)
+    return normalized if dumps(normalized)==dumps(value) else None
+
+
+def preserve_response(anchor, value, excerpts, stage, original=None):
+    if original is not None and anchor==response_anchor(original,excerpts,stage):
+        normalized=temporary_id_repair(original,value,stage)
+        if normalized is not None:
+            anchor=response_anchor(normalized,excerpts,stage)
     current=response_anchor(value,excerpts,stage)
     changed=[list(path) for path,original in anchor.items() if current.get(path)!=original]
     require(not changed,'SEMANTIC_BLOCKED',

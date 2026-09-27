@@ -27,6 +27,7 @@ def question_open(q):
 
 def clarification_focus(p):
     """Expose candidate gaps without treating a proposal as an adopted requirement."""
+    from .understanding import answer_targets
     scope = p.get('product_context', {}).get('scope_ids')
     reqs = [i for i in p['items'] if i['kind'] == 'requirement' and i['applies_to'] == 'to_be'
             and i['selection_status'] in ('candidate', 'selected') and not i.get('target_item_id')
@@ -56,7 +57,8 @@ def clarification_focus(p):
             adoption.append(rid + ' 的关联验收候选尚待人工采纳。')
     return dict(requirements=rows, content_gaps=gaps, adoption_gaps=adoption,
                 answer_revision_targets=[dict(question_id=q['id'], requirement_ids=[r['id'] for r in reqs
-                                              if r['id'] in q.get('related_refs', [])])
+                                              if r['id'] in q.get('related_refs', [])],
+                                              item_ids=[i['id'] for i in answer_targets(p,q)])
                                          for q in p['questions'] if q['status'] == 'answered'
                                          and q.get('understanding_status') != 'applied'],
                 unresolved_questions=[q['id'] for q in p['questions'] if question_open(q)],
@@ -104,9 +106,11 @@ def missing(p, step):
         if not reqs:issues.append('请明确采纳至少一条本期功能或可独立验证的非功能需求。')
         unselected=set(ctx.get('scope_ids',[]))-{i['id'] for i in reqs}
         if unselected:issues.append('本期范围内仍有需求未明确采纳：'+'、'.join(sorted(unselected)))
-        issues += [q['id']+' 已保存回答，关联需求修订仍待核对采纳' for q in p['questions']
+        from .requirements import delivery_items
+        clause_ids={i['id'] for i in delivery_items(p) if i['kind'] in TRACKED}
+        issues += [q['id']+' 已保存回答，关联条款修订仍待核对采纳' for q in p['questions']
                    if q.get('understanding_status') in ('pending','candidate_ready') and q.get('blocking')
-                   and set(q.get('related_refs',[])) & {i['id'] for i in reqs}]
+                   and set(q.get('related_refs',[])) & clause_ids]
         for req in reqs:
             absent=[label for key,label in BEHAVIOR.items() if not str(req.get('behavior',{}).get(key,'')).strip()]
             if absent:issues.append(req['id']+' 尚缺：'+'、'.join(absent)+'；确实不适用的维度应说明原因。')

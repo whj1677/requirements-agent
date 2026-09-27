@@ -11,6 +11,7 @@ from .requirements import TRACKED, namespace, requirement_ref, delivery_items
 from .product_flow import execution_issues
 from . import ingest
 from .understanding import question_ids, save_questions, annotate_candidates
+from .budgets import stage_config, output_ceiling, check_context, policy_summary
 
 PREFIX = {'requirement':'REQ','rule':'RULE','acceptance':'AC','ui_decision':'UID','goal':'GOAL','actor':'ROLE'}
 
@@ -90,7 +91,7 @@ class Workflow:
         self.tasks = {}
 
     def config(self, stage):
-        config=copy.deepcopy(self.store.setting('vision' if stage == 'vision' else 'model') or DEFAULT)
+        config=stage_config(dict(DEFAULT, **(self.store.setting('vision' if stage == 'vision' else 'model') or {})), stage)
         # Part of the authorized plan/config snapshot, never changed mid-request.
         if stage=='review' and origin(config)=='https://api.deepseek.com':
             config['thinking_disabled']=not config.get('review_thinking',True)
@@ -120,8 +121,10 @@ class Workflow:
         repair_parent = None
         pending_repair = False
         repair_anchor = None
-        # Snapshot approved max_tokens; every retry remains inside the same ceiling.
+        repair_original = None
+        # Both initial output and the one permitted escalation are frozen in the plan.
         out_budget = config['max_tokens']
+        escalated = False
         attempts, events = [], []
         try:
             require(self.provider.key(config), 'CONFIG_MISSING', '请先在模型设置中配置此接收端的 Key')
@@ -131,7 +134,8 @@ class Workflow:
             messages, excerpts, omitted = assemble(p, run['stage'], run['message'], config, self.store.folder, run['document_type'], run.get('generation_target'), pending_images_only=bool(run.get('user_task_id')))
             import json
             header=json.loads(messages[0]['content'].split('可信任务头：',1)[1])
-            authorization=dict(user_task_id=run.get('user_task_id'),run_id=rid,approved_max_tokens=out_budget,
+            authorization=dict(user_task_id=run.get('user_task_id'),run_id=rid,approved_max_tokens=output_ceiling(config),
+                initial_max_tokens=out_budget,budget_policy=policy_summary(config),
                 approved_max_calls=config['max_calls'],config_hash=digest(run['provider']),
                 prompt_hash=digest(messages[0]['content'].split('可信任务头：',1)[0]),schema_hash=digest(header['schema']),
                 profile_hash=digest(header.get('content_profile')),input_revision=p['revision'],assembly_version='prd-plan-2' if run['stage']=='prd' else 'runtime-1.1')
@@ -140,7 +144,7 @@ class Workflow:
                 state = self.store.get_record(pid, rid, 'run')
                 require(state['status'] != 'cancelled', 'CANCELLED', '任务已取消；已发请求仍可能计费')
                 require(calls < config['max_calls'] and time.monotonic()-started < config['action_seconds'], 'BUDGET_EXHAUSTED', '动作预算耗尽；保存进度，可明确续跑')
-                require(len(dumps(messages))+out_budget*4<=config['context_chars'],'BUDGET_EXHAUSTED','输入及修复上下文超过批准预算；已暂停，不能截断关键底稿')
+                check_context(messages, config)
                 if pending_repair:
                     repair_count += 1
                     pending_repair = False
@@ -149,7 +153,7 @@ class Workflow:
                 evidence = ModelCallEvidence(self.store.folder, call_id, rid, run['stage'],
                                              config['model'], origin(config), repair_parent,
                                              self.provider.key(config))
-                evidence.request_context(config,messages,authorization,input_metrics(messages))
+                evidence.request_context(dict(config,max_tokens=out_budget),messages,authorization,input_metrics(messages))
                 attempt = dict(call=calls, call_id=call_id, repair_of=repair_parent,max_tokens=out_budget,
                     authorization_hash=digest(authorization),actual_input_hash=digest(messages))
                 events.append(dict(time=now(), phase='调用模型', call=calls, call_id=call_id))
@@ -168,7 +172,7 @@ class Workflow:
                             ingest.preserve(repair_anchor, value, excerpts)
                     validate_response(value, run['stage'], p, excerpts, run['document_type'])
                     if repair_anchor is not None and run['stage'] in ('clarify','change','brainstorm','review'):
-                        ingest.preserve_response(repair_anchor,value,excerpts,run['stage'])
+                        ingest.preserve_response(repair_anchor,value,excerpts,run['stage'],original=repair_original)
                     evidence.finish('accepted', round(time.monotonic()-call_started, 3))
                     attempt['validation_result']='accepted'
                     attempt['evidence_limitations']=evidence.limitations[:]
@@ -184,7 +188,13 @@ class Workflow:
                     attempts.append(attempt)
                     self.store.update_run(pid, rid, attempts=attempts)
                     if run['stage']=='review' and e.code=='OUTPUT_TRUNCATED':
-                        raise Problem('BUDGET_EXHAUSTED','审查输出达到批准的 token 上限；未保存不完整结论。请核对输出预算或缩小范围后重新发起审查，当前任务不会自动提额。')
+                        if not escalated and out_budget < output_ceiling(config):
+                            escalated = True
+                            out_budget = output_ceiling(config)
+                            repair_parent = call_id
+                            events.append(dict(time=now(),phase=f'审查输出截断，按已批准策略提高到 {out_budget} tokens 后重试一次；输入范围保持不变',call=calls))
+                            continue
+                        raise Problem('BUDGET_EXHAUSTED','审查输出达到本轮允许上限；不完整结论未采纳。请按业务主题缩小范围或调整策略后重试。')
                     if e.code in ('NETWORK_ERROR','TIMEOUT','RATE_LIMITED','PROVIDER_ERROR') and retries < 2:
                         retries += 1
                         await asyncio.sleep(min(retries, 2))
@@ -199,6 +209,7 @@ class Workflow:
                                     '失败输出不是可完整读取的 JSON 对象，无法验证业务保真；原始证据已保存，不能作为格式修复重写')
                             if repair_anchor is None:
                                 repair_anchor=ingest.response_anchor(anchor_value,excerpts,run['stage'])
+                                repair_original=copy.deepcopy(anchor_value)
                                 require(repair_anchor,'SEMANTIC_BLOCKED',
                                         '失败输出没有可验证的业务锚点；原始证据已保存，不能作为格式修复重写')
                                 self.store.update_run(pid,rid,repair_anchor_hash=ingest.anchor_hash(repair_anchor))
@@ -221,6 +232,12 @@ class Workflow:
                     if e.code=='OUTPUT_TRUNCATED':
                         raise Problem('BUDGET_EXHAUSTED','输出仍截断，已暂停；未提高批准的单请求上限，请重新决定范围或预算')
                     raise e
+                except asyncio.CancelledError:
+                    evidence.finish('CANCELLED', round(time.monotonic()-call_started, 3))
+                    attempt.update(error='CANCELLED', validation_result='CANCELLED',
+                                   evidence_limitations=evidence.limitations[:])
+                    attempts.append(attempt)
+                    raise Problem('CANCELLED','任务已取消；本地已停止等待，接收端已发请求仍可能计费')
                 except Exception:
                     evidence.finish('INTERNAL_ERROR', round(time.monotonic()-call_started, 3))
                     attempt.update(error='INTERNAL_ERROR', validation_result='INTERNAL_ERROR',
@@ -273,10 +290,17 @@ class Workflow:
                     cost=sum((u['prompt_tokens']*config['input_price']+u['completion_tokens']*config['output_price'])/1000000 for u in usages)
             status = 'partial' if omitted or value['limitations'] or any(s['parse_status'] in ('failed','partial','office_required','permission_denied') for s in p['sources'] if not s['excluded']) else ('awaiting_user' if value['questions'] else 'succeeded')
             self.store.update_run(pid, rid, status=status, calls=calls, attempts=attempts, completed=now(), response=value, result_applied=True, cost=cost, repair_count=repair_count, output_state_hash=execution_hash(output_state), events=events + [dict(time=now(),phase='校验并保存')])
+        except asyncio.CancelledError:
+            self.store.update_run(pid,rid,status='cancelled',error='CANCELLED',message='任务已取消；未采纳后续结果',calls=calls,attempts=attempts,events=events,completed=now())
         except Exception as e:
             error = e if isinstance(e, Problem) else Problem('INTERNAL_ERROR', '处理失败：' + type(e).__name__)
             state = 'cancelled' if error.code == 'CANCELLED' else 'paused_budget' if error.code == 'BUDGET_EXHAUSTED' else 'failed'
             self.store.update_run(pid, rid, status=state, error=error.code, message=error.message, calls=calls, attempts=attempts, repair_count=repair_count, events=events, completed=now())
+
+    def cancel(self, pid, rid):
+        self.store.update_run(pid,rid,status='cancelled',message='任务已取消；已发请求仍可能计费')
+        task=self.tasks.get(rid)
+        if task is not None:task.cancel()
 
 
 def confirm(store, pid, body):

@@ -3,13 +3,14 @@ import copy
 import unicodedata
 import re
 from .core import require, now, digest
+from .requirements import TRACKED
 
 
 def contract():
     return dict(version='understanding-1',
         classification='功能需求需分别表达现状/current、变化/change、保持/preserve；scope_evidence逐条引用本次真实片段的原文quote及source_ref。current+change=modified，只有change=new，只有preserve=preserved，只有current=existing；没有充分依据则unspecified。一个功能的权限、分页、排序等保持性约束可写在该功能的behavior或关联rule中供PM核对，不要把每个字段维度机械拆成独立requirement；单条requirement的scope_evidence不得混写change与preserve状态，也不得把保持内容说成新增。引用原句同时含变化和保持时保留原文，change_type只对应本条statement的变化身份。classification_reason说明判定依据及未知。applies_to=as_is仅用于existing。原条目变化用revise/target_item_id，不新建同义编号。',
         questions='一个问题只问一个可独立回答的决定。复合问题必须列出decision_points（完整Question对象，各自独立temp_id/topic_key/关联需求/阻塞属性），程序展开为独立回答。拆分已有未答问题使用target_question_id；原问题保留为分组记录，不能拆掉已有回答。已答问题若问题文字或风险条件发生变化，不能假定原答案仍适用；材料已回答的事项不要再次提问，编号错字记findings。',
-        answer_binding='answer_refs只用于基于已保存回答提出原requirement修订：kind=requirement、action=revise、target_item_id为该问题related_refs中的原requirement ID；不得把answer_refs写在rule修订或新建acceptance上。rule/acceptance若引用回答事实，使用本轮真实回答片段的source_refs，并用related_refs关联原requirement；新验收仍为action=add且target_item_id=null。保留原需求编号与内容，回答不会自动采纳候选。',
+        answer_binding='answer_refs只用于基于已保存回答修订该问题直接关联的原requirement/rule/acceptance：action=revise、target_item_id为该问题related_refs中的原条目ID，kind必须与目标一致，不能指向另一修订候选。使用本轮真实回答片段的source_refs说明依据；新增acceptance等action=add候选不得填写answer_refs，其回答依据放source_refs并用related_refs关联原需求。保留原条目编号与内容，回答不会自动采纳候选；所有直接关联条目的修订明确采纳后才闭环。',
         question_shape='普通单问题省略decision_points或写空数组[]；不能写仅含一个子项的数组。只有确有两项及以上独立决定时才用decision_points分组，每个子项都要是完整Question。',
         single_question_example=dict(temp_id='QTMP-example',topic_key='example',question='一个待决定的问题？',why='影响实现或验收',
             options=[],blocking=True,related_refs=['实际需求ID'],source_refs=[],decision_points=[]),
@@ -17,7 +18,19 @@ def contract():
         classification_example=dict(change_type='new',scope_evidence=[dict(state='change',quote='本轮真实片段的原文',
             source_ref=dict(source_id='实际来源ID',excerpt_id='实际片段ID'))],classification_reason='依据所引变化原文'),
         revision_identity='action=revise 表示修订需求记录，change_type 表示本期功能相对真实系统现状的变化，两者独立。补齐一个尚未实现的新增功能的回答或验收，仍是 new；不能因底稿里已经有该候选就变成 modified。只有来源同时说明该功能已有行为和本期改动，才是 modified。原候选、上轮模型输出和本次修订动作都不是 current 的业务现状证据。scope_evidence 的 quote 必须来自同一片段的连续原文，不拼接省略句。',
-        boundaries='每个问题关联实际requirement。回答只解除该决定的未知，关联业务条款更新需明确采纳修订候选；selected不代表正式业务批准。')
+        boundaries='每个问题关联实际requirement、rule或acceptance。回答只解除该决定的未知，关联业务条款更新需明确采纳修订候选；selected不代表正式业务批准。')
+
+
+def answer_targets(p,q):
+    """Only the directly bound original clauses can discharge this decision."""
+    return [i for i in p['items'] if i['kind'] in TRACKED and not i.get('target_item_id')
+            and i['id'] in q.get('related_refs',[])]
+
+
+def answer_target(p,q,candidate):
+    return next((i for i in answer_targets(p,q)
+                 if i['id']==candidate.get('target_item_id')
+                 and i['kind']==candidate.get('kind') and candidate.get('action')=='revise'),None)
 
 
 def leaves(questions):
@@ -99,14 +112,12 @@ def validate(value,p,excerpts):
             q=next((q for q in p['questions'] if q['id']==qid),None)
             identity=i['temp_id']+' ('+i['kind']+'/'+i['action']+', target_item_id='+str(i['target_item_id'])+')'
             allowed='、'.join(q.get('related_refs',[])) if q else '无（问题不存在）'
-            advice='；仅原requirement的revise候选使用answer_refs；rule/acceptance请移除answer_refs，使用真实回答片段的source_refs并以related_refs关联原需求，保留业务内容'
+            advice='；answer_refs仅用于该问题related_refs中原requirement/rule/acceptance的同kind revise候选；新增条目使用真实回答片段的source_refs，不能以新增条目代替原条款修订'
             require(q is not None and q['status']=='answered','REFERENCE_INVALID',
                     identity+' 的 answer_refs='+qid+' 没有已保存回答；允许目标='+allowed+advice)
-            require(i['kind']=='requirement' and i['action']=='revise'
-                    and i['target_item_id'] in q.get('related_refs',[])
-                    and any(old['id']==i['target_item_id'] and old['kind']=='requirement' for old in p['items']),
+            require(answer_target(p,q,i) is not None,
                     'REFERENCE_INVALID',identity+' 的 answer_refs='+qid+' 目标不在该问题关联范围；允许目标='+allowed+advice)
-    req_ids={i['id'] for i in p['items'] if i['kind']=='requirement'}|{i['temp_id'] for i in value['proposals'] if i['kind']=='requirement'}
+    item_ids={i['id'] for i in p['items'] if i['kind'] in TRACKED}|{i['temp_id'] for i in value['proposals'] if i['kind'] in TRACKED}
     seen=set()
     for parent in value['questions']:
         target=parent.get('target_question_id')
@@ -120,7 +131,7 @@ def validate(value,p,excerpts):
             require(q['temp_id'] not in seen,'REFERENCE_INVALID','拆分问题temp_id重复');seen.add(q['temp_id'])
             # Existing unbound historical questions remain readable, but new split decisions must be bound.
             if parent.get('decision_points'):
-                require(bool(req_ids & set(q['related_refs'])),'REFERENCE_INVALID','拆分问题必须关联实际需求')
+                require(bool(item_ids & set(q['related_refs'])),'REFERENCE_INVALID','拆分问题必须关联实际需求、规则或验收条目')
                 require(not (parent['blocking'] and not q['blocking']),'SEMANTIC_BLOCKED','拆分不能降低重要未知的阻塞属性')
             if old:
                 require(not old['blocking'] or (q['blocking'] and q.get('blocking_stage',3)<=old.get('blocking_stage',3)),
@@ -157,8 +168,9 @@ def record_answer(q):
     if q.get('answer') is not None:
         q.setdefault('answer_history',[]).append({k:copy.deepcopy(q.get(k)) for k in ('answer','answered_at','answer_source_refs')})
     q['understanding_status']='pending'
+    q['applied_item_ids']=[]
     q['applied_requirement_ids']=[]
-    q['answer_effect']='回答已保存，关联需求仍待核对更新'
+    q['answer_effect']='回答已保存，关联条款仍待核对更新'
 
 
 def annotate_candidates(p,items):
@@ -172,17 +184,24 @@ def annotate_candidates(p,items):
 
 
 def accept_answer_update(p,candidate):
-    for q in p['questions']:
-        if q['id'] in candidate.get('answer_refs',[]):
-            require(any(i['id']==candidate.get('target_item_id') and i['kind']=='requirement'
-                        for i in p['items']) and candidate.get('target_item_id') in q.get('related_refs',[]),
-                    'REFERENCE_INVALID','回答只能应用于该问题关联的原需求修订')
-            require(candidate.get('answer_versions',{}).get(q['id'])==digest(q.get('answer')),
-                    'STALE_ANSWER','回答已变化，请根据最新回答重新生成修订候选',409)
-            affected={i['id'] for i in p['items'] if i['kind']=='requirement' and i['id'] in q.get('related_refs',[])}
-            applied=set(q.get('applied_requirement_ids',[])) | {candidate['target_item_id']}
-            remaining=affected-applied
-            q['applied_requirement_ids']=sorted(applied)
-            q.update(understanding_status='candidate_ready' if remaining else 'applied',
-                answer_effect=('部分修订已采纳，仍需核对：'+'、'.join(sorted(remaining))) if remaining
-                else '已明确采纳基于此回答的关联需求修订；不代表正式确认')
+    refs=set(candidate.get('answer_refs',[]))
+    questions=[q for q in p['questions'] if q['id'] in refs]
+    require(len(questions)==len(refs),'REFERENCE_INVALID','修订候选关联的回答不存在')
+    # Validate every answer before mutating any state, including direct callers.
+    for q in questions:
+        require(q.get('status')=='answered' and answer_target(p,q,candidate) is not None,
+                'REFERENCE_INVALID','回答只能应用于该问题直接关联的原需求、规则或验收的同类修订')
+        require(candidate.get('answer_versions',{}).get(q['id'])==digest(q.get('answer')),
+                'STALE_ANSWER','回答已变化，请根据最新回答重新生成修订候选',409)
+    for q in questions:
+        targets=answer_targets(p,q)
+        affected={i['id'] for i in targets}
+        applied=(set(q.get('applied_item_ids',q.get('applied_requirement_ids',[])))
+                 | {candidate['target_item_id']}) & affected
+        remaining=affected-applied
+        q['applied_item_ids']=sorted(applied)
+        q['applied_requirement_ids']=sorted(i['id'] for i in targets
+                                            if i['kind']=='requirement' and i['id'] in applied)
+        q.update(understanding_status='candidate_ready' if remaining else 'applied',
+            answer_effect=('部分修订已采纳，仍需核对：'+'、'.join(sorted(remaining))) if remaining
+            else '已明确采纳基于此回答的关联条款修订；不代表正式确认')

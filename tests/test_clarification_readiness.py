@@ -33,12 +33,12 @@ def test_unadopted_candidate_content_gaps_reach_clarify(tmp_path):
     assert p == before
 
 
-def test_answer_application_targets_only_scoped_original_requirements(tmp_path):
+def test_answer_application_targets_include_directly_related_original_clauses(tmp_path):
     p = candidate_project(tmp_path)
     p['questions'][0].update(status='answered', answer='合成预定答案', related_refs=['REQ-0001', 'RULE-0001'])
     value = focus(p, tmp_path)
-    assert value['answer_revision_targets'] == [dict(question_id='Q-0001', requirement_ids=['REQ-0001'])]
-    assert '新增 acceptance 不填写 answer_refs' in value['instruction']
+    assert value['answer_revision_targets'] == [dict(question_id='Q-0001', requirement_ids=['REQ-0001'], item_ids=['REQ-0001','RULE-0001'])]
+    assert '新增条目不填写 answer_refs' in value['instruction']
 
 
 def test_candidate_acceptance_is_visible_but_does_not_satisfy_human_gate(tmp_path):
@@ -61,7 +61,7 @@ def test_applied_answer_is_not_requested_again_but_a_changed_answer_is(tmp_path)
     record_answer(question)
     question['answer']='人工修改后的答案'
     assert focus(p,tmp_path)['answer_revision_targets']==[
-        dict(question_id=question['id'],requirement_ids=['REQ-0001'])]
+        dict(question_id=question['id'],requirement_ids=['REQ-0001'],item_ids=['REQ-0001'])]
 
 
 @pytest.mark.parametrize('decision', ['rejected', 'deferred'])

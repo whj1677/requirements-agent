@@ -1,10 +1,13 @@
 import asyncio
 import copy
+import logging
 import hashlib
 import hmac
 import json
 import os
 import secrets
+import sys
+import time
 from pathlib import Path
 from typing import Literal
 from urllib.parse import urlsplit, quote
@@ -26,6 +29,7 @@ from .exports import document_files, handoff, zip_files
 from .document_reader import reader_document, export_readiness, filename
 from .product_flow import status as flow_status, checkpoint, INTAKE, SCOPE, BEHAVIOR, review_document, document_review_current
 from .requirements import exchange, requirement_ref, delivery_items
+from .budgets import MODEL_OUTPUT_LIMIT
 
 
 class Strict(BaseModel):
@@ -81,6 +85,9 @@ class Decision(Revision):
     statement: str | None = Field(default=None,min_length=1,max_length=6000)
     title: str | None = Field(default=None,min_length=1,max_length=200)
     change_type: Literal['new','modified','preserved','existing','unspecified'] | None = None
+
+class IncludeScope(Revision):
+    reason: str = Field(min_length=1,max_length=6000)
 
 class DirectionDecision(Revision):
     direction_status: Literal['selected','deferred','rejected']
@@ -155,8 +162,11 @@ class ModelConfig(Strict):
     json_mode: bool = True
     timeout: int = Field(default=120,ge=1,le=600)
     max_calls: int = Field(default=8,ge=1,le=30)
-    max_tokens: int = Field(default=16000,ge=100,le=50000)
-    context_chars: int = Field(default=180000,ge=10000,le=2000000)
+    max_tokens: int = Field(default=48000,ge=100,le=MODEL_OUTPUT_LIMIT)
+    budget_mode: Literal['function_first','fixed'] = 'function_first'
+    review_max_tokens: int = Field(default=65536,ge=100,le=MODEL_OUTPUT_LIMIT)
+    review_retry_max_tokens: int = Field(default=131072,ge=100,le=MODEL_OUTPUT_LIMIT)
+    context_chars: int = Field(default=520000,ge=10000,le=2000000)
     action_seconds: int = Field(default=300,ge=5,le=1800)
     thinking_disabled: bool = True
     review_thinking: bool = True
@@ -202,6 +212,28 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
             provider.env_origins[name] = endpoint
     workflow = Workflow(store, provider)
     actions = Actions(store, workflow)
+    export_jobs = set()
+    logger = logging.getLogger('uvicorn.error.requirements_agent')
+
+    async def export_work(operation):
+        # Timeout must not release capacity while the underlying worker is alive.
+        require(len(export_jobs)<2,'EXPORT_BUSY','正在生成导出文件，请等待当前任务完成后重试',409)
+        job=asyncio.create_task(asyncio.to_thread(operation))
+        export_jobs.add(job)
+        logger.info('export worker started; active=%s',len(export_jobs))
+        def finished(task):
+            export_jobs.discard(task)
+            if not task.cancelled() and task.exception() is not None:
+                error=task.exception()
+                logger.error('export worker failed: %s',type(error).__name__,
+                             exc_info=(type(error),error,error.__traceback__))
+            else:
+                logger.info('export worker finished; active=%s',len(export_jobs))
+        job.add_done_callback(finished)
+        try:
+            return await asyncio.wait_for(asyncio.shield(job),180)
+        except asyncio.TimeoutError:
+            raise Problem('EXPORT_TIMEOUT','导出等待超时，后台仍可能在处理；其他功能可继续使用，请稍后核对导出记录再重试',503)
     # Session token and customer device licensing are independent gates.
     if access_token is None and os.environ.get('RA_ACCESS_TOKEN')=='off':
         token=None
@@ -268,6 +300,18 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
         if not request.url.path.endswith('/prototype'):
             response.headers['Content-Security-Policy']="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
         return response
+
+    @app.middleware('http')
+    async def request_timing(request, call_next):
+        if not request.url.path.startswith('/api/'):
+            return await call_next(request)
+        started = time.monotonic()
+        try:
+            return await call_next(request)
+        finally:
+            elapsed = time.monotonic() - started
+            if elapsed > 10:
+                logger.warning('slow request %s %s %.1fs',request.method,request.url.path,elapsed)
 
     @app.post('/api/session/login')
     async def login(body: KeyInput):
@@ -546,6 +590,28 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
         with store.edit(pid,body.expected_revision,'重新读取材料，保留原记录') as (p,db):append_source(p,s)
         return s
 
+    @app.post('/api/projects/{pid}/items/{iid}/include-scope')
+    async def include_scope(pid:str,iid:str,body:IncludeScope):
+        require(body.reason.strip(),'SCOPE_REASON_REQUIRED','请填写将参考条款纳入本期的理由')
+        with store.edit(pid,body.expected_revision,'人工将参考条款纳入本期并采纳') as (p,db):
+            item=next((x for x in p['items'] if x['id']==iid),None)
+            require(item is not None,'NOT_FOUND','条目不存在',404)
+            require(item['kind'] in ('rule','acceptance') and item['applies_to']=='reference'
+                    and not item.get('target_item_id'),'SCOPE_INVALID','只支持将原始参考规则或验收条款明确纳入本期',409)
+            scope=set(p.get('product_context',{}).get('scope_ids',[]))
+            related=set(item.get('related_refs',[]))
+            require(any(i['kind']=='requirement' and i['id'] in scope and i['applies_to']=='to_be'
+                        and (i['id'] in related or iid in i.get('related_refs',[]))
+                        for i in p['items']), 'SCOPE_INVALID','请先关联已纳入本期范围的需求，再核对该条款',409)
+            source=save_source(store,'人工范围决定.txt',
+                f'明确将 {iid} 纳入本期并采纳原文：{item["statement"]}\n理由：{body.reason.strip()}'.encode('utf-8'),'goal')
+            p['sources'].append(source)
+            item['scope_decision']=dict(previous_applies_to='reference',previous_selection_status=item['selection_status'],
+                reason=body.reason.strip(),created=now(),source_id=source['id'],actor='local_user')
+            item['source_refs']=item.get('source_refs',[])+[dict(source_id=source['id'],excerpt_id=ex['id']) for ex in source['excerpts']]
+            item.update(applies_to='to_be',selection_status='selected')
+        return p
+
     @app.post('/api/projects/{pid}/items/{iid}')
     async def decide(pid:str,iid:str,body:Decision):
         with store.edit(pid,body.expected_revision,'人工编辑或采纳条目') as (p,db):
@@ -633,7 +699,7 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
     async def get_models():
         result={}
         for slot in ('model','vision'):
-            c=store.setting(slot) or dict(DEFAULT)
+            c=dict(DEFAULT, **(store.setting(slot) or {}))
             result[slot]=dict(c,**provider.key_status(c),proxy='已配置' if c.get('proxy') else '')
         return result
 
@@ -721,7 +787,7 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
         if r.get('user_task_id'):
             return actions.cancel(pid,r['user_task_id'])
         require(r['status'] in ('queued','running'),'RUN_FINISHED','此任务已结束')
-        store.update_run(pid,rid,status='cancelled',message='已取消；已发请求仍可能计费')
+        workflow.cancel(pid,rid)
         return {'status':'cancelled'}
 
     @app.post('/api/projects/{pid}/runs/{rid}/resume')
@@ -785,12 +851,23 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
             baseline=store.get_record(pid,p['active_baseline_id'],'baseline')
             if baseline['hashes']==hashes(p):
                 status='产品经理指定版本内容确认 · '+kind.upper()
-        files=await document_files(p,kind,status,reader=True)
-        import hashlib
-        store.record(pid,'document_export',dict(document_type=kind,document_artifact_id=artifact['id'],style_version='reader-2',generator_version='1.1',artifact_hashes={k:hashlib.sha256(v).hexdigest() for k,v in files.items()},asset_bindings=files['document_asset_bindings.json'].decode('utf8')))
         stem=filename(artifact)
-        public_files={(stem+Path(k).suffix if k in (kind.upper()+'.md',kind.upper()+'.docx') else k):v for k,v in files.items() if not k.endswith('.json')}
-        body=zip_files(public_files) if fmt=='zip' else files[kind.upper()+'.'+fmt]
+        def build_download():
+            logger.info('document export started %s %s',pid,kind)
+            files=asyncio.run(document_files(p,kind,status,reader=True))
+            public_files={(stem+Path(k).suffix if k in (kind.upper()+'.md',kind.upper()+'.docx') else k):v for k,v in files.items() if not k.endswith('.json')}
+            body=zip_files(public_files) if fmt=='zip' else files[kind.upper()+'.'+fmt]
+            record=dict(document_type=kind,document_artifact_id=artifact['id'],style_version='reader-2',generator_version='1.1',artifact_hashes={k:hashlib.sha256(v).hexdigest() for k,v in files.items()},asset_bindings=files['document_asset_bindings.json'].decode('utf8'))
+            with store.connect() as db:
+                db.execute('BEGIN IMMEDIATE')
+                current=store.get(pid,db)
+                require(current['documents'].get(kind,{}).get('id')==artifact['id'] and brief_hash(current)==brief_hash(p)
+                        and export_readiness(current,kind)['ready'],
+                        'STALE_DOCUMENT','导出期间内容发生变化，请重新核对当前文档',409)
+                store.record(pid,'document_export',record,db=db)
+            logger.info('document export completed %s %s',pid,kind)
+            return body
+        body=await export_work(build_download)
         disposition=f'attachment; filename="{kind.upper()}_v{artifact["draft_revision"]}.{fmt}"; '+"filename*=UTF-8''"+quote(stem+'.'+fmt)
         return Response(body,media_type='application/octet-stream',headers={'Content-Disposition':disposition})
 
@@ -800,7 +877,7 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
 
     @app.post('/api/projects/{pid}/exports')
     async def export(pid:str,body:ExportInput):
-        return handoff(store,pid,body.baseline_id,body.idempotency_key)
+        return await export_work(lambda:handoff(store,pid,body.baseline_id,body.idempotency_key))
 
     @app.get('/api/projects/{pid}/exports/{eid}')
     async def download_export(pid:str,eid:str):

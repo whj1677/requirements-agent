@@ -226,7 +226,7 @@ def compile_plan(plan, p, kind, omitted=(), *, include_sketch=True):
             related='\n'.join(items[r]['statement'] for r in q.get('related_refs',[]) if r in items)
             answer_sources=[s['id']+'/'+e['id'] for s in p['sources'] for e in s['excerpts'] if e['text']==q['answer']]
             applied=any(r in items and items[r].get('selection_status')=='selected'
-                        for r in q.get('applied_requirement_ids',[])) and q.get('understanding_status')=='applied'
+                        for r in q.get('applied_item_ids',q.get('applied_requirement_ids',[]))) and q.get('understanding_status')=='applied'
             state='已应用于当前草稿条款' if applied else '已有回答，关联条款修订待核对采纳'
             questions.append(text(f'【{state}；不代表业务负责人批准】{q["question"]}\n回答：{q["answer"]}\n回答来源：'+('、'.join(answer_sources) or '未找到独立回答来源，见问题记录')+f'\n关联条目当前快照：{related or "无关联条目"}'+provenance(q),[q['id']]))
         else:

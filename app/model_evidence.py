@@ -7,6 +7,7 @@ from pathlib import Path
 from .core import now, digest, dumps
 
 MAX_FINAL_CHARS = 100_000
+MAX_EVIDENCE_CHARS = 2_000_000
 
 
 class ModelCallEvidence:
@@ -15,6 +16,7 @@ class ModelCallEvidence:
         self.path = folder / 'evidence' / 'model-calls' / (call_id + '.json')
         self.secret = secret
         self.limitations = []
+        self.final_limit = MAX_FINAL_CHARS
         self.value = dict(call_id=call_id, run_id=run_id, stage=stage, model=model,
                           origin=origin, repair_of=repair_of, started_at=now(),
                           ended_at=None, elapsed_seconds=None, finish_reason=None,
@@ -38,8 +40,9 @@ class ModelCallEvidence:
         safe=raw.replace(self.secret,'[REDACTED]') if self.secret else raw
         safe=re.sub(r'Bearer\s+[^\s"\\]+|\bsk-[A-Za-z0-9_-]{8,}\b','[REDACTED]',safe,flags=re.I)
         if safe!=raw:self.limitations.append('request_input_redacted')
-        if len(safe)>1_000_000:
-            safe=safe[:1_000_000];self.limitations.append('request_input_truncated')
+        if len(safe)>MAX_EVIDENCE_CHARS:
+            safe=safe[:MAX_EVIDENCE_CHARS];self.limitations.append('request_input_truncated')
+        self.final_limit = min(MAX_EVIDENCE_CHARS,max(MAX_FINAL_CHARS,config['max_tokens']*4))
         self.value.update(max_tokens=config['max_tokens'],authorization=authorization,
             actual_input_hash=digest(messages),input_metrics=metrics,request_input=safe)
         self.value['evidence_limitations']=self.limitations[:]
@@ -59,13 +62,17 @@ class ModelCallEvidence:
             self.value['usage'] = {k:v for k,v in usage.items()
                                    if k in ('prompt_tokens','completion_tokens','total_tokens')
                                    and isinstance(v, int) and not isinstance(v, bool)}
+            details=usage.get('completion_tokens_details')
+            reasoning=details.get('reasoning_tokens') if isinstance(details,dict) else None
+            if isinstance(reasoning,int) and not isinstance(reasoning,bool) and reasoning>=0:
+                self.value['usage']['completion_tokens_details']={'reasoning_tokens':reasoning}
         if isinstance(content, str):
             redacted = content.replace(self.secret, '[REDACTED]') if self.secret else content
             redacted = re.sub(r'Bearer\s+\S+|\bsk-[A-Za-z0-9_-]{8,}\b', '[REDACTED]', redacted, flags=re.I)
             if redacted != content:
                 self.limitations.append('final_output_redacted')
-            if len(redacted) > MAX_FINAL_CHARS:
-                redacted = redacted[:MAX_FINAL_CHARS]
+            if len(redacted) > self.final_limit:
+                redacted = redacted[:self.final_limit]
                 self.limitations.append('final_output_truncated')
             self.value['final_output'] = redacted
         self.value['evidence_limitations'] = self.limitations[:]

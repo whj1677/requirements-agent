@@ -7,6 +7,7 @@ from .core import Problem, digest, dumps, execution_hash, ident, now, require
 from .provider import origin
 from .sources import save_source
 from .product_flow import execution_issues
+from .budgets import policy_summary
 
 LABELS = {'organize':'整理当前信息','explore':'探索可选方案','clarify':'根据回答更新理解',
           'prototype':'生成功能草图','document':'生成评审稿','review':'审查当前内容','change':'讨论修改方案'}
@@ -92,6 +93,7 @@ class Actions:
             missing=list(dict.fromkeys(blockers)),generation_target=target,
             open_questions=sum(q['status']!='answered' for q in p['questions']))
         result['target_label']=target_label
+        result['budget_policies']={stage:policy_summary(config) for stage,config in configs.items()}
         result['plan_hash']=digest(dict(input=execution_hash(p),request=body,configs=configs))
         return result
 
@@ -169,8 +171,11 @@ class Actions:
             problems=[s for s in p['sources'] if not s['excluded'] and s['parse_status']!='read']
             runs=[self.store.get_record(pid,rid,'run') for rid in ids]
             partial=bool(problems) or any(r['status']=='partial' for r in runs)
+            message='可用内容已处理，仍有资料或输出限制，请核对来源。' if partial else '本次内容已生成，请核对建议与未决问题。'
+            if body['action'] in ('clarify','change'):
+                message+=' 本次只生成讨论或修订候选，未直接改写文档；核对采纳后，请在文档页更新讨论稿。'
             self.store.update_record(pid,tid,'user_task',status='partial' if partial else 'succeeded',completed=now(),
-                message=('可用内容已处理，仍有资料或输出限制，请核对来源。' if partial else '本次内容已生成，请核对建议与未决问题。'),
+                message=message,
                 cost=sum(r['cost'] for r in runs) if all(r.get('cost') is not None for r in runs) else None)
         except Exception as error:
             error=error if isinstance(error,Problem) else Problem('INTERNAL_ERROR','任务处理失败，已有内容保留')
@@ -182,5 +187,5 @@ class Actions:
         self.store.update_record(pid,tid,'user_task',status='cancelled',message='已取消后续步骤；已发送请求可能计费')
         for rid in task['run_ids']:
             if self.store.get_record(pid,rid,'run')['status'] in ACTIVE:
-                self.store.update_run(pid,rid,status='cancelled')
+                self.workflow.cancel(pid,rid)
         return self.store.get_record(pid,tid,'user_task')

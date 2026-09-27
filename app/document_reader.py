@@ -148,7 +148,7 @@ def reader_document(artifact):
             elif question and section['title']=='已有回答与未决问题':
                 text = question['question']
                 if question['status']=='answered':
-                    applied=[r for r in question.get('applied_requirement_ids',[])
+                    applied=[r for r in question.get('applied_item_ids',question.get('applied_requirement_ids',[]))
                              if r in items and items[r].get('selection_status')=='selected']
                     if question.get('understanding_status')=='applied' and applied:
                         label='已应用于当前草稿条款的回答：'
