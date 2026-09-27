@@ -104,6 +104,10 @@ def build_reference_mapping(p, kind, sections, coverage, *, verified_context,
                 elif dimension_id == 'PRD-4.F.7' and scope:
                     destinations = behavior(scope, 'data')
                     evidence = '该功能的业务数据描述'
+                elif dimension_id in ('PRD-4.F.8', 'PRD-4.F.9') and scope:
+                    destinations = behavior(scope, 'exceptions')
+                    evidence = ('该功能实际成文的「边界和异常」描述；仅定位已有描述，'
+                                '不表示穷尽边界或异常，不证明技术错误码或性能验证；')
             else:
                 if dimension_id == 'MRD-1':
                     destinations = context('product', 'current_state')

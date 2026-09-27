@@ -8,6 +8,7 @@ from .requirements import delivery_items, item_content
 from .product_flow import INTAKE, SCOPE, status as flow_status
 
 NORMATIVE = ('requirement', 'rule', 'acceptance')
+DISCUSSION_APPENDIX_TITLE = '附录：条目身份与历史讨论'
 REFS = dict(type='array', items=dict(type='string', minLength=1, maxLength=120), maxItems=100, uniqueItems=True)
 SECTION_TITLES = {
     'background':'背景与现状', 'goal':'目标与价值', 'scope':'本期范围与边界',
@@ -73,25 +74,40 @@ def discussion_status(item):
 
 
 def plan_contract(p):
-    example=dict(plan_version='2',sections=[dict(section_key='background',context_refs=[],
-        normative_refs=[],discussion_refs=[])])
-    jsonschema.Draft202012Validator(PLAN_SCHEMA).validate(example)
-    return dict(version='prd-plan-contract-3',example=example,
-        section_keys=list(SECTION_TITLES),context_ref_ids=list(verified_context(p)),
-        normative_item_ids=[i['id'] for i in p['items'] if allowed(i,p)],
-        discussion_item_ids=[i['id'] for i in discussion_items(p) if not allowed(i,p)],
+    context_ids=list(verified_context(p))
+    normative_ids=[i['id'] for i in p['items'] if allowed(i,p)]
+    discussion_ids=[i['id'] for i in discussion_items(p) if not allowed(i,p)]
+    example=None
+    for key,field,refs in (('background','context_refs',context_ids),
+                           ('function','normative_refs',normative_ids),
+                           ('discussion','discussion_refs',discussion_ids)):
+        if refs:
+            section=dict(section_key=key,context_refs=[],normative_refs=[],discussion_refs=[])
+            section[field]=refs[:1]
+            example=dict(plan_version='2',sections=[section])
+            jsonschema.Draft202012Validator(PLAN_SCHEMA).validate(example)
+            break
+    return dict(version='prd-plan-contract-4',example=example,can_generate=example is not None,
+        example_notice='示例仅演示当前合法引用的结构，不是完整章节安排，也不作为失败回退产物。' if example else
+                       '当前没有可引用的已核对上下文或条目，不可生成章节建议；example=null，不得虚构 ID 或空章节。',
+        section_keys=[key for key in SECTION_TITLES if key!='limits'],context_ref_ids=context_ids,
+        normative_item_ids=normative_ids,discussion_item_ids=discussion_ids,
         rules='根节点只有且必须包含 plan_version=2、sections。'
         '所有 sections 元素只有且必须包含 section_key、context_refs、normative_refs、discussion_refs。'
         'section_key 只从 section_keys 选择；章节标题由程序生成。不得输出 title、narration、limitations 或任何自由业务文案。'
+        '每个章节至少包含一项当前有效引用；没有内容的章节直接省略，禁止空章节。context_refs 不得跨章节重复。'
         'context_refs 只能使用当前已核对 context_ref_ids；未核对的 product_context 不可引用。'
         'normative_refs 只能使用 normative_item_ids；白名单为空时必须全部为 []。'
-        'discussion_refs 只能使用 discussion_item_ids，程序统一移入未采纳与历史讨论附录，不与业务正文混排。问题、方案、来源 ID 不得放入这两个字段。'
-        '已有回答、未决问题、来源读取限制和未覆盖项由程序保留，不输出自由说明。'
-        '示例仅说明结构，不是本项目答案或失败回退产物。')
+        'discussion_refs 只能使用 discussion_item_ids，程序统一移入条目身份与历史讨论附录，逐条保留实际采纳状态与范围，不与规范正文混排。问题、方案、来源 ID 不得放入这两个字段。'
+        '已有回答、未决问题、来源读取限制和未覆盖项由程序保留，不输出 limits 占位章节或自由说明。'
+        'example 仅示范引用结构；can_generate=false 时不可生成，不把 null 或空结构当作章节建议。')
 
 
 def repair_instruction(error,p):
-    common='重新输出完整 v2 章节引用对象，只修结构或引用；不重选方向、不补答、不改规则或采纳状态。业务原文由程序回填。'
+    common=('重新输出完整 v2 章节引用对象，只修结构或引用；不重选方向、不补答、不改规则或采纳状态。业务原文由程序回填。'
+            '本轮检查全部章节，逐项对照 context_ref_ids、normative_item_ids、discussion_item_ids 三类当前白名单；'
+            '严格保留有效引用，不得改变规范身份，不把已选规范移入讨论，也不把候选升为规范。'
+            '省略空章节；context_refs 不得跨章节重复；限制与未决事项由程序保留，不输出 limits 占位章节。')
     instructions={
         'SCHEMA_INVALID':'按实际错误位置修复 JSON 和字段。根节点仅 plan_version、sections；每节仅 section_key、context_refs、normative_refs、discussion_refs；不添加 title、narration、limitations。',
         'REFERENCE_INVALID':'按错误位置、具体 ID 和实际对象类型修复引用。context_refs 仅取已核对字段；问题由程序保留，不能放入条目引用；不能修改底稿。',
@@ -214,11 +230,12 @@ def compile_plan(plan, p, kind, omitted=(), *, include_sketch=True):
         sid=section('补列的已核对事实与规范条款',blocks)
         for item in missing_normative:coverage[item['id']]=[sid]
     # Discussion is never interleaved with current normative body sections.
-    # Keep model-selected order first, then retain every other unselected item.
+    # Keep model-selected order first, then retain other non-normative items
+    # with their own selection/scope identity, including selected goals.
     appendix_ids=discussion_order+[i['id'] for i in p['items'] if i['id'] not in coverage
                   and i['id'] not in discussed and not represented_revision(i,items)]
     if appendix_ids:
-        sid=section('附录：未采纳与历史讨论（不作为本期要求）',[discussion(items[r]) for r in appendix_ids])
+        sid=section(DISCUSSION_APPENDIX_TITLE,[discussion(items[r]) for r in appendix_ids])
         discussion_locations={r:sid for r in appendix_ids}
     questions=[]
     for q in p['questions']:

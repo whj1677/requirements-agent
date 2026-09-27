@@ -116,7 +116,7 @@ def test_rejected_and_deferred_identical_business_keep_id_and_point_to_stable(tm
     r=compile_plan(value,p,'prd')
     apply_response(p,r)
     view=reader_document(p['documents']['prd'])
-    appendix=next(s for s in view['sections'] if s['title']=='附录：未采纳与历史讨论（不作为本期要求）')
+    appendix=next(s for s in view['sections'] if s['title']=='附录：条目身份与历史讨论')
     blocks={i['id']:[b['text'] for s in view['sections'] for b in s['blocks']
             if b['ref_ids']==[i['id']]] for i in copies}
     for item in copies:
@@ -184,7 +184,7 @@ def test_discussion_only_plan_places_candidate_in_explicit_appendix(tmp_path):
     plan=dict(plan_version='2',sections=[dict(section_key='discussion',context_refs=[],
         normative_refs=[],discussion_refs=[candidate['id']])])
     result=compile_plan(plan,p,'prd')['result']
-    appendix=next(s for s in result['sections'] if s['title']=='附录：未采纳与历史讨论（不作为本期要求）')
+    appendix=next(s for s in result['sections'] if s['title']=='附录：条目身份与历史讨论')
     assert [b['ref_ids'] for b in appendix['blocks']][0]==[candidate['id']]
     assert any(b['ref_ids']==['REQ-CANDIDATE'] for b in appendix['blocks'])
     assert all(candidate['id'] not in b['ref_ids'] for s in result['sections'] if s is not appendix
@@ -202,7 +202,7 @@ def test_old_artifact_moves_only_recognized_discussion_not_arbitrary_prose(tmp_p
     apply_response(p,result)
     artifact=p['documents']['prd']
     sections=artifact['content']['sections']
-    appendix=next(s for s in sections if s['title']=='附录：未采纳与历史讨论（不作为本期要求）')
+    appendix=next(s for s in sections if s['title']=='附录：条目身份与历史讨论')
     main=sections[0]
     main['blocks'].extend(appendix['blocks'])
     main['blocks'].append(dict(kind='narrative',ref_ids=[],
@@ -211,7 +211,7 @@ def test_old_artifact_moves_only_recognized_discussion_not_arbitrary_prose(tmp_p
     before=copy.deepcopy(artifact)
     view=reader_document(artifact)
     business=next(s for s in view['sections'] if s['section_id']==main['section_id'])
-    discussion=next(s for s in view['sections'] if s['title']=='附录：未采纳与历史讨论（不作为本期要求）')
+    discussion=next(s for s in view['sections'] if s['title']=='附录：条目身份与历史讨论')
     assert artifact==before
     assert any('此旧叙述须原样送审' in b['text'] for b in business['blocks'])
     assert not any(b['ref_ids']==[candidate['id']] for b in business['blocks'])
@@ -233,3 +233,49 @@ def test_answer_section_title_reflects_applied_and_open_questions(tmp_path):
                                                question='仍需决定的边界？',superseded_by=[]))
     view=reader_document(artifact)
     assert any(s['title']=='当前决定与未决事项' for s in view['sections'])
+
+
+@pytest.mark.parametrize('kind', ['mrd', 'prd'])
+def test_selected_goal_and_candidate_constraint_keep_their_actual_identity(tmp_path, kind):
+    p=checked_project(tmp_path)
+    goal=copy.deepcopy(p['items'][0])
+    goal.update(id='GOAL-SELECTED',kind='goal',selection_status='selected',
+                statement='减少人工整理时间。',source_refs=[])
+    constraint=copy.deepcopy(goal)
+    constraint.update(id='ITEM-CANDIDATE',kind='non_goal',selection_status='candidate',
+                      statement=p['product_context']['preserve_scope'])
+    p['items'] += [goal,constraint]
+    before=copy.deepcopy(p)
+    result=compile_plan(v2(p,discussion=[goal['id'],constraint['id']]),p,kind)
+    assert p==before
+    assert all('不作为本期要求' not in s['title'] for s in result['result']['sections'])
+    assert not {goal['id'],constraint['id']} & {c['item_id'] for c in result['result']['coverage']}
+    apply_response(p,result)
+    view=reader_document(p['documents'][kind])
+    appendix=next(s for s in view['sections'] if s['title']=='附录：条目身份与历史讨论')
+    texts={b['ref_ids'][0]:b['text'] for b in appendix['blocks'] if b['ref_ids']}
+    assert goal['statement'] in texts[goal['id']]
+    assert '已在草稿采纳' in texts[goal['id']] and '不代表业务负责人批准' in texts[goal['id']]
+    assert '本期' in texts[goal['id']]
+    assert constraint['statement'] in texts[constraint['id']]
+    assert '独立条目尚未采纳（不改变已核对的产品上下文）' in texts[constraint['id']]
+    assert any(b.get('text')=='保持不变：'+before['product_context']['preserve_scope']
+               for s in view['sections'] if s is not appendix for b in s['blocks'])
+    assert p['items']==before['items']
+    assert p['questions'][0]['question'] in dumps(view)
+
+
+def test_legacy_appendix_heading_is_neutral_without_mutating_old_artifact(tmp_path):
+    _,p=state(tmp_path)
+    result=compile_plan(v2(p,context=[],normative=['REQ-0001']),p,'prd')
+    apply_response(p,result)
+    artifact=p['documents']['prd']
+    appendix=next(s for s in artifact['content']['sections'] if s['title'].startswith('附录：'))
+    appendix['title']='附录：未采纳与历史讨论（不作为本期要求）'
+    appendix['blocks'].append(dict(kind='narrative',ref_ids=[],text='旧版补充说明原文，不能丢失。'))
+    before=copy.deepcopy(artifact)
+    view=reader_document(artifact)
+    assert artifact==before
+    assert all('不作为本期要求' not in s['title'] for s in view['sections'])
+    assert '旧版补充说明原文，不能丢失。' in dumps(view)
+    assert '候选，尚未采纳：方案建议：' in dumps(view)

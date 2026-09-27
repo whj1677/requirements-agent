@@ -71,6 +71,7 @@ def filename(artifact):
 
 def reader_document(artifact):
     """Only remove recognized compiler scaffolding, never arbitrary business prose."""
+    from .prd import DISCUSSION_APPENDIX_TITLE, discussion_status
     content = copy.deepcopy(artifact['content'])
     name = document_name(artifact)
     content['title'] = name + ('｜产品需求文档（PRD）' if content['document_type']=='prd' else '｜市场需求文档（MRD）')
@@ -92,7 +93,8 @@ def reader_document(artifact):
     sections = []
     appendix_blocks=[]
     appendix_section=None
-    appendix_title='附录：未采纳与历史讨论（不作为本期要求）'
+    appendix_title=DISCUSSION_APPENDIX_TITLE
+    appendix_titles={appendix_title,'附录：未采纳与历史讨论（不作为本期要求）'}
     for section in content['sections']:
         if section['title'] == '历史分析提示（非当前事实）':
             continue
@@ -109,7 +111,6 @@ def reader_document(artifact):
                     from .product_flow import BEHAVIOR
                     text += ''.join('\n'+label+'：'+item['behavior'][key] for key,label in BEHAVIOR.items() if item.get('behavior',{}).get(key))
             elif item:
-                from .prd import discussion_status
                 provenance = '；来源：'+('、'.join(r['source_id']+'/'+r['excerpt_id'] for r in item.get('source_refs',[])) or '未提供')
                 status = discussion_status(item)
                 outside=item['kind'] in ('requirement','rule','acceptance') and item['selection_status']=='selected' and 'delivery_item_ids' in artifact and item['id'] not in artifact['delivery_item_ids']
@@ -124,7 +125,10 @@ def reader_document(artifact):
                     if item['selection_status']=='rejected':label='已拒绝：'
                     elif item['selection_status']=='deferred':label='已暂缓：'
                     elif item['selection_status']=='candidate':label='独立条目尚未采纳（不改变已核对的产品上下文）：' if item['epistemic_status']=='reported' else '候选，尚未采纳：'
-                    else:label=''
+                    else:
+                        scope={'to_be':'本期','as_is':'现状','reference':'参考'}.get(item['applies_to'],item['applies_to'])
+                        label='已在草稿采纳，不代表业务负责人批准；作用域：'+scope+'：'
+                        if item['epistemic_status']=='reported':label+='材料陈述：'
                     if outside:label='不在本期规范范围：'
                     if item['epistemic_status']=='inferred':
                         label += '待核实的推断：'
@@ -190,7 +194,7 @@ def reader_document(artifact):
             destination=appendix_blocks if generated_discussion else blocks
             if not any(b['text']==text and b['ref_ids']==refs for b in destination):
                 destination.append(dict(block, text=text))
-        if section['title']==appendix_title and not blocks:
+        if section['title'] in appendix_titles and not blocks:
             appendix_section=section
             continue
         if blocks or any(s.get('parent_section_id')==section['section_id'] for s in content['sections']):
@@ -200,6 +204,7 @@ def reader_document(artifact):
             else:question_title='已有回答与待核对修订'
             titles = {'材料陈述、未成文条目与讨论建议':'补充背景与讨论建议',
                       '已有回答与未决问题':question_title, '限制及参考维度待核对':'文档边界与补充说明'}
+            titles.update({title:appendix_title for title in appendix_titles})
             sections.append(dict(section, title=titles.get(section['title'],section['title']), blocks=blocks))
     if appendix_blocks:
         base=appendix_section or dict(section_id=content['document_type'].upper()+'-READER-DISCUSSION-APPENDIX',

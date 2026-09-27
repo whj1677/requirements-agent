@@ -112,3 +112,71 @@ def test_only_truncation_requests_compression(tmp_path):
         assert '压缩叙述' not in repair_instruction(Problem(code,'test'),p)
     repair=repair_instruction(Problem('OUTPUT_TRUNCATED','length'),p)
     assert '合并章节' in repair and '有效引用' in repair
+
+
+@pytest.mark.parametrize('available', ['context', 'normative', 'discussion'])
+def test_contract_example_uses_current_references_and_actually_compiles(tmp_path, available):
+    from app.prd import plan_contract
+    if available=='context':
+        from tests.test_prd_v2_semantics import checked_project
+        p=checked_project(tmp_path)
+    else:
+        _,p=state(tmp_path)
+        if available=='discussion':
+            for item in p['items']:item['kind']='goal'
+    before=copy.deepcopy(p)
+    contract=plan_contract(p)
+    for kind in ('mrd','prd'):
+        result=compile_plan(contract['example'],p,kind)
+        assert result['result']['document_type']==kind
+    assert contract['can_generate'] is True
+    assert contract['example']['sections'][0][available+'_refs']
+    assert p==before
+
+
+def test_no_current_references_means_no_example_or_generated_business(tmp_path):
+    from app.prd import plan_contract
+    _,p=state(tmp_path)
+    p['items']=[]
+    p['product_context']={}
+    before=copy.deepcopy(p)
+    contract=plan_contract(p)
+    assert contract['example'] is None
+    assert contract['can_generate'] is False
+    assert '不可生成' in contract['example_notice']
+    assert p==before
+
+
+def test_contract_omits_automatic_limits_but_old_referenced_limits_still_compile(tmp_path):
+    from app.prd import plan_contract
+    _,p=state(tmp_path)
+    contract=plan_contract(p)
+    assert 'limits' not in contract['section_keys']
+    assert '由程序保留' in contract['rules'] and '空章节' in contract['rules']
+    old=plan(['REQ-0001'])
+    old['sections'][0]['section_key']='limits'
+    result=compile_plan(old,p,'prd')
+    assert any(c['item_id']=='REQ-0001' for c in result['result']['coverage'])
+
+
+@pytest.mark.parametrize('code', ['SCHEMA_INVALID','REFERENCE_INVALID','OUTPUT_EMPTY'])
+def test_repair_checks_all_reference_groups_and_empty_sections_together(tmp_path, code):
+    from app.prd import repair_instruction
+    _,p=state(tmp_path)
+    repair=repair_instruction(Problem(code,'sections[0] 合成错误'),p)
+    assert '逐项对照 context_ref_ids、normative_item_ids、discussion_item_ids' in repair
+    assert '空章节' in repair and 'context_refs 不得跨章节重复' in repair
+    assert '不得改变规范身份' in repair
+
+
+def test_empty_section_is_not_silently_removed_or_candidate_promoted(tmp_path):
+    _,p=state(tmp_path)
+    before=copy.deepcopy(p)
+    value=plan(['REQ-0001'])
+    value['sections'].append(dict(section_key='limits',context_refs=[],normative_refs=[],discussion_refs=[]))
+    with pytest.raises(Problem) as error:compile_plan(value,p,'prd')
+    assert error.value.code=='OUTPUT_EMPTY'
+    value['sections'][0]['normative_refs']=['REQ-CANDIDATE']
+    with pytest.raises(Problem) as error:compile_plan(value,p,'prd')
+    assert error.value.code=='SEMANTIC_BLOCKED'
+    assert p==before

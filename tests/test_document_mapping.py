@@ -1,5 +1,7 @@
 """Reference mapping must follow actual generated evidence, not section labels."""
 
+import pytest
+
 from app.document_mapping import build_reference_mapping
 
 
@@ -48,13 +50,12 @@ def test_prd_context_and_behavior_map_to_actual_sections_only():
     assert mapped(result, 'PRD-2.1')['output_section_ids'] == ['PRD-CONTEXT']
     assert mapped(result, 'PRD-2.2')['output_section_ids'] == ['PRD-CONTEXT']
     for dimension in ('PRD-3.3', 'PRD-4.F.2', 'PRD-4.F.3',
-                      'PRD-4.F.5', 'PRD-4.F.7'):
+                      'PRD-4.F.5', 'PRD-4.F.7', 'PRD-4.F.8', 'PRD-4.F.9'):
         entry = mapped(result, dimension)
         assert entry['disposition'] == 'merged'
         assert entry['output_section_ids'] == ['PRD-FUNCTION']
         assert '不等于业务已确认' in entry['reason']
-    for dimension in ('PRD-1.3', 'PRD-4.F.6', 'PRD-4.F.8',
-                      'PRD-4.F.9', 'PRD-5.2'):
+    for dimension in ('PRD-1.3', 'PRD-4.F.6', 'PRD-5.2'):
         entry = mapped(result, dimension)
         assert entry['disposition'] == 'pending'
         assert entry['output_section_ids'] == ['PRD-LIMITS']
@@ -109,3 +110,36 @@ def test_invalid_pending_destination_is_rejected():
         assert 'pending_section_id' in str(error)
     else:
         raise AssertionError('unresolved mapping destination was accepted')
+
+
+def test_existing_boundary_and_exception_content_has_limited_reference_locations():
+    p, verified, sections = fixture()
+    p['items'][0]['behavior']['exceptions'] = '超过 500 条不导出；空数据不生成文件；生成失败提示并支持重试。'
+    result = build_reference_mapping(p, 'prd', sections, {'REQ-1':['PRD-FUNCTION']},
+                                     verified_context=verified, pending_section_id='PRD-LIMITS')
+    for dimension in ('PRD-4.F.8', 'PRD-4.F.9'):
+        entry = mapped(result, dimension)
+        assert entry['disposition'] == 'merged'
+        assert entry['output_section_ids'] == ['PRD-FUNCTION']
+        assert '边界和异常' in entry['reason']
+        assert '穷尽' in entry['reason'] and '错误码' in entry['reason'] and '性能验证' in entry['reason']
+    assert mapped(result, 'PRD-5.2')['disposition'] == 'pending'
+
+
+@pytest.mark.parametrize('missing', ['exceptions', 'compiled_block', 'selected', 'scope'])
+def test_boundary_mapping_requires_actual_current_normative_content(missing):
+    p, verified, sections = fixture()
+    if missing == 'exceptions':
+        p['items'][0]['behavior']['exceptions'] = ' '
+    elif missing == 'compiled_block':
+        sections[1]['blocks'] = [narrative('边界和异常仅是讨论', ['REQ-1'])]
+    elif missing == 'selected':
+        p['items'][0]['selection_status'] = 'candidate'
+    else:
+        p['items'][0]['applies_to'] = 'reference'
+    result = build_reference_mapping(p, 'prd', sections, {'REQ-1':['PRD-FUNCTION']},
+                                     verified_context=verified, pending_section_id='PRD-LIMITS')
+    for dimension in ('PRD-4.F.8', 'PRD-4.F.9'):
+        entry = mapped(result, dimension)
+        assert entry['disposition'] == 'pending'
+        assert entry['output_section_ids'] == ['PRD-LIMITS']
