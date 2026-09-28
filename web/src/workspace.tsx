@@ -26,7 +26,9 @@ export function Workspace({ id, active, models, onProjectsChanged, compat, onExi
   const [help,setHelp]=useState<Obj|null>(null),[helpText,setHelpText]=useState(''),[candidateOpen,setCandidateOpen]=useState(false),[candidateTitle,setCandidateTitle]=useState(''),[candidateText,setCandidateText]=useState('');
   const [acceptanceOpen,setAcceptanceOpen]=useState(false),[acceptanceRequirement,setAcceptanceRequirement]=useState(''),[acceptanceTitle,setAcceptanceTitle]=useState(''),[acceptanceText,setAcceptanceText]=useState('');
   const guard=useNavigation();
-  function go(n:number){if(n===3)n=4;guard(()=>{setPhase(n);sessionStorage.setItem('ra-phase-'+id,String(n));});}
+  const analysisNavigation=useRef<{taskId:string;ingestCount:number;resolving?:boolean}|null>(null);
+  const currentView=useRef({active,phase});currentView.current={active,phase};
+  function go(n:number){if(n===3)n=4;guard(()=>{analysisNavigation.current=null;setPhase(n);sessionStorage.setItem('ra-phase-'+id,String(n));});}
   const projectRef=useRef<Project|null>(null);
   const busyRef=useRef(false);
   const refreshTail = useRef<Promise<void>>(Promise.resolve()), root = '/projects/' + id;
@@ -73,6 +75,23 @@ export function Workspace({ id, active, models, onProjectsChanged, compat, onExi
     async function poll(){try{await refresh();}catch(e){onRefreshFail(e);}finally{if(!stopped)timer=setTimeout(poll,800);}}
     timer=setTimeout(poll,800);return()=>{stopped=true;clearTimeout(timer);};
   }, [active, running]);
+  useEffect(()=>{
+    const intent=analysisNavigation.current;
+    if(!intent)return;
+    if(!active||phase!==0){analysisNavigation.current=null;return;}
+    const task=tasks.find(t=>t.id===intent.taskId);
+    if(!task||['queued','running'].includes(task.status)||busy||intent.resolving)return;
+    if(task.status!=='succeeded'){analysisNavigation.current=null;return;}
+    intent.resolving=true;
+    // The completion record can arrive after the project read in the same poll.
+    // Read again before showing the result, and consume only this submitted task.
+    void refresh().then(()=>{
+      if(analysisNavigation.current!==intent)return;
+      analysisNavigation.current=null;
+      if(!currentView.current.active||currentView.current.phase!==0)return;
+      if((projectRef.current?.messages.filter(m=>m.role==='assistant'&&m.stage==='ingest').length||0)>intent.ingestCount){scrollPositions.current[1]=0;go(1);}
+    }).catch(e=>{if(analysisNavigation.current===intent)analysisNavigation.current=null;onRefreshFail(e);});
+  },[tasks,active,phase,busy]);
   useEffect(() => {
     if (!sourcesOpen || !focusRefs.length) return;
     const timer = setTimeout(() => { const el = document.getElementById('excerpt-' + focusRefs[0].excerpt_id); const details = el?.closest('details'); if (details) details.open = true; el?.scrollIntoView({ block: 'center' }); el?.classList.add('source-highlight'); }, 50);
@@ -116,7 +135,10 @@ export function Workspace({ id, active, models, onProjectsChanged, compat, onExi
     if (!pending||busyRef.current) return;
     if (actionBlockReason) { setActionError(actionBlockReason); return; }
     busyRef.current=true;setBusy(true); setActionError('');
-    try { const task=await api<UserTask>(root + '/actions', 'POST', { ...pending.input, plan_hash: pending.plan.plan_hash, idempotency_key: pending.key, authorize: pending.plan.recipients.some(r => r.needs_authorization) });setTasks(current=>[...current.filter(t=>t.id!==task.id),task]);setTasksLoaded(true);setPending(null);if(pending.input.target){setHelpText('');setHelp(null);}await refresh().catch(e=>{onRefreshFail(e);activityNotice('任务已提交，最新进度暂未取得；请刷新查看，不要重复发起。',true);}); }
+    const ingestCount=projectRef.current?.messages.filter(m=>m.role==='assistant'&&m.stage==='ingest').length||0;
+    try { const task=await api<UserTask>(root + '/actions', 'POST', { ...pending.input, plan_hash: pending.plan.plan_hash, idempotency_key: pending.key, authorize: pending.plan.recipients.some(r => r.needs_authorization) });
+      if(active&&phase===0&&pending.input.action==='organize'&&!pending.input.target)analysisNavigation.current={taskId:task.id,ingestCount};
+      setTasks(current=>[...current.filter(t=>t.id!==task.id),task]);setTasksLoaded(true);setPending(null);if(pending.input.target){setHelpText('');setHelp(null);}await refresh().catch(e=>{onRefreshFail(e);activityNotice('任务已提交，最新进度暂未取得；请刷新查看，不要重复发起。',true);}); }
     catch(e) { setActionError((e as Error).message); } finally { busyRef.current=false;setBusy(false); }
   }
   function navigate(tab:string){if(tab==='sources'){setSourcesOpen(true);return;}go(tab==='documents'?4:tab==='scope'?1:2);}

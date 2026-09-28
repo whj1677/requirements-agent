@@ -39,6 +39,7 @@ from tests.ui02_fixture import model_server
 async def run(dist, evidence):
     evidence.mkdir(parents=True, exist_ok=True)
     checks, errors = [], []
+    completed = False
     server = thread = sock = None
     original_save = main.save_source
 
@@ -163,7 +164,7 @@ async def run(dist, evidence):
                     await plan.get_by_role('button', name='返回保留输入', exact=True).click()
                     await assert_intake(saved=True)
                     await page.get_by_role('button', name='✦ 分析现状与诉求 →', exact=True).click()
-                    await expect(plan).to_be_visible()
+                    await expect(plan).to_be_visible(timeout=20000)
                     assert len(intake_requests) == 1
                     checks.append('analyze posts the exact three fields once; cancel/reopen retains saved input without model requests')
                     assert not model['requests']
@@ -175,15 +176,63 @@ async def run(dist, evidence):
                     checks.append('explicit authorization before model; running status by analyze button; duplicate start disabled')
                     await expect(page.get_by_role('button', name='查看分析结果', exact=True)).to_be_visible(timeout=30000)
                     task = client.get(root + '/actions').json()[-1]
-                    assert task['status'] in ('succeeded', 'partial') and task['completed_steps'] == 3, task
+                    assert task['status'] == 'partial' and task['completed_steps'] == 3, task
                     assert task['calls'] == 3 and len(model['requests']) == 3
                     assert any(m['stage'] == 'ingest' and m['role'] == 'assistant' for m in client.get(root).json()['messages'])
                     await page.screenshot(path=str(evidence / 'analysis-complete.png'))
                     await assert_intake(saved=True)
-                    checks.append('large-image Word -> 2 vision batches -> ingest -> visible result, 3 synthetic requests')
-                    await page.get_by_role('button', name='查看分析结果', exact=True).click()
-                    await expect(page.get_by_role('heading', name='核对现状、价值与改动范围', exact=True)).to_be_visible()
-                    checks.append('result button navigates to actual scope analysis')
+                    await expect(workspace.locator('.workflow-page')).to_have_attribute('data-phase', '0')
+                    checks.append('large-image Word -> 2 vision batches -> ingest; partial result stays on intake with saved text, 3 synthetic requests')
+                    await page.get_by_role('button', name='提供现状与诉求', exact=False).click()
+                    await expect(page.locator('.workflow-page:not([hidden])')).to_have_attribute('data-phase', '0')
+                    await page.wait_for_timeout(1200)
+                    await expect(page.locator('.workflow-page:not([hidden])')).to_have_attribute('data-phase', '0')
+                    await assert_intake(saved=True)
+                    checks.append('partial analysis stays on intake until explicitly opening the result')
+
+                    # Create realistic missing scope facts in the isolated store so the missing-field shortcuts render.
+                    current = client.get(root).json()
+                    with application.state.store.edit(project['id'], current['revision'], 'Synthetic missing scope facts') as (draft, _):
+                        for key in ('value', 'priority'):
+                            draft.setdefault('product_context_proposal', {})[key] = ''
+                            draft.setdefault('product_context', {})[key] = ''
+                    await page.reload()
+                    await page.get_by_role('button', name='合成导入与分析验收', exact=True).click()
+                    await page.get_by_role('button', name='核对现状、价值与改动范围', exact=False).click()
+                    work = page.locator('.project-workspace:not([hidden])')
+                    await expect(work.locator('.workflow-page:not([hidden])')).to_have_attribute('data-phase', '1')
+                    missing_value = work.get_by_role('button', name='去填写问题与改动价值 →', exact=True)
+                    missing_priority = work.get_by_role('button', name='去填写优先级与依据 →', exact=True)
+                    await expect(missing_value).to_be_visible()
+                    await expect(missing_priority).to_be_visible()
+                    await page.set_viewport_size({'width': 390, 'height': 844})
+                    await missing_value.click()
+                    value_field = work.get_by_label('问题与改动价值', exact=True)
+                    await expect(value_field).to_be_focused()
+                    box = await value_field.bounding_box()
+                    assert box and 0 <= box['y'] < 844 and box['y'] + box['height'] <= 844, box
+                    assert await page.get_by_role('dialog', name='未保存的修改', exact=True).count() == 0
+                    checks.append('missing value shortcut opens and keyboard-focuses its field in the narrow viewport without a global dirty guard')
+                    await value_field.fill('合成价值：减少重复录入')
+                    await expect(page.get_by_role('dialog', name='未保存的修改', exact=True)).to_have_count(0)
+                    await work.get_by_role('button', name='去填写优先级与依据 →', exact=True).click()
+                    priority_field = work.get_by_label('优先级与依据', exact=True)
+                    await expect(priority_field).to_be_focused()
+                    box = await priority_field.bounding_box()
+                    assert box and 0 <= box['y'] < 844 and box['y'] + box['height'] <= 844, box
+                    assert await page.get_by_role('dialog', name='未保存的修改', exact=True).count() == 0
+                    await priority_field.fill('合成依据：先满足高频操作')
+                    await expect(page.get_by_role('dialog', name='未保存的修改', exact=True)).to_have_count(0)
+                    await work.get_by_role('button', name='保存补充信息', exact=True).click()
+                    await expect(work.get_by_role('button', name='去填写问题与改动价值 →', exact=True)).to_have_count(0)
+                    await expect(work.get_by_role('button', name='去填写优先级与依据 →', exact=True)).to_have_count(0)
+                    saved_context = client.get(root).json()['product_context']
+                    assert saved_context['value'] == '合成价值：减少重复录入', saved_context
+                    assert saved_context['priority'] == '合成依据：先满足高频操作', saved_context
+                    checks.append('value and priority shortcuts share one facts editor; saving posts both values and removes missing-field actions')
+
+                    await page.screenshot(path=str(evidence / 'scope-fields-mobile.png'))
+                    await page.set_viewport_size({'width': 1440, 'height': 1000})
                     # A genuine provider failure must remain visible after budgets are removed.
                     model['fail_next'] = True
                     for s in client.get(root).json()['sources']:
@@ -202,6 +251,7 @@ async def run(dist, evidence):
                     await expect(page.get_by_text('本次已发出 1 次模型请求。', exact=False)).to_be_visible(timeout=15000)
                     status = page.locator('.step-check-0 .task-status')
                     await expect(status).to_contain_text('HTTP 401')
+                    await expect(page.locator('.workflow-page:not([hidden])')).to_have_attribute('data-phase', '0')
                     assert await status.locator('details').get_attribute('open') is None
                     assert len(model['requests']) == 4
                     await assert_intake(saved=True)
@@ -224,14 +274,57 @@ async def run(dist, evidence):
                     checks.append('saving on actual project departure retains all three fields after returning')
                     await page.get_by_role('button', name='合成仅资料项目', exact=True).click()
                     await page.get_by_role('button', name='✦ 分析现状与诉求 →', exact=True).click()
-                    await expect(plan).to_be_visible()
+                    await expect(plan).to_be_visible(timeout=20000)
                     await plan.get_by_role('button', name='返回保留输入', exact=True).click()
                     for field in fields.values():
                         await expect(field).to_have_value('')
                     await expect(page.get_by_text('已保存资料范围，未填写文字', exact=True)).to_be_visible()
                     assert len(model['requests']) == 4
                     checks.append('materials-only analysis remains available and accurately says no text was entered')
+                    # Pure text has no partial image read: verify a genuine succeeded action.
+                    for key, value in intake.items():
+                        await fields[key].fill(value)
+                    await page.get_by_role('button', name='✦ 分析现状与诉求 →', exact=True).click()
+                    await expect(plan).to_be_visible(timeout=20000)
+                    await plan.get_by_role('button', name='授权本次范围并运行').click()
+                    await expect(workspace.locator('.workflow-page')).to_have_attribute('data-phase', '1', timeout=30000)
+                    pure_root = '/api/projects/' + other['id']
+                    pure = client.get(pure_root).json()
+                    pure_task = client.get(pure_root + '/actions').json()[-1]
+                    assert pure_task['status'] == 'succeeded' and pure_task['calls'] == 1, pure_task
+                    assert {key: pure['intake'][key] for key in intake} == intake
+                    assert '2' not in pure.get('stage_checks', {}), 'automatic navigation must not confirm scope'
+                    assert len(model['requests']) == 5
+                    await page.screenshot(path=str(evidence / 'automatic-second-step.png'))
+                    await page.get_by_role('button', name='提供现状与诉求', exact=False).click()
+                    await page.wait_for_timeout(1200)
+                    await expect(workspace.locator('.workflow-page')).to_have_attribute('data-phase', '0')
+                    for key, value in intake.items():
+                        await expect(fields[key]).to_have_value(value)
+                    checks.append('successful pure-text analysis automatically opens step two with saved intake; no automatic scope approval or repeated navigation')
+
+                    # A submitted job must not steal navigation after the user switches projects.
+                    model['delay'] = 2
+                    await page.get_by_role('button', name='✦ 分析现状与诉求 →', exact=True).click()
+                    await plan.get_by_role('button', name='运行本次任务', exact=True).click()
+                    await expect(page.get_by_role('button', name='正在分析现状与诉求…')).to_be_disabled()
+                    await expect(workspace.locator('.workflow-page')).to_have_attribute('data-phase', '0')
+                    await page.get_by_role('button', name='合成导入与分析验收', exact=True).click()
+                    for _ in range(150):
+                        latest = client.get(pure_root + '/actions').json()[-1]
+                        if latest['status'] not in ('queued', 'running'):
+                            break
+                        await asyncio.sleep(.1)
+                    assert latest['status'] == 'succeeded', latest
+                    await expect(workspace.get_by_role('heading', name='合成导入与分析验收', exact=True)).to_be_visible()
+                    await expect(workspace.locator('.workflow-page')).to_have_attribute('data-phase', '0')
+                    await page.get_by_role('button', name='合成仅资料项目', exact=True).click()
+                    await page.wait_for_timeout(1200)
+                    await expect(workspace.locator('.workflow-page')).to_have_attribute('data-phase', '0')
+                    assert len(model['requests']) == 6
+                    checks.append('running task stays on intake; completed hidden-project task neither steals the current project nor auto-jumps on return')
                     assert not errors, errors
+                    completed = True
                     await browser.close()
     finally:
         main.save_source = original_save
@@ -239,6 +332,7 @@ async def run(dist, evidence):
         if thread: await asyncio.to_thread(thread.join, 5)
         if sock: sock.close()
         (evidence / 'browser-checks.json').write_text(json.dumps(dict(
+            status='VERIFIED' if completed else 'FAILED',
             mode='built UI + actual isolated loopback HTTP app/model; ephemeral listener closed; no daily data',
             checks=checks, page_errors=errors, isolated_path=str(isolated)), ensure_ascii=False, indent=2), encoding='utf8')
     print(json.dumps({'checks': len(checks), 'page_errors': errors}, ensure_ascii=False))

@@ -294,3 +294,5 @@ small { font-size:13px; }
  .layout { display:block; }.sidebar { display:none; }.compact-projects { display:flex; }.phase-nav { height:auto; grid-template-columns:repeat(3,minmax(0,1fr)); }.project-bar { height:auto; min-height:65px; flex-wrap:wrap; }.project-bar .toolbar { flex-wrap:wrap; }
  .intake-row,.scope-cards,.question-item,.question-results,.document-layout,.sketch-notes { grid-template-columns:1fr; }.question-suggestion { grid-column:auto; }.document-layout>nav { position:static; max-height:180px; }.scope-requirement label { flex-basis:100%; }.step-actions { position:static; }.workflow-heading h2 { font-size:21px; }
 }
+
+.checkpoint .missing-field-action { margin:4px 0 4px 12px; min-height:36px; color:var(--accent); text-align:left; white-space:normal; }
