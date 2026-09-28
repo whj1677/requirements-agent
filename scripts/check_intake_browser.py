@@ -67,6 +67,9 @@ async def run(dist, evidence):
                     assert client.put('/api/models/' + slot + '/key', json={'key': 'synthetic-local-key'}).status_code == 200
                 project = client.post('/api/projects', json={'name': '合成导入与分析验收'}).json()
                 root = '/api/projects/' + project['id']
+                intake = {'platform': '合成平台：现有联系人列表', 'text': '合成诉求：联系人增加选填备注', 'preserved': '合成保持项：只读角色不能修改'}
+                other = client.post('/api/projects', json={'name': '合成仅资料项目'}).json()
+                assert client.post('/api/projects/' + other['id'] + '/sources/text', json={'text': '合成资料：联系人列表增加选填备注。', 'purpose': 'goal', 'expected_revision': other['revision']}).status_code == 200
                 application.router.routes[:] = [r for r in application.router.routes if not (getattr(r, 'path', None) == '' and getattr(r, 'name', None) == 'web')]
                 application.mount('/', StaticFiles(directory=dist, html=True), name='isolated-web')
                 sock = socket.socket(); sock.bind(('127.0.0.1', 0))
@@ -81,11 +84,23 @@ async def run(dist, evidence):
                     browser = await pw.chromium.launch(headless=True)
                     page = await browser.new_page(viewport={'width': 1440, 'height': 1000})
                     page.on('pageerror', lambda e: errors.append(str(e)))
+                    intake_requests = []
+                    page.on('request', lambda req: intake_requests.append(req.post_data_json) if req.method == 'POST' and urlsplit(req.url).path == root + '/intake' else None)
 
                     await page.goto(f'http://127.0.0.1:{port}/')
                     await page.get_by_label('本机访问令牌').fill('off')
                     await page.get_by_role('button', name='进入工作台').click()
                     await page.get_by_role('button', name='合成导入与分析验收', exact=True).click()
+                    workspace = page.locator('.project-workspace:not([hidden])')
+                    fields = {'platform': workspace.get_by_placeholder('例如：目前使用的平台、希望改动的页面…'), 'text': workspace.get_by_label('核心诉求', exact=True), 'preserved': workspace.get_by_placeholder('哪些内容保持原状，哪些暂时不做…')}
+                    async def assert_intake(*, saved=False):
+                        for key, value in intake.items():
+                            await expect(fields[key]).to_have_value(value)
+                        if saved:
+                            snapshot = client.get(root).json()['intake']
+                            assert {key: snapshot[key] for key in intake} == intake
+                    for key, value in intake.items():
+                        await fields[key].fill(value)
                     await page.get_by_role('button', name='项目资料 · 0', exact=True).click()
                     drawer = page.get_by_role('dialog', name='项目资料', exact=True)
                     await page.screenshot(path=str(evidence / 'import-desktop.png'))
@@ -110,14 +125,52 @@ async def run(dist, evidence):
                     await expect(drawer.get_by_role('button', name='关闭项目资料')).to_be_enabled(timeout=15000)
                     assert len(client.get(root).json()['sources']) == 6
                     checks.append('selecting a second file directly after completion imports it once')
+                    await assert_intake()
                     await drawer.get_by_role('button', name='关闭项目资料').click()
+                    guard = page.get_by_role('dialog', name='未保存的修改', exact=True)
+                    await expect(drawer).to_be_hidden()
+                    await expect(guard).to_be_hidden()
+                    await assert_intake()
+                    assert not intake_requests and not client.get(root).json().get('intake')
+                    checks.append('closing imported materials preserves all three unsaved intake fields without a global discard prompt')
+                    await page.get_by_role('button', name='项目资料 ·', exact=False).click()
+                    await drawer.get_by_text('粘贴文字或添加公开网页（辅助方式）', exact=True).click()
+                    await drawer.get_by_label('粘贴材料').fill('合成资料草稿，关闭窗口也保留')
+                    await drawer.get_by_label('公开网页 URL').fill('https://example.invalid/not-sent')
+                    await page.keyboard.press('Escape')
+                    await expect(drawer).to_be_hidden()
+                    await expect(guard).to_be_hidden()
+                    await assert_intake()
+                    # A real project change still protects BOTH retained drafts.
+                    await page.get_by_role('button', name='合成仅资料项目', exact=True).click()
+                    await expect(guard).to_contain_text('第1步编辑')
+                    await expect(guard).to_contain_text('项目资料')
+                    await guard.get_by_role('button', name='留在当前页', exact=True).click()
+                    await assert_intake()
+                    await page.get_by_role('button', name='项目资料 ·', exact=False).click()
+                    await expect(drawer.get_by_label('粘贴材料')).to_have_value('合成资料草稿，关闭窗口也保留')
+                    await expect(drawer.get_by_label('公开网页 URL')).to_have_value('https://example.invalid/not-sent')
+                    await drawer.get_by_label('粘贴材料').fill('')
+                    await drawer.get_by_label('公开网页 URL').fill('')
+                    await drawer.get_by_role('button', name='关闭项目资料').click()
+                    await expect(drawer).to_be_hidden()
+                    checks.append('Escape/reopen preserves intake and material drafts; actual project navigation still protects both')
                     await page.get_by_role('button', name='✦ 分析现状与诉求 →', exact=True).click()
                     plan = page.get_by_role('dialog', name='核对本次任务')
+                    await expect(plan).to_be_visible(timeout=15000)
+                    await assert_intake(saved=True)
+                    assert len(intake_requests) == 1 and {key: intake_requests[0][key] for key in intake} == intake
+                    await plan.get_by_role('button', name='返回保留输入', exact=True).click()
+                    await assert_intake(saved=True)
+                    await page.get_by_role('button', name='✦ 分析现状与诉求 →', exact=True).click()
                     await expect(plan).to_be_visible()
+                    assert len(intake_requests) == 1
+                    checks.append('analyze posts the exact three fields once; cancel/reopen retains saved input without model requests')
                     assert not model['requests']
                     await plan.get_by_role('button', name='授权本次范围并运行').click()
                     await expect(page.get_by_role('progressbar', name='分析步骤进度')).to_be_visible()
                     await expect(page.get_by_role('button', name='正在分析现状与诉求…')).to_be_disabled()
+                    await assert_intake(saved=True)
                     await page.screenshot(path=str(evidence / 'analysis-running.png'))
                     checks.append('explicit authorization before model; running status by analyze button; duplicate start disabled')
                     await expect(page.get_by_role('button', name='查看分析结果', exact=True)).to_be_visible(timeout=30000)
@@ -126,6 +179,7 @@ async def run(dist, evidence):
                     assert task['calls'] == 3 and len(model['requests']) == 3
                     assert any(m['stage'] == 'ingest' and m['role'] == 'assistant' for m in client.get(root).json()['messages'])
                     await page.screenshot(path=str(evidence / 'analysis-complete.png'))
+                    await assert_intake(saved=True)
                     checks.append('large-image Word -> 2 vision batches -> ingest -> visible result, 3 synthetic requests')
                     await page.get_by_role('button', name='查看分析结果', exact=True).click()
                     await expect(page.get_by_role('heading', name='核对现状、价值与改动范围', exact=True)).to_be_visible()
@@ -142,6 +196,7 @@ async def run(dist, evidence):
                     await page.reload()
                     await page.get_by_role('button', name='合成导入与分析验收', exact=True).click()
                     await page.get_by_role('button', name='提供现状与诉求', exact=False).click()
+                    await assert_intake(saved=True)
                     await page.get_by_role('button', name='✦ 分析现状与诉求 →', exact=True).click()
                     await page.get_by_role('dialog', name='核对本次任务').get_by_role('button', name='运行本次任务', exact=True).click()
                     await expect(page.get_by_text('本次已发出 1 次模型请求。', exact=False)).to_be_visible(timeout=15000)
@@ -149,11 +204,33 @@ async def run(dist, evidence):
                     await expect(status).to_contain_text('HTTP 401')
                     assert await status.locator('details').get_attribute('open') is None
                     assert len(model['requests']) == 4
+                    await assert_intake(saved=True)
                     checks.append('actual provider failure visible beside button with details closed; inputs preserved')
                     await page.screenshot(path=str(evidence / 'analysis-paused.png'))
                     await page.set_viewport_size({'width': 390, 'height': 844})
                     await page.get_by_role('button', name='项目资料 ·', exact=False).click()
                     await page.screenshot(path=str(evidence / 'import-mobile.png'))
+                    await drawer.get_by_role('button', name='关闭项目资料').click()
+                    await page.set_viewport_size({'width': 1440, 'height': 1000})
+                    intake['platform'] += ' / 再编辑'
+                    await fields['platform'].fill(intake['platform'])
+                    await page.get_by_role('button', name='合成仅资料项目', exact=True).click()
+                    await expect(guard).to_be_visible()
+                    await guard.get_by_role('button', name='保存后离开', exact=True).click()
+                    await expect(guard).to_be_hidden(timeout=15000)
+                    await page.get_by_role('button', name='合成导入与分析验收', exact=True).click()
+                    await assert_intake(saved=True)
+                    assert len(intake_requests) == 2 and {key: intake_requests[-1][key] for key in intake} == intake
+                    checks.append('saving on actual project departure retains all three fields after returning')
+                    await page.get_by_role('button', name='合成仅资料项目', exact=True).click()
+                    await page.get_by_role('button', name='✦ 分析现状与诉求 →', exact=True).click()
+                    await expect(plan).to_be_visible()
+                    await plan.get_by_role('button', name='返回保留输入', exact=True).click()
+                    for field in fields.values():
+                        await expect(field).to_have_value('')
+                    await expect(page.get_by_text('已保存资料范围，未填写文字', exact=True)).to_be_visible()
+                    assert len(model['requests']) == 4
+                    checks.append('materials-only analysis remains available and accurately says no text was entered')
                     assert not errors, errors
                     await browser.close()
     finally:
