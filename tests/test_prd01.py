@@ -83,8 +83,8 @@ def test_draft_assembly_preserves_answers_unknowns_and_exports(tmp_path):
     assert all(c['item_id']!='REQ-CANDIDATE' for c in r['result']['coverage'])
 
 
-def test_truncation_never_increases_approved_budget(tmp_path,monkeypatch):
-    # Budget engine contract; candidate/unknown input is blocked by the new product path.
+def test_legacy_call_limit_does_not_change_frozen_single_request_capacity(tmp_path,monkeypatch):
+    # Single-request configuration snapshot; business gates are covered separately.
     monkeypatch.setattr('app.workflow.execution_issues',lambda *a:[])
     async def run():
         store,p=state(tmp_path)
@@ -98,9 +98,9 @@ def test_truncation_never_increases_approved_budget(tmp_path,monkeypatch):
         approved['max_tokens']=2800  # later setting/caller changes cannot alter this approved run
         await w.tasks[r['id']]
         result=store.get_record(p['id'],r['id'])
-        assert [c['max_tokens'] for c in provider.configs]==[700,700]
-        assert result['calls']==2 and result['status']=='paused_budget'
-        assert result['repair_count']==1  # a scheduled-but-unfunded third request did not happen
+        assert [c['max_tokens'] for c in provider.configs]==[700,700,700]
+        assert result['calls']==3 and result['status']=='failed' and result['error']=='OUTPUT_TRUNCATED'
+        assert result['repair_count']==2  # bounded repair, independent of legacy call quota
         assert store.get(p['id'])['documents']=={}
     asyncio.run(run())
 
@@ -181,7 +181,7 @@ def test_http_failed_schema_repair_keeps_each_request_and_input_identity(case):
     assert entries[1]['input_metrics']['repair_context']['characters']>entries[0]['input_metrics']['repair_context']['characters']
 
 
-def test_http_truncation_shared_task_ceiling_and_old_document_preserved(case):
+def test_http_truncation_is_bounded_and_old_document_preserved(case):
     c,app,model,root=prepare_http(case)
     body,preview=action_plan(c,root,'document','')
     assert start(c,root,body,preview).status_code==200
@@ -194,7 +194,7 @@ def test_http_truncation_shared_task_ceiling_and_old_document_preserved(case):
     body,preview=action_plan(c,root,'document','',max_calls=2)
     assert start(c,root,body,preview).status_code==200
     task=finished(c,root)
-    assert task['calls']==2 and task['status']=='paused_budget'
-    assert [b['max_tokens'] for b in model['requests'][before:]]==[700,700]
+    assert task['calls']==3 and task['status']=='failed' and task['error']=='OUTPUT_TRUNCATED'
+    assert [b['max_tokens'] for b in model['requests'][before:]]==[700,700,700]
     assert c.get(root).json()['documents']==old
     assert task['cost'] is None

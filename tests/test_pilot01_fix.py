@@ -147,10 +147,12 @@ def test_no_response_records_absence_without_invented_output(tmp_path, monkeypat
     from app.workflow import Workflow
     from app.provider import origin
     class NoResponseClient:
+        calls=0
         def __init__(self, **kwargs): pass
         async def __aenter__(self): return self
         async def __aexit__(self, *args): pass
         async def post(self, *args, **kwargs):
+            type(self).calls+=1
             raise httpx.ConnectError('synthetic network failure')
     monkeypatch.setattr(httpx, 'AsyncClient', NoResponseClient)
     async def run():
@@ -164,7 +166,9 @@ def test_no_response_records_absence_without_invented_output(tmp_path, monkeypat
         await workflow.tasks[result['id']]
         return store.get_record(p['id'],result['id'])
     result=asyncio.run(run())
-    assert result['calls']==1 and len(result['attempts'])==1
+    assert result['calls']==3 and NoResponseClient.calls==3 and len(result['attempts'])==3
+    assert result['status']=='failed' and result['error']=='NETWORK_ERROR'
+    assert all(attempt['error']=='NETWORK_ERROR' for attempt in result['attempts'])
     evidence=json.loads(next((tmp_path/'evidence'/'model-calls').glob('*.json')).read_text('utf-8'))
     assert evidence['validation_result']=='NETWORK_ERROR'
     assert evidence['response_received'] is False and evidence['final_output'] is None

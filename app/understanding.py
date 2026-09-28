@@ -7,7 +7,7 @@ from .requirements import TRACKED
 
 
 def contract():
-    return dict(version='understanding-1',
+    return dict(version='understanding-2',
         classification='功能需求需分别表达现状/current、变化/change、保持/preserve；scope_evidence逐条引用本次真实片段的原文quote及source_ref。current+change=modified，只有change=new，只有preserve=preserved，只有current=existing；没有充分依据则unspecified。一个功能的权限、分页、排序等保持性约束可写在该功能的behavior或关联rule中供PM核对，不要把每个字段维度机械拆成独立requirement；单条requirement的scope_evidence不得混写change与preserve状态，也不得把保持内容说成新增。引用原句同时含变化和保持时保留原文，change_type只对应本条statement的变化身份。classification_reason说明判定依据及未知。applies_to=as_is仅用于existing。原条目变化用revise/target_item_id，不新建同义编号。',
         questions='一个问题只问一个可独立回答的决定。复合问题必须列出decision_points（完整Question对象，各自独立temp_id/topic_key/关联需求/阻塞属性），程序展开为独立回答。拆分已有未答问题使用target_question_id；原问题保留为分组记录，不能拆掉已有回答。已答问题若问题文字或风险条件发生变化，不能假定原答案仍适用；材料已回答的事项不要再次提问，编号错字记findings。',
         answer_binding='answer_refs只用于基于已保存回答修订该问题直接关联的原requirement/rule/acceptance：action=revise、target_item_id为该问题related_refs中的原条目ID，kind必须与目标一致，不能指向另一修订候选。使用本轮真实回答片段的source_refs说明依据；新增acceptance等action=add候选不得填写answer_refs，其回答依据放source_refs并用related_refs关联原需求。保留原条目编号与内容，回答不会自动采纳候选；所有直接关联条目的修订明确采纳后才闭环。',
@@ -15,6 +15,11 @@ def contract():
         single_question_example=dict(temp_id='QTMP-example',topic_key='example',question='一个待决定的问题？',why='影响实现或验收',
             options=[],blocking=True,related_refs=['实际需求ID'],source_refs=[],decision_points=[]),
         classification_shape='kind=requirement时，change_type为new/modified/preserved/existing必须有非空scope_evidence；每条须有state、逐字quote、真实source_ref。没有充分材料依据时用unspecified并可用空scope_evidence，不能猜测分类。示例只说明字段，禁止复制占位文本或ID。',
+        classification_self_check='输出前逐条核对 requirement 的 scope_evidence.state 集合与 change_type 是否一致。'
+            '例如同一条需求同时引用“现有列表展示姓名”的 current 证据和“本次新增备注字段”的 change 证据，'
+            '必须是 modified；句子中出现“新增”不改变 current+change=modified 的规则。'
+            '只有真实证据仅描述本期全新功能、没有该功能现状证据时才用 new。'
+            '不得为凑 new 删除真实 current 证据；此例只解释分类规则，不得复制其业务内容。',
         classification_example=dict(change_type='new',scope_evidence=[dict(state='change',quote='本轮真实片段的原文',
             source_ref=dict(source_id='实际来源ID',excerpt_id='实际片段ID'))],classification_reason='依据所引变化原文'),
         revision_identity='action=revise 表示修订需求记录，change_type 表示本期功能相对真实系统现状的变化，两者独立。补齐一个尚未实现的新增功能的回答或验收，仍是 new；不能因底稿里已经有该候选就变成 modified。只有来源同时说明该功能已有行为和本期改动，才是 modified。原候选、上轮模型输出和本次修订动作都不是 current 的业务现状证据。scope_evidence 的 quote 必须来自同一片段的连续原文，不拼接省略句。',

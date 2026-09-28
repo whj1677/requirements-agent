@@ -4,27 +4,37 @@ from app.store import Store
 from app.workflow import Workflow
 
 
-def test_review_uses_thinking_without_mutating_saved_settings_or_budgets(tmp_path):
+def test_review_normalizes_legacy_quotas_without_mutating_saved_settings(tmp_path):
     store=Store(tmp_path)
     settings=dict(DEFAULT,budget_mode='fixed',thinking_disabled=True,max_tokens=1234,max_calls=2,timeout=17)
     store.setting('model',settings)
     workflow=Workflow(store,Provider())
     review=workflow.config('review')
     assert review['thinking_disabled'] is False
-    for key in ('max_tokens','max_calls','timeout','base_url','model'):
-        assert review[key]==settings[key]
+    assert review['budget_mode']=='unlimited' and review['max_calls'] is None
+    assert review['max_tokens']==65536 and review['retry_max_tokens']==393216
+    assert review['timeout']==300 and review['action_seconds']==900
+    assert review['base_url']==settings['base_url'] and review['model']==settings['model']
     assert workflow.config('prd')['thinking_disabled'] is True
+    assert workflow.config('prd')['max_calls'] is None
     assert workflow.config('clarify')['thinking_disabled'] is True
     assert store.setting('model')==settings
 
 
-def test_explicit_optout_and_other_providers_keep_their_config(tmp_path):
+def test_review_thinking_optout_and_other_provider_keep_unlimited_execution(tmp_path):
     store=Store(tmp_path)
     workflow=Workflow(store,Provider())
-    for config in (dict(DEFAULT,budget_mode='fixed',review_thinking=False),
-                   dict(DEFAULT,base_url='https://synthetic-provider.example',review_thinking=True)):
+    for config in (dict(DEFAULT,budget_mode='fixed',max_calls=2,review_thinking=False),
+                   dict(DEFAULT,base_url='https://synthetic-provider.example',budget_mode='fixed',max_calls=2,review_thinking=True)):
         store.setting('model',config)
-        assert workflow.config('review')==config
+        review=workflow.config('review')
+        assert review['budget_mode']=='unlimited' and review['max_calls'] is None
+        if config['base_url']=='https://api.deepseek.com':
+            assert review['thinking_disabled'] is (not config['review_thinking'])
+        else:
+            assert review['thinking_disabled']==config['thinking_disabled']
+        assert review['base_url']==config['base_url'] and review['model']==config['model']
+        assert workflow.config('clarify')['max_calls'] is None
 
     opted_out=dict(DEFAULT,thinking_disabled=False,review_thinking=False)
     store.setting('model',opted_out)
@@ -33,7 +43,7 @@ def test_explicit_optout_and_other_providers_keep_their_config(tmp_path):
     assert store.setting('model')==opted_out
 
 
-def test_truncated_review_pauses_once_and_keeps_previous_result(tmp_path):
+def test_repeated_review_truncation_fails_after_one_physical_capacity_escalation(tmp_path):
     import asyncio
     import copy
     from app.core import Problem
@@ -61,6 +71,7 @@ def test_truncated_review_pauses_once_and_keeps_previous_result(tmp_path):
         await workflow.tasks[started['id']]
         return store.get_record(p['id'],started['id'],'run')
     result=asyncio.run(run())
-    assert result['status']=='paused_budget' and result['error']=='BUDGET_EXHAUSTED'
-    assert provider.calls==1 and result['calls']==1
+    assert result['status']=='failed' and result['error']=='OUTPUT_TRUNCATED'
+    assert provider.calls==2 and result['calls']==2
+    assert [attempt['max_tokens'] for attempt in result['attempts']]==[65536,393216]
     assert store.get(p['id'])['review']==old

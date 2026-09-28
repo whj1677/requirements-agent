@@ -87,7 +87,7 @@ class Actions:
         if busy:
             blockers.append('当前项目任务正在执行，请等待结果或取消当前任务。')
         result=dict(action=body['action'],label=LABELS[body['action']],stages=stages,
-            expected_revision=p['revision'],max_calls=body['max_calls'],recipients=recipients,
+            expected_revision=p['revision'],max_calls=None,recipients=recipients,
             sources=[dict(id=s['id'],title=s['title'],status=s['parse_status']) for s in active],
             pending_text=body['message'], context_scope='当前底稿、问题和讨论记录；排除材料不删除已经形成的讨论内容。',
             missing=list(dict.fromkeys(blockers)),generation_target=target,
@@ -125,7 +125,7 @@ class Actions:
             db.execute('UPDATE projects SET revision=?,payload=? WHERE id=?',(p['revision'],dumps(p),pid))
             task=dict(action=body['action'],label=plan['label'],status='queued',created=now(),
                 input_revision=p['revision'],input_state_hash=execution_hash(p),source_ids=ids,
-                stages=plan['stages'],run_ids=[],max_calls=body['max_calls'],calls=0,cost=None,
+                stages=plan['stages'],run_ids=[],max_calls=None,calls=0,cost=None,
                 request_hash=request_hash,idempotency_key=idempotency_key,message='等待开始',
                 authorized_configs={s:{k:v for k,v in c.items() if k!='proxy'} for s,c in configs.items()},
                 approved_plan_hash=plan_hash,
@@ -147,8 +147,7 @@ class Actions:
                 require(current['status']!='cancelled','CANCELLED','已停止后续步骤；已发送请求可能计费')
                 p=self.store.get(pid)
                 require(execution_hash(p)==expected,'STALE_REVISION','任务输入发生外部变化；已完成结果保留，请重新核对',409)
-                require(calls<body['max_calls'],'BUDGET_EXHAUSTED','本次任务总请求额度已用完；已完成步骤保留')
-                config=dict(configs[stage],max_calls=min(configs[stage]['max_calls'],body['max_calls']-calls))
+                config=dict(configs[stage],max_calls=None)
                 target=copy.deepcopy(task['generation_target'])
                 if target: target['input_revision']=p['revision']
                 message=body['message']

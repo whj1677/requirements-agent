@@ -72,7 +72,7 @@ class ActionPlan(Revision):
     message: str = Field(default='',max_length=12000)
     document_type: Literal['prd','mrd'] = 'prd'
     option_id: str | None = None
-    max_calls: int = Field(default=8,ge=1,le=30)
+    max_calls: int | None = Field(default=None,ge=1)
     target: ActionTarget | None = None
 
 class ActionStart(ActionPlan):
@@ -161,9 +161,9 @@ class ModelConfig(Strict):
     vision: Literal['documented','verified','unsupported','unknown'] = 'unknown'
     json_mode: bool = True
     timeout: int = Field(default=120,ge=1,le=600)
-    max_calls: int = Field(default=8,ge=1,le=30)
+    max_calls: int | None = Field(default=None,ge=1)
     max_tokens: int = Field(default=48000,ge=100,le=MODEL_OUTPUT_LIMIT)
-    budget_mode: Literal['function_first','fixed'] = 'function_first'
+    budget_mode: Literal['unlimited','function_first','fixed'] = 'unlimited'
     review_max_tokens: int = Field(default=65536,ge=100,le=MODEL_OUTPUT_LIMIT)
     review_retry_max_tokens: int = Field(default=131072,ge=100,le=MODEL_OUTPUT_LIMIT)
     context_chars: int = Field(default=520000,ge=10000,le=2000000)
@@ -700,6 +700,7 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
         result={}
         for slot in ('model','vision'):
             c=dict(DEFAULT, **(store.setting(slot) or {}))
+            c.update(budget_mode='unlimited', max_calls=None)
             result[slot]=dict(c,**provider.key_status(c),proxy='已配置' if c.get('proxy') else '')
         return result
 
@@ -707,6 +708,7 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
     async def set_model(slot:str,body:ModelConfig):
         require(slot in ('model','vision'),'CONFIG_INVALID','未知配置槽')
         c=body.model_dump(); origin(c)
+        c.update(budget_mode='unlimited', max_calls=None)
         require(body.vision!='verified','CONFIG_INVALID','已验证状态只能由实际能力测试记录，不能手工声明')
         bound=provider.env_origins.get(c['key_env'])
         require(bound is None or bound==origin(c),'KEY_ORIGIN_CONFLICT','该环境变量已绑定另一接收端，请使用独立的项目环境变量或会话 Key')

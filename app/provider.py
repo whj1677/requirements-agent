@@ -12,11 +12,11 @@ from .config import ProjectEnvironment, usable_key
 from .prd import PLAN_SCHEMA, plan_contract, context as document_context
 from . import ingest
 from .understanding import contract as understanding_contract, answer_target, answer_targets
-from .budgets import POLICY_DEFAULTS, input_allowance, input_size
+from .budgets import POLICY_DEFAULTS, IMAGE_INPUT_RESERVE, input_allowance, input_size
 
 DEFAULT = dict(name='DeepSeek 官方', base_url='https://api.deepseek.com', model='deepseek-flash',
                key_env='RA_DEEPSEEK_API_KEY', vision='documented', json_mode=True, timeout=120,
-               max_calls=8, max_tokens=48000, context_chars=520000, action_seconds=300,
+               max_calls=None, max_tokens=48000, context_chars=520000, action_seconds=300,
                thinking_disabled=True, review_thinking=True, documented_at='2026-09-27', local_allowed=False, proxy='', input_price=None, output_price=None,
                **POLICY_DEFAULTS)
 STAGES = read_json(KIT / 'prompts/registry.json')['stage_files']
@@ -97,6 +97,15 @@ class Provider:
         codes = {400:'PARAMETER_UNSUPPORTED', 401:'AUTH_FAILED', 403:'AUTH_FAILED', 402:'PROVIDER_QUOTA', 404:'MODEL_UNSUPPORTED', 429:'RATE_LIMITED'}
         if evidence and response.status_code != 200:
             evidence.response(http_status=response.status_code, elapsed_seconds=round(time.monotonic()-started, 3))
+        if response.status_code == 400:
+            # Classify only; do not echo provider bodies that may contain inputs.
+            try:
+                error = response.json().get('error', {})
+                detail = (str(error.get('code', '')) + ' ' + str(error.get('message', ''))).lower() if isinstance(error, dict) else ''
+            except (ValueError, AttributeError):
+                detail = ''
+            if any(marker in detail for marker in ('context_length_exceeded', 'maximum context length', 'exceeds the context', 'too many tokens')):
+                raise Problem('MODEL_CONTEXT_LIMIT', '材料超过模型单次上下文容量；请按业务主题分段处理。已有内容保留，未截断关键底稿。')
         require(response.status_code == 200, codes.get(response.status_code, 'PROVIDER_ERROR'), '模型接口 HTTP ' + str(response.status_code))
         try:
             raw = response.json()
@@ -111,7 +120,7 @@ class Provider:
             # Persist only final content, before JSON parsing and all validation.
             evidence.response(content, http_status=response.status_code, finish_reason=meta['finish_reason'],
                               usage=meta['usage'], response_model=meta['response_model'], elapsed_seconds=meta['elapsed_seconds'])
-        require(choice.get('finish_reason') != 'length', 'OUTPUT_TRUNCATED', '模型输出截断；请缩减生成范围或提高输出预算')
+        require(choice.get('finish_reason') != 'length', 'OUTPUT_TRUNCATED', '模型单次输出截断；请分段生成或调整模型单次输出上限')
         require(isinstance(content, str) and content.strip(), 'OUTPUT_EMPTY', '模型返回空内容')
         require(key not in content, 'SECURITY_BLOCKED', '模型输出包含凭据信息，已拒绝保存')
         # Never persist hidden reasoning; only final response is processed.
@@ -300,14 +309,15 @@ def assemble(p, stage, user_message, config, folder, kind='prd', generation_targ
     if stage=='prd':
         context=document_context(p, include_sketch=False)
         context['user_message']=user_message
-    remaining = input_allowance(config) - input_size(system, config) - input_size(dumps(context), config) - 4000
+    allowance = input_allowance(config)
+    remaining = float('inf') if allowance is None else allowance - input_size(system, config) - input_size(dumps(context), config) - 4000
     require(remaining > 0, 'BUDGET_EXHAUSTED', '关键底稿与输出预留已超过上下文预算；不能截断已选规则')
     selected, omitted, images = [], [], []
     for source in p['sources']:
         if source['excluded'] or (stage=='vision' and pending_images_only and source.get('image_mime') and source.get('vision_run_id')):
             continue
         for ex in source['excerpts']:
-            cost = input_size(dumps(ex), config) + (12000 if source['image_mime'] and stage == 'vision' else 0)
+            cost = input_size(dumps(ex), config) + (IMAGE_INPUT_RESERVE if source['image_mime'] and stage == 'vision' else 0)
             if cost > remaining or (source['image_mime'] and stage=='vision' and len(images)>=3) or (source['image_mime'] and stage != 'vision' and not source.get('vision_run_id')):
                 omitted.append(ex['id'])
                 continue

@@ -2,10 +2,10 @@ export type JsonObject = Record<string, any>;
 export interface ProjectSummary { id: string; name: string; revision: number }
 export interface Run { id: string; stage: string; status: string; message: string; calls: number; error?: string; cost?: number }
 export type BusinessAction = 'organize' | 'explore' | 'clarify' | 'prototype' | 'document' | 'review' | 'change';
-export interface ActionInput { expected_revision: number; action: BusinessAction; message: string; document_type: string; option_id?: string | null; max_calls: number; target?: JsonObject }
-export interface BudgetPolicy { mode: 'function_first'|'fixed'; initial_output_tokens: number; maximum_output_tokens: number; truncation_escalations: number; action_seconds: number; input_measure: string; input_allowance: number }
-export interface ActionPlan { budget_policies?: Record<string,BudgetPolicy>; plan_hash: string; label: string; stages: string[]; max_calls: number; expected_revision: number; pending_text: string; context_scope: string; missing: string[]; recipients: { origin: string; model: string; needs_authorization: boolean }[]; sources: { id: string; title: string; status: string }[]; generation_target?: JsonObject }
-export interface UserTask { id: string; action: BusinessAction; label: string; status: string; message: string; error?: string; calls: number; max_calls: number; run_ids: string[]; source_ids: string[]; completed_steps: number; stages: string[]; cost: number | null }
+export interface ActionInput { expected_revision: number; action: BusinessAction; message: string; document_type: string; option_id?: string | null; max_calls?: number | null; target?: JsonObject }
+export interface BudgetPolicy { mode: 'function_first'|'fixed'|'unlimited'; initial_output_tokens: number; maximum_output_tokens: number; truncation_escalations: number; action_seconds: number | null; input_measure: string; input_allowance: number | null }
+export interface ActionPlan { budget_policies?: Record<string,BudgetPolicy>; plan_hash: string; label: string; stages: string[]; max_calls: number | null; expected_revision: number; pending_text: string; context_scope: string; missing: string[]; recipients: { origin: string; model: string; needs_authorization: boolean }[]; sources: { id: string; title: string; status: string }[]; generation_target?: JsonObject }
+export interface UserTask { id: string; action: BusinessAction; label: string; status: string; message: string; error?: string; calls: number; max_calls: number | null; run_ids: string[]; source_ids: string[]; completed_steps: number; stages: string[]; cost: number | null }
 export interface Project extends ProjectSummary {
   product_flow?: {step:number;title:string;content_hash:string;complete:boolean;available:boolean;missing:string[];needs_recheck:boolean}[];
   product_context?: JsonObject; product_context_proposal?: JsonObject; sketch_review?: JsonObject;
@@ -48,6 +48,38 @@ export async function api<T = any>(path: string, method = 'GET', body?: unknown,
     throw new ApiError(response.status, 'EMPTY_RESPONSE', `服务未返回内容（HTTP ${response.status}）`, 'empty', path);
   }
   return data as T;
+}
+
+export interface UploadProgress { loaded: number; total?: number }
+export function uploadFile<T = any>(path: string, body: FormData, onProgress: (progress: UploadProgress) => void, onUploaded: () => void = () => {}): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    request.open('POST', '/api' + path);
+    request.withCredentials = true;
+    request.timeout = 300_000;
+    request.setRequestHeader('X-CSRF-Token', csrf);
+    request.upload.addEventListener('progress', event => onProgress({ loaded: event.loaded, ...(event.lengthComputable && event.total > 0 ? { total: event.total } : {}) }));
+    request.upload.addEventListener('load', onUploaded);
+    request.addEventListener('load', () => {
+      const text = request.responseText;
+      let data: any = null, kind: ErrorKind = 'empty';
+      if (text) { try { data = JSON.parse(text); kind = 'json'; } catch { kind = 'text'; } }
+      if (request.status < 200 || request.status >= 300) {
+        if (kind === 'json' && data && (data.code || data.message)) reject(new ApiError(request.status, data.code || 'HTTP_ERROR', data.message || '请求失败', 'json', path));
+        else if (kind === 'json') reject(new ApiError(request.status, 'ROUTE_OR_OBJECT', `请求未成功（HTTP ${request.status}）`, 'json', path));
+        else if (kind === 'text') reject(new ApiError(request.status, 'NON_JSON', `服务返回了无法识别的内容（HTTP ${request.status}）`, 'text', path));
+        else reject(new ApiError(request.status, 'EMPTY_RESPONSE', `服务未返回内容（HTTP ${request.status}）`, 'empty', path));
+        return;
+      }
+      if (kind === 'empty') { reject(new ApiError(request.status, 'EMPTY_RESPONSE', '服务未返回内容', 'empty', path)); return; }
+      if (kind === 'text') { reject(new ApiError(request.status, 'NON_JSON', '服务返回了无法识别的内容', 'text', path)); return; }
+      resolve(data as T);
+    });
+    request.addEventListener('error', () => reject(new ApiError(0, 'NETWORK', '上传连接中断；服务端是否已收到文件尚未确认', 'network', path)));
+    request.addEventListener('timeout', () => reject(new ApiError(0, 'NETWORK', '上传或服务器读取等待超过 300 秒；服务端是否已收到并处理文件尚未确认', 'network', path)));
+    request.addEventListener('abort', () => reject(new ApiError(0, 'NETWORK', '上传连接已中断；服务端是否已收到文件尚未确认', 'network', path)));
+    request.send(body);
+  });
 }
 export type ErrorCategory = 'not-found' | 'route-missing' | 'network' | 'non-json' | 'session' | 'forbidden' | 'conflict' | 'server' | 'unknown';
 export function categorizeError(e: unknown): ErrorCategory {

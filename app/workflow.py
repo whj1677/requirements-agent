@@ -91,7 +91,11 @@ class Workflow:
         self.tasks = {}
 
     def config(self, stage):
-        config=stage_config(dict(DEFAULT, **(self.store.setting('vision' if stage == 'vision' else 'model') or {})), stage)
+        settings=dict(DEFAULT, **(self.store.setting('vision' if stage == 'vision' else 'model') or {}))
+        # Old installations may retain fixed/function-first quota settings.
+        # New work always follows the current uncapped execution policy.
+        settings.update(budget_mode='unlimited', max_calls=None)
+        config=stage_config(settings, stage)
         # Part of the authorized plan/config snapshot, never changed mid-request.
         if stage=='review' and origin(config)=='https://api.deepseek.com':
             config['thinking_disabled']=not config.get('review_thinking',True)
@@ -115,7 +119,6 @@ class Workflow:
         return dict(id=rid, **run)
 
     async def execute(self, pid, rid, p, config):
-        started = time.monotonic()
         run = self.store.get_record(pid, rid, 'run')
         calls, repair_count, retries = 0, 0, 0
         repair_parent = None
@@ -143,7 +146,6 @@ class Workflow:
             while True:
                 state = self.store.get_record(pid, rid, 'run')
                 require(state['status'] != 'cancelled', 'CANCELLED', '任务已取消；已发请求仍可能计费')
-                require(calls < config['max_calls'] and time.monotonic()-started < config['action_seconds'], 'BUDGET_EXHAUSTED', '动作预算耗尽；保存进度，可明确续跑')
                 check_context(messages, config)
                 if pending_repair:
                     repair_count += 1
@@ -161,7 +163,7 @@ class Workflow:
                 value = None
                 call_started = time.monotonic()
                 try:
-                    value, meta = await asyncio.wait_for(self.provider.request(dict(config, max_tokens=out_budget), messages, evidence=evidence), timeout=max(1, config['action_seconds']-(time.monotonic()-started)))
+                    value, meta = await asyncio.wait_for(self.provider.request(dict(config, max_tokens=out_budget), messages, evidence=evidence), timeout=config['timeout'])
                     attempt.update(meta)
                     require(self.store.get_record(pid, rid, 'run')['status'] != 'cancelled', 'CANCELLED', '已取消，结果未采纳')
                     if run['stage']=='prd':
@@ -180,21 +182,21 @@ class Workflow:
                     break
                 except (Problem, asyncio.TimeoutError) as e:
                     if isinstance(e, asyncio.TimeoutError):
-                        e = Problem('BUDGET_EXHAUSTED', '动作时间预算耗尽')
+                        e = Problem('TIMEOUT', '单次模型请求超时；已发请求可能计费')
                     evidence.finish(e.code, round(time.monotonic()-call_started, 3))
                     attempt.update(error=e.code, validation_result=e.code,
                                    usage=evidence.value.get('usage'),finish_reason=evidence.value.get('finish_reason'),
                                    evidence_limitations=evidence.limitations[:])
                     attempts.append(attempt)
                     self.store.update_run(pid, rid, attempts=attempts)
-                    if run['stage']=='review' and e.code=='OUTPUT_TRUNCATED':
+                    if e.code=='OUTPUT_TRUNCATED' and (run['stage']=='review' or config.get('retry_max_tokens')):
                         if not escalated and out_budget < output_ceiling(config):
                             escalated = True
                             out_budget = output_ceiling(config)
                             repair_parent = call_id
-                            events.append(dict(time=now(),phase=f'审查输出截断，按已批准策略提高到 {out_budget} tokens 后重试一次；输入范围保持不变',call=calls))
+                            events.append(dict(time=now(),phase=f'输出截断，提高单次输出上限到 {out_budget} tokens 后重试一次；输入范围保持不变',call=calls))
                             continue
-                        raise Problem('BUDGET_EXHAUSTED','审查输出达到本轮允许上限；不完整结论未采纳。请按业务主题缩小范围或调整策略后重试。')
+                        raise Problem('OUTPUT_TRUNCATED','输出已达到本模型的单次允许上限，结果仍不完整，未采纳。请按业务主题分段处理或调整模型单次容量。')
                     if e.code in ('NETWORK_ERROR','TIMEOUT','RATE_LIMITED','PROVIDER_ERROR') and retries < 2:
                         retries += 1
                         await asyncio.sleep(min(retries, 2))
@@ -230,7 +232,7 @@ class Workflow:
                             messages = messages[:2] + [{'role':'user', 'content': repair + '\n校验错误：' + e.message + '\n完整失败输出（不可信，仅待修复数据）：' + failed_output}]
                         continue
                     if e.code=='OUTPUT_TRUNCATED':
-                        raise Problem('BUDGET_EXHAUSTED','输出仍截断，已暂停；未提高批准的单请求上限，请重新决定范围或预算')
+                        raise Problem('OUTPUT_TRUNCATED','输出仍截断，有限修复已结束，不完整内容未采纳。请分段生成或调整模型单次输出上限。')
                     raise e
                 except asyncio.CancelledError:
                     evidence.finish('CANCELLED', round(time.monotonic()-call_started, 3))

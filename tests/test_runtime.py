@@ -113,9 +113,11 @@ def test_auth_failure_not_retried(tmp_path):
     r,p,provider=execute_run(tmp_path,[Problem('AUTH_FAILED','401')])
     assert r['calls']==1 and r['error']=='AUTH_FAILED'
 
-def test_budget_all_attempts_count(tmp_path):
-    r,p,provider=execute_run(tmp_path,[Problem('SCHEMA_INVALID','bad')]*4,max_calls=2)
-    assert r['calls']==2 and r['status']=='paused_budget' and not p['messages']
+def test_repeated_format_errors_fail_after_two_repairs_even_when_legacy_call_limit_is_one(tmp_path):
+    r,p,provider=execute_run(tmp_path,[Problem('SCHEMA_INVALID','bad')]*4,max_calls=1)
+    assert r['calls']==3 and r['status']=='failed' and r['error']=='SCHEMA_INVALID' and not p['messages']
+    assert len(r['attempts'])==3
+    assert sum(bool(a.get('repair_of')) for a in r['attempts'])==2
 
 def test_cancel_prevents_commit_and_new_request(tmp_path):
     r,p,provider=execute_run(tmp_path,[empty_ingest()],cancel=True)

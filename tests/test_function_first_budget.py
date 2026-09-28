@@ -48,13 +48,15 @@ def execute(store,p,workflow):
     return asyncio.run(run())
 
 
-def test_policy_is_stage_specific_and_does_not_rewrite_settings(tmp_path):
+def test_runtime_policy_is_unlimited_and_does_not_rewrite_settings(tmp_path):
     store,p,w=review_setup(tmp_path,Responses([]),max_tokens=16000,context_chars=180000)
     before=store.setting('model')
     config=w.config('review')
-    assert (config['max_tokens'],config['retry_max_tokens'])==(65536,131072)
+    assert config['budget_mode']=='unlimited' and config['max_calls'] is None
+    assert (config['max_tokens'],config['retry_max_tokens'])==(65536,393216)
     assert config['timeout']==300 and config['action_seconds']==900
     assert w.config('prd')['max_tokens']==16000
+    assert w.config('prd')['max_calls'] is None and w.config('prd')['budget_mode']=='unlimited'
     assert store.setting('model')==before
     messages,_,omitted=assemble(p,'review','',config,tmp_path)
     check_context(messages,config)
@@ -87,25 +89,26 @@ def test_truncated_review_retries_same_input_once_with_frozen_ceiling(tmp_path):
     store,p,w=review_setup(tmp_path,provider)
     result=execute(store,p,w)
     assert result['status'] in ('succeeded','partial') and result['result_applied']
-    assert [c['max_tokens'] for c,_ in provider.requests]==[65536,131072]
+    assert [c['max_tokens'] for c,_ in provider.requests]==[65536,393216]
     assert provider.requests[0][1]==provider.requests[1][1]
-    assert result['authorization']['approved_max_tokens']==131072
+    assert result['authorization']['approved_max_tokens']==393216
     assert result['authorization']['initial_max_tokens']==65536
     assert result['attempts'][1]['repair_of']==result['attempts'][0]['call_id']
     entries=[json.loads((tmp_path/'evidence/model-calls'/(a['call_id']+'.json')).read_text('utf8')) for a in result['attempts']]
-    assert [e['max_tokens'] for e in entries]==[65536,131072]
+    assert [e['max_tokens'] for e in entries]==[65536,393216]
     assert entries[0]['usage']['completion_tokens_details']['reasoning_tokens']==65535
     assert entries[0]['actual_input_hash']==entries[1]['actual_input_hash']
 
 
-@pytest.mark.parametrize('max_calls,expected',[(8,2),(1,1)])
-def test_repeated_truncation_is_bounded_and_never_replaces_previous_review(tmp_path,max_calls,expected):
+@pytest.mark.parametrize('legacy_max_calls',[8,1])
+def test_repeated_truncation_is_bounded_and_never_replaces_previous_review(tmp_path,legacy_max_calls):
     provider=Responses([Problem('OUTPUT_TRUNCATED','synthetic')]*3)
-    store,p,w=review_setup(tmp_path,provider,max_calls=max_calls)
+    store,p,w=review_setup(tmp_path,provider,max_calls=legacy_max_calls)
     old=copy.deepcopy(p['review'])
     result=execute(store,p,w)
-    assert result['status']=='paused_budget'
-    assert len(provider.requests)==result['calls']==expected
+    assert result['status']=='failed' and result['error']=='OUTPUT_TRUNCATED'
+    assert len(provider.requests)==result['calls']==2
+    assert [c['max_tokens'] for c,_ in provider.requests]==[65536,393216]
     assert store.get(p['id'])['review']==old
 
 
@@ -116,15 +119,19 @@ def test_no_escalation_for_nontruncation_error(tmp_path):
     assert result['error']=='AUTH_FAILED' and len(provider.requests)==1
 
 
-def test_input_over_capacity_is_refused_before_any_request(tmp_path):
+def test_legacy_character_limit_does_not_omit_large_source(tmp_path):
     provider=Responses([])
-    store,p,w=review_setup(tmp_path,provider)
-    with store.edit(p['id'],p['revision'],'Synthetic oversized fact') as (draft,_):
-        draft['items'][0]['statement']='完整业务规范必须保留。'*50000
-    p=store.get(p['id'])
-    # This tests the assembly boundary without weakening business stage gates.
-    with pytest.raises(Problem) as caught:assemble(p,'review','',w.config('review'),tmp_path)
-    assert caught.value.code=='BUDGET_EXHAUSTED' and not provider.requests
+    store=Store(tmp_path)
+    p=prepared(store)
+    p['sources'][0]['excerpts'][0]['text']='完整来源原文必须保留。'*50000
+    store.setting('model',dict(DEFAULT,context_chars=10000))
+    w=Workflow(store,provider)
+    config=w.config('clarify')
+    messages,selected,omitted=assemble(p,'clarify','',config,tmp_path)
+    assert config['context_chars']==10000 and config['budget_mode']=='unlimited'
+    assert selected==p['sources'][0]['excerpts'] and not omitted
+    check_context(messages,config)
+    assert not provider.requests
 
 
 def test_cancel_stops_waiting_and_records_inflight_attempt(tmp_path):

@@ -55,6 +55,7 @@ def test_authorization_budget_idempotency_and_vision_context(case):
     c,app,model,root=case
     image(c,root)
     body,preview=plan(c,root,max_calls=3)
+    assert preview['max_calls'] is None
     assert preview['stages']==['vision','ingest'] and not model['requests']
     assert start(c,root,body,preview,False).status_code==403 and not model['requests']
     model['invalid_next']=True
@@ -65,6 +66,7 @@ def test_authorization_budget_idempotency_and_vision_context(case):
     assert duplicate.json()['id']==response.json()['id']
     task=finished(c,root)
     assert task['status']=='succeeded' and task['calls']==3 and len(model['requests'])==3
+    assert task['max_calls'] is None
     assert len(task['run_ids'])==2
     ctx=json.loads(model['requests'][-1]['messages'][1]['content'][0]['text'])
     assert ctx['vision_observations'][0]['result']['observations'][0]['observation']=='合成图中可见列表和新增按钮'
@@ -77,26 +79,27 @@ def test_authorization_budget_idempotency_and_vision_context(case):
     assert finished(c,root)['status']=='succeeded'
 
 
-def test_total_budget_does_not_reset_for_next_stage(case):
+def test_legacy_total_call_limit_does_not_block_later_stage(case):
     c,app,model,root=case
     image(c,root)
     body,preview=plan(c,root,max_calls=1)
     assert start(c,root,body,preview).status_code==200
     task=finished(c,root)
-    assert task['status']=='paused_budget' and task['calls']==1 and len(model['requests'])==1
-    assert len(task['run_ids'])==1
+    assert task['status']=='succeeded' and task['calls']==2 and len(model['requests'])==2
+    assert task['max_calls'] is None and len(task['run_ids'])==2
     assert c.get(root).json()['sources'][0]['parse_status']=='read'
 
 
-def test_image_batches_share_budget_and_do_not_resend_previous_batch(case):
+def test_legacy_total_call_limit_does_not_block_image_batches_or_ingest(case):
     c,app,model,root=case
     for _ in range(4):image(c,root)
     body,preview=plan(c,root,max_calls=2)
     assert preview['stages']==['vision','vision','ingest']
     assert start(c,root,body,preview).status_code==200
     task=finished(c,root)
-    assert task['status']=='paused_budget' and task['calls']==2 and len(model['requests'])==2
-    contexts=[json.loads(r['messages'][1]['content'][0]['text']) for r in model['requests']]
+    assert task['status'] in ('succeeded','partial') and task['calls']==3 and len(model['requests'])==3
+    assert task['completed_steps']==3 and task['max_calls'] is None
+    contexts=[json.loads(r['messages'][1]['content'][0]['text']) for r in model['requests'][:2]]
     batches=[{e['source_id'] for e in ctx['excerpts']} for ctx in contexts]
     # The saved task message is text; compare only image identities.
     image_ids={s['id'] for s in c.get(root).json()['sources'] if s.get('image_mime')}
@@ -192,7 +195,7 @@ def test_changed_plan_and_new_source_require_fresh_review(case):
     assert len(model['requests'])==count
 
 
-def test_active_task_serialization_and_child_resume_cannot_reset_budget(case):
+def test_active_task_serialization_and_legacy_call_limit_does_not_block_pipeline(case):
     c,app,model,root=case
     image(c,root);model['delay']=.2
     body,preview=plan(c,root,max_calls=1)
@@ -201,13 +204,15 @@ def test_active_task_serialization_and_child_resume_cannot_reset_budget(case):
     legacy=c.post(root+'/runs',json=dict(expected_revision=p['revision'],stage='ingest',message='',document_type='prd'))
     assert legacy.status_code==409
     task=finished(c,root)
-    assert task['status']=='paused_budget' and len(model['requests'])==1
+    assert task['status']=='succeeded' and len(model['requests'])==2
+    assert task['calls']==2 and task['max_calls'] is None and task['completed_steps']==2
     assert c.post(root+'/runs/'+task['run_ids'][0]+'/resume',json={'expected_revision':c.get(root).json()['revision']}).status_code==409
-    # Explicit recovery skips the already-understood image and uses a new reviewed budget.
+    # A fresh action skips the already-understood image; an old body quota is ignored.
     body,preview=plan(c,root,message='',max_calls=1)
     assert preview['stages']==['ingest']
     assert start(c,root,body,preview,False).status_code==200
-    assert finished(c,root)['status']=='succeeded' and len(model['requests'])==2
+    resumed=finished(c,root)
+    assert resumed['status']=='succeeded' and resumed['max_calls'] is None and len(model['requests'])==3
 
 
 def test_restart_pauses_unfinished_records_without_network(tmp_path):

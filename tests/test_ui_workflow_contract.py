@@ -62,7 +62,7 @@ def test_document_reviews_bind_artifact_not_draft_revision(tmp_path):
  assert c.post(root+'/documents/prd/review',json={'expected_revision':p['revision'],'document_id':'DOC-prd'}).status_code==409
 
 
-def test_target_resolution_uses_actual_object_and_budget_unchanged(tmp_path):
+def test_target_resolution_uses_actual_object_and_legacy_budget_is_ignored(tmp_path):
  from app.actions import target_context
  from app.core import Problem
  import pytest
@@ -105,7 +105,7 @@ def test_contextual_plan_identity_is_bound_and_invalid_object_rejected(tmp_path)
  c,app=client(tmp_path);p=prepared(app.state.store);p=check_prepared(app.state.store,p['id'],through=3);root='/api/projects/'+p['id']
  body=dict(expected_revision=p['revision'],action='clarify',message='只讨论这个问题',document_type='prd',max_calls=2,target={'kind':'question','id':'Q-0001'})
  r=c.post(root+'/actions/plan',json=body);assert r.status_code==200
- assert '相接边界如何处理' in r.json()['target_label'] and r.json()['max_calls']==2
+ assert '相接边界如何处理' in r.json()['target_label'] and r.json()['max_calls'] is None
  original=r.json()['plan_hash']
  body['target']={'kind':'item','id':'REQ-0001'}
  assert c.post(root+'/actions/plan',json=body).json()['plan_hash']!=original

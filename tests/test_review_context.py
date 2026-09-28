@@ -65,12 +65,10 @@ def test_review_schema_is_self_contained_and_cannot_propose_mutations():
     assert error.value.validator=='const' and list(error.value.path)==['proposals']
 
 
-def test_review_still_refuses_to_truncate_large_current_facts(tmp_path):
+def test_unlimited_review_preserves_large_current_facts(tmp_path):
     p=documents(tmp_path)
-    # Sized from the configured budget so the contract (refuse, never truncate)
-    # survives budget changes; literal 22000 was pinned to the old 180000 default.
+    # A legacy character threshold must neither reject nor trim current facts.
     repeat=DEFAULT['context_chars']//11+1000
     p['items'][0]['statement']='必须保留的当前规范原文'*repeat
-    with pytest.raises(Problem) as error:
-        assemble(p,'review','',DEFAULT,tmp_path)
-    assert error.value.code=='BUDGET_EXHAUSTED'
+    messages,_,_=assemble(p,'review','',DEFAULT,tmp_path)
+    assert p['items'][0]['statement'] in messages[1]['content'][0]['text']
