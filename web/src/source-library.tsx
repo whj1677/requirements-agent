@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { downloadFile, sourceStatusNames } from './api';
 import { useDialog } from './shell';
+import { Icon } from './ui-icons';
 
 type Obj = Record<string, any>;
 export const sourcePurposes: Record<string, string> = { goal: '目标与诉求', current: '现状资料', reference: '设计参考', template: '文档模板' };
@@ -22,21 +23,33 @@ function MaterialImage({ source, root }: { source: Obj; root: string }) {
   return <section className="material-image-view"><div className="toolbar"><button type="button" onClick={() => setZoom(!zoom)}>{zoom ? '适应窗口' : '查看原图尺寸'}</button></div>
     {!loaded && !error && <p role="status">正在读取图片…</p>}
     {error && <p role="alert">图片暂未取得。<button type="button" onClick={() => { setLoaded(false); setError(false); setRetry(n => n + 1); }}>重新加载图片</button></p>}
-    <div className={zoom ? 'material-image-scroll original-size' : 'material-image-scroll'}><img src={'/api' + root + '/sources/' + source.id + '/image?view=' + retry} alt={source.title} onLoad={() => setLoaded(true)} onError={() => setError(true)} /></div>
+    <div className={zoom ? 'material-image-scroll original-size' : 'material-image-scroll'} hidden={error}><img src={'/api' + root + '/sources/' + source.id + '/image?view=' + retry} alt={source.title} onLoad={() => { setLoaded(true); setError(false); }} onError={() => setError(true)} /></div>
   </section>;
 }
 
 function SourcePreview({ source, p, root, focusExcerpt, onClose }: { source: Obj; p: Obj; root: string; focusExcerpt?: string; onClose: () => void }) {
   const [downloading, setDownloading] = useState(false), [error, setError] = useState(''), [limit, setLimit] = useState(50);
+  const [view, setView] = useState<'text' | 'images'>(source.image_mime ? 'images' : 'text');
   const lock = useRef(false);
+  const reader = useRef<HTMLDivElement>(null);
   const children = p.sources.filter((s: Obj) => s.container_source_id === source.id);
+  const fileType = source.image_mime ? '图片' : /\.(docx?|xlsx?|pptx?|pdf|txt|md)$/i.exec(source.title)?.[1].toUpperCase() || '资料';
+  const status = sourceStatusNames[source.parse_status] || '状态待核对';
+  const limited = source.parse_status !== 'read';
   useDialog(true, () => { if (!downloading) onClose(); });
   useEffect(() => {
     if (!focusExcerpt) return;
+    if (!source.image_mime) setView('text');
     const index = source.excerpts.findIndex((x: Obj) => x.id === focusExcerpt);
-    if (index >= limit) { setLimit(index + 1); return; }
-    document.getElementById('excerpt-' + focusExcerpt)?.scrollIntoView({ block: 'center' });
-  }, [focusExcerpt, source.id, limit]);
+    setLimit(n => Math.max(n, index + 1));
+  }, [focusExcerpt, source.id]);
+  useEffect(() => {
+    if (view !== 'text' || !focusExcerpt) return;
+    // Scope the lookup to this reader: another mounted project can contain the same source.
+    const target = Array.from(reader.current?.querySelectorAll<HTMLElement>('.material-excerpt') || []).find(el => el.id === 'excerpt-' + focusExcerpt);
+    target?.scrollIntoView({ block: 'center' });
+  }, [focusExcerpt, source.id, limit, view]);
+  function changeView(next: 'text' | 'images') { setView(next); reader.current?.scrollTo({ top: 0 }); }
   async function download() {
     if (lock.current) return;
     lock.current = true; setDownloading(true); setError('');
@@ -44,21 +57,40 @@ function SourcePreview({ source, p, root, focusExcerpt, onClose }: { source: Obj
     catch (e) { setError((e as Error).message); }
     finally { lock.current = false; setDownloading(false); }
   }
-  return <div className="modal-backdrop"><section className="modal source-preview" role="dialog" aria-modal="true" aria-label="附件内容">
-    <header className="section-heading"><div><h2>{source.title}</h2><p>{sourcePurposes[source.purpose] || '其他资料'} · {sourceStatusNames[source.parse_status] || '状态待核对'}</p></div><button disabled={downloading} onClick={onClose}>关闭附件</button></header>
-    {source.failure_reason && <p className="notice">{source.failure_reason}</p>}
-    {source.purpose === 'reference' && <p className="notice">设计参考用于理解界面与交互，不表示其中规则已纳入本期。</p>}
-    {source.uri && !source.container_source_id && <p className="material-origin">来源网址：{source.uri}</p>}
-    {error && <p className="error" role="alert">{error}</p>}
-    {!source.uri && source.sha256 && <button disabled={downloading} onClick={download}>{downloading ? '正在准备原始附件…' : '下载原始附件'}</button>}
-    {source.image_mime ? <MaterialImage source={source} root={root} /> : <>
-      <h3>已读取内容</h3><p className="muted">下方展示已提取的内容，不代表原始排版或未提取对象。完整 Office 文件可下载后在本机打开。</p>
-      {!source.excerpts.length && <p className="notice">尚未取得可预览的正文，请核对读取状态；上传成功不表示已读取。</p>}
-      {source.excerpts.slice(0, limit).map((ex: Obj) => <article key={ex.id} id={'excerpt-' + ex.id} className={focusExcerpt === ex.id ? 'material-excerpt source-highlight' : 'material-excerpt'}><small>{ex.locator || '正文片段'}</small><pre>{ex.text}</pre></article>)}
-      {source.excerpts.length > limit && <button onClick={() => setLimit(n => n + 50)}>继续显示内容（已显示 {limit}/{source.excerpts.length}）</button>}
-    </>}
-    {children.length > 0 && <section><h3>文档内图片 · {children.length}</h3>{children.map((child: Obj) => <article key={child.id}><p>{child.container_locator} · {sourceStatusNames[child.parse_status]}</p><MaterialImage source={child} root={root} /></article>)}</section>}
-    <details><summary>来源与读取信息</summary><p>{source.id} · 材料版本 {source.version} · {source.created}</p><p>读取方式：{source.reading?.method || '尚未确认'}</p><p>内容摘要：{source.sha256 || '尚未取得'}</p></details>
+  return <div className="modal-backdrop preview-backdrop"><section className="modal source-preview" role="dialog" aria-modal="true" aria-label="附件内容">
+    <header className="preview-header">
+      <div className="preview-file-icon" aria-hidden="true"><Icon name="document" /><span>{fileType}</span></div>
+      <div className="preview-heading"><p className="preview-eyebrow">附件预览</p><h2>{source.title}</h2><div className="preview-tags"><span>{sourcePurposes[source.purpose] || '其他资料'}</span><span className={limited ? 'preview-status limited' : 'preview-status'}>{status}</span>{source.excluded && <span>已排除</span>}</div></div>
+      <button className="preview-close" disabled={downloading} onClick={onClose} aria-label="关闭附件" title="关闭附件"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button>
+    </header>
+    <div className="preview-toolbar">
+      <div className="preview-views" role="group" aria-label="预览内容">
+        {!source.image_mime && <button aria-pressed={view === 'text'} onClick={() => changeView('text')}>正文</button>}
+        {(source.image_mime || children.length > 0) && <button aria-pressed={view === 'images'} onClick={() => changeView('images')}>{source.image_mime ? '图片' : '文档内图片'} · {source.image_mime ? 1 : children.length}</button>}
+      </div>
+      {!source.uri && source.sha256 && <button className="preview-download" disabled={downloading} onClick={download}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5" /></svg>{downloading ? '正在准备原始附件…' : '下载原始附件'}</button>}
+    </div>
+    {error && <p className="error preview-download-error" role="alert">{error}</p>}
+    <div className="preview-reading-area" ref={reader} tabIndex={0} role="region" aria-label={view === 'text' ? '已读取内容' : '图片预览'}>
+      <div className="preview-notes">
+        {source.failure_reason && <p className="notice">{source.failure_reason}</p>}
+        {source.purpose === 'reference' && <p className="notice">设计参考用于理解界面与交互，不表示其中规则已纳入本期。</p>}
+      </div>
+      {view === 'text' ? <>
+        <p className="preview-reading-hint">以下为提取内容，保留原文文字；原始排版及未提取对象请下载附件查看。</p>
+        <div className="preview-paper">
+          {!source.excerpts.length && <div className="preview-empty"><Icon name="document" /><h3>暂时没有可预览的正文</h3><p>请核对附件的读取状态。上传成功不表示内容已读取。</p></div>}
+          {source.excerpts.slice(0, limit).map((ex: Obj) => <article key={ex.id} id={'excerpt-' + ex.id} className={focusExcerpt === ex.id ? 'material-excerpt source-highlight' : 'material-excerpt'}><pre>{ex.text}</pre></article>)}
+          {source.excerpts.length > limit && <button className="preview-more" onClick={() => setLimit(n => n + 50)}>继续显示内容</button>}
+        </div>
+      </> : source.image_mime ? <div className="preview-image-card"><MaterialImage source={source} root={root} /></div> : <section className="preview-gallery"><h3>文档内图片 · {children.length}</h3><p className="preview-reading-hint">图片按原文位置排列，可单独查看原图尺寸。</p>{children.map((child: Obj, index: number) => <article className="preview-image-card" key={child.id}><header><span className="preview-image-number">{String(index + 1).padStart(2, '0')}</span><div><h4>{child.container_locator || '文档内图片'}</h4><small>{sourceStatusNames[child.parse_status] || '状态待核对'}</small></div></header><MaterialImage source={child} root={root} /></article>)}</section>}
+    </div>
+    <details className="preview-provenance"><summary>来源与读取信息</summary><dl>
+      {source.uri && !source.container_source_id && <><dt>来源网址</dt><dd>{source.uri}</dd></>}
+      <dt>材料编号</dt><dd>{source.id}</dd><dt>材料版本</dt><dd>{source.version}</dd><dt>导入时间</dt><dd>{source.created}</dd>
+      {focusExcerpt && source.excerpts.some((ex: Obj) => ex.id === focusExcerpt) && <><dt>引用位置</dt><dd>{source.excerpts.find((ex: Obj) => ex.id === focusExcerpt)?.locator || focusExcerpt}</dd></>}
+      <dt>读取方式</dt><dd>{source.reading?.method || '尚未确认'}</dd><dt>SHA-256</dt><dd>{source.sha256 || '尚未取得'}</dd>
+    </dl></details>
   </section></div>;
 }
 

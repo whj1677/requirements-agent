@@ -41,9 +41,19 @@ async def run(dist, evidence):
     app = create_app(ISOLATED / 'case', access_token='synthetic-token', provider=NoModel(), env_path=ISOLATED / 'absent.env')
     app.router.routes[:] = [r for r in app.router.routes if getattr(r, 'name', '') != 'web']
     app.mount('/', StaticFiles(directory=dist, html=True), name='web')
-    png = io.BytesIO(); Image.new('RGB', (500, 280), '#265b43').save(png, format='PNG')
-    document = Document(); document.add_paragraph('合成现状：已有联系人列表。此原文必须可以在附件中核对。')
-    document.add_picture(io.BytesIO(png.getvalue()), width=Inches(4))
+    image_a = io.BytesIO(); Image.new('RGB', (500, 280), '#265b43').save(image_a, format='PNG')
+    image_b = io.BytesIO(); Image.new('RGB', (320, 180), '#b45d32').save(image_b, format='PNG')
+    document = Document()
+    document.add_paragraph('合成现状：已有联系人列表。此原文必须可以在附件中核对。')
+    document.add_paragraph('当前流程：使用者进入客户管理，在联系人列表中按姓名或手机号查找，再打开详情查看所属企业和联系记录。')
+    document.add_paragraph('本次诉求：减少重复查找，希望在列表中直接看到联系人所属企业。现有查看与编辑权限保持不变。')
+    document.add_paragraph('待核对事项：企业名称过长时如何展示、缺少企业信息时的提示，以及历史数据是否需要补录。')
+    document.add_paragraph('第三段含有连续字符以检查窄屏换行：' + ('longtextwithoutspaces-' * 35))
+    document.add_picture(io.BytesIO(image_a.getvalue()), width=Inches(4))
+    document.add_paragraph('两张内嵌图之间的正文。')
+    document.add_picture(io.BytesIO(image_b.getvalue()), width=Inches(3))
+    for number in range(60):
+        document.add_paragraph(f'补充材料第 {number + 1} 段：合成验收内容，保持原文顺序与来源位置。')
     raw = io.BytesIO(); document.save(raw)
     thread = server = sock = None
     try:
@@ -57,6 +67,14 @@ async def run(dist, evidence):
             response = client.post(root + '/sources/file', data={'expected_revision': revision, 'purpose': 'current'}, files={'file': ('现状说明.docx', raw.getvalue())})
             assert response.status_code == 200, response.text
             word = response.json()
+            assert len(word['excerpts']) > 55
+            deep_excerpt = word['excerpts'][55]
+            current = app.state.store.get(project['id'])
+            with app.state.store.edit(project['id'], current['revision'], '合成深引用验收条目') as (draft, _):
+                draft['items'].append(dict(id='REQ-0001', kind='requirement', title='深引用定位合成条目',
+                    statement='仅用于验证点击查看来源定位到第五十段之后，不是模型结论。', applies_to='to_be',
+                    epistemic_status='reported', change_type='new', selection_status='selected', revision=1,
+                    source_refs=[dict(source_id=word['id'], excerpt_id=deep_excerpt['id'])], related_refs=[]))
             sock = socket.socket(); sock.bind(('127.0.0.1', 0))
             server = uvicorn.Server(uvicorn.Config(app, log_level='error', access_log=False))
             thread = threading.Thread(target=lambda: server.run(sockets=[sock]), daemon=True); thread.start()
@@ -80,23 +98,86 @@ async def run(dist, evidence):
                 drawer = page.get_by_role('dialog', name='项目资料', exact=True)
                 async with page.expect_file_chooser() as chooser:
                     await drawer.get_by_role('button', name='导入墨刀原型截图', exact=True).click()
-                await (await chooser.value).set_files({'name': '墨刀-联系人.png', 'mimeType': 'image/png', 'buffer': png.getvalue()})
+                await (await chooser.value).set_files({'name': '墨刀-联系人.png', 'mimeType': 'image/png', 'buffer': image_a.getvalue()})
                 await expect(drawer.get_by_role('button', name='查看内容：墨刀-联系人.png', exact=True)).to_be_visible()
                 screenshot = next(s for s in client.get(root).json()['sources'] if s['title'] == '墨刀-联系人.png')
                 assert screenshot['purpose'] == 'reference' and screenshot['parse_status'] == 'awaiting_vision'
                 await expect(drawer.locator('.source-category').filter(has=page.get_by_role('heading', name='设计参考', exact=False))).to_contain_text('墨刀-联系人.png')
                 result['cases'].append('Modao screenshot imports as reference without claiming visual understanding')
-                await drawer.get_by_role('button', name='查看内容：现状说明.docx', exact=True).click()
+                opener = drawer.get_by_role('button', name='查看内容：现状说明.docx', exact=True)
+                await opener.click()
                 preview = page.get_by_role('dialog', name='附件内容', exact=True)
                 await expect(preview).to_contain_text('此原文必须可以在附件中核对')
-                await expect(preview.get_by_role('heading', name='文档内图片 · 1')).to_be_visible()
+                await expect(preview.locator('.preview-reading-area')).to_be_visible()
+                await expect(preview.locator('.material-excerpt')).to_have_count(50)
+                await expect(preview.locator('.material-excerpt small')).to_have_count(0)
+                await expect(preview.get_by_role('button', name='正文', exact=True)).to_be_visible()
+                assert '个已提取片段' not in await preview.inner_text()
+                assert word['excerpts'][0]['locator'] not in await preview.locator('.preview-paper').inner_text()
+                long_excerpt = preview.locator('.material-excerpt').filter(has_text='longtextwithoutspaces-').locator('pre')
+                await expect(long_excerpt).to_contain_text('longtextwithoutspaces-')
+                body_tab = preview.locator('.preview-views button').first
+                images_tab = preview.get_by_role('button', name='文档内图片 · 2', exact=True)
+                await expect(body_tab).to_have_attribute('aria-pressed', 'true')
+                await expect(images_tab).to_have_attribute('aria-pressed', 'false')
+                await expect(preview.get_by_role('heading', name='文档内图片 · 2')).to_have_count(0)
+
+                # Focus must remain in the top dialog, Escape closes only it, and focus returns to its opener.
+                await expect(preview.get_by_role('button', name='关闭附件', exact=True)).to_be_focused()
+                await page.keyboard.press('Shift+Tab')
+                await expect(preview.locator('summary').last).to_be_focused()
+                await page.keyboard.press('Tab')
+                await expect(preview.get_by_role('button', name='关闭附件', exact=True)).to_be_focused()
+                await page.keyboard.press('Escape')
+                await expect(preview).to_have_count(0)
+                await expect(opener).to_be_focused()
+                await opener.click()
+                preview = page.get_by_role('dialog', name='附件内容', exact=True)
+                await preview.get_by_role('button', name='继续显示内容', exact=False).click()
+                await expect(preview.locator('.material-excerpt')).to_have_count(len(word['excerpts']))
+                await expect(preview.locator('.material-excerpt').last.locator('pre')).to_have_text(word['excerpts'][-1]['text'])
+                await preview.get_by_role('region', name='已读取内容', exact=True).evaluate('(el)=>el.scrollTo(0,0)')
                 async with page.expect_download() as download_info:
                     await preview.get_by_role('button', name='下载原始附件', exact=True).click()
                 download = await download_info.value
                 await download.save_as(evidence / 'original.docx')
                 assert (evidence / 'original.docx').read_bytes() == raw.getvalue()
-                await page.screenshot(path=str(evidence / 'word-preview.png'))
-                result['cases'].append('Word extracted content and embedded image preview; original download byte-identical')
+                await page.get_by_role('button', name='关闭提示', exact=True).click()
+                await page.screenshot(path=str(evidence / 'word-preview-desktop.png'))
+                await expect(images_tab).to_have_attribute('aria-pressed', 'false')
+                await images_tab.click()
+                await expect(images_tab).to_have_attribute('aria-pressed', 'true')
+                await expect(preview.get_by_role('heading', name='文档内图片 · 2')).to_be_visible()
+                embedded_images = preview.locator('.material-image-view img')
+                await expect(embedded_images).to_have_count(2)
+                await expect(embedded_images.nth(0)).to_be_visible()
+                await expect(embedded_images.nth(1)).to_be_visible()
+                assert await embedded_images.nth(0).evaluate('(img)=>img.naturalWidth') == 500
+                assert await embedded_images.nth(1).evaluate('(img)=>img.naturalWidth') == 320
+                child_id = next(s['id'] for s in client.get(root).json()['sources'] if s.get('container_source_id') == word['id'])
+                failures = {'count': 0}
+                async def fail_once(route):
+                    failures['count'] += 1
+                    if failures['count'] == 1:
+                        await route.abort()
+                    else:
+                        await route.continue_()
+                await page.route(f'**/sources/{child_id}/image*', fail_once)
+                # Re-open once with a forced initial image failure, then retry and verify recovery.
+                await preview.get_by_role('button', name='关闭附件').click()
+                await drawer.get_by_role('button', name='查看内容：现状说明.docx', exact=True).click()
+                preview = page.get_by_role('dialog', name='附件内容', exact=True)
+                await preview.get_by_role('button', name='文档内图片 · 2', exact=True).click()
+                failed_image = preview.locator('.material-image-view img').first
+                await expect(failed_image).to_have_js_property('complete', True)
+                await expect(preview.get_by_role('alert')).to_contain_text('图片暂未取得')
+                await preview.get_by_role('button', name='重新加载图片', exact=True).click()
+                await expect(failed_image).to_be_visible()
+                await expect(failed_image).to_have_js_property('naturalWidth', 500)
+                assert failures['count'] >= 2
+                await page.unroute(f'**/sources/{child_id}/image*', fail_once)
+                await page.screenshot(path=str(evidence / 'word-preview-images-desktop.png'))
+                result['cases'].append('Word body/image tabs, two embedded images, failed image retry, nested keyboard focus, and byte-identical original download')
                 await preview.get_by_role('button', name='关闭附件').click()
                 # Reclassify a parent and verify the evidence identity and child purpose.
                 card = drawer.locator('.material-card').filter(has=page.get_by_role('button', name='查看内容：现状说明.docx', exact=True))
@@ -112,17 +193,56 @@ async def run(dist, evidence):
                 await drawer.get_by_role('button', name='查看内容：墨刀-联系人.png', exact=True).click()
                 await expect(preview.get_by_role('img', name='墨刀-联系人.png', exact=True)).to_be_visible()
                 assert await preview.get_by_role('img', name='墨刀-联系人.png', exact=True).evaluate('(img)=>img.naturalWidth') == 500
+                await expect(preview.locator('.preview-views button').filter(has_text='正文')).to_have_count(0)
+                await expect(preview.get_by_role('region', name='图片预览', exact=True)).to_be_visible()
+                await expect(preview.locator('.material-excerpt')).to_have_count(0)
                 await preview.get_by_role('button', name='查看原图尺寸').click()
                 await expect(preview.get_by_role('button', name='适应窗口')).to_be_visible()
                 result['cases'].append('screenshot opens and supports original-size viewing')
                 await preview.get_by_role('button', name='关闭附件').click()
                 await page.set_viewport_size({'width': 390, 'height': 844})
+                if await page.get_by_role('button', name='关闭提示', exact=True).count():
+                    await page.get_by_role('button', name='关闭提示', exact=True).click()
                 await page.screenshot(path=str(evidence / 'library-mobile.png'))
                 await drawer.get_by_role('button', name='关闭项目资料').click()
                 # First-screen attachment itself opens the corresponding content.
                 await page.get_by_role('button', name='墨刀-联系人.png', exact=False).click()
                 await expect(preview.get_by_role('img', name='墨刀-联系人.png', exact=True)).to_be_visible()
-                result['cases'].append('intake attachment click opens the corresponding preview on narrow screen')
+                assert await page.evaluate('document.documentElement.scrollWidth <= window.innerWidth')
+                assert await preview.evaluate('(el)=>el.scrollWidth <= el.clientWidth')
+                await page.screenshot(path=str(evidence / 'image-preview-mobile.png'))
+                await preview.get_by_role('button', name='关闭附件').click()
+                # Opening the first-screen attachment also opens its source drawer; it remains after the preview closes.
+                drawer = page.get_by_role('dialog', name='项目资料', exact=True)
+                await drawer.get_by_role('button', name='查看内容：现状说明.docx', exact=True).click()
+                preview = page.get_by_role('dialog', name='附件内容', exact=True)
+                assert await page.evaluate('document.documentElement.scrollWidth <= window.innerWidth')
+                assert await preview.evaluate('(el)=>el.scrollWidth <= el.clientWidth')
+                assert await preview.locator('.preview-reading-area').evaluate('(el)=>el.scrollWidth <= el.clientWidth')
+                assert await preview.locator('.material-excerpt').filter(has_text='longtextwithoutspaces-').locator('pre').evaluate('(el)=>el.scrollWidth <= el.clientWidth')
+                await page.screenshot(path=str(evidence / 'word-preview-mobile.png'))
+                result['cases'].append('390px image and Word previews fit without horizontal overflow; screenshots captured')
+                await preview.get_by_role('button', name='关闭附件').click()
+                await drawer.get_by_role('button', name='关闭项目资料').click()
+                await page.set_viewport_size({'width': 1440, 'height': 1000})
+                await page.get_by_role('button', name='核对现状、价值与改动范围', exact=False).click()
+                requirement = page.locator('.scope-requirement').filter(has_text='深引用定位合成条目')
+                await requirement.locator('summary').click()
+                await requirement.get_by_role('button', name='查看来源', exact=True).click()
+                preview = page.get_by_role('dialog', name='附件内容', exact=True)
+                target = preview.locator('.material-excerpt.source-highlight')
+                await expect(target).to_have_attribute('id', 'excerpt-' + deep_excerpt['id'])
+                await expect(target.locator('pre')).to_have_text(deep_excerpt['text'])
+                await expect(target).to_be_in_viewport()
+                assert await preview.locator('.material-excerpt').count() >= 56
+                await preview.get_by_role('button', name='文档内图片 · 2', exact=True).click()
+                await expect(preview.get_by_role('region', name='图片预览', exact=True)).to_be_visible()
+                await preview.locator('.preview-views button').first.click()
+                await expect(target).to_be_in_viewport()
+                await page.screenshot(path=str(evidence / 'deep-reference.png'))
+                await preview.get_by_role('button', name='关闭附件', exact=True).click()
+                await page.get_by_role('dialog', name='项目资料', exact=True).get_by_role('button', name='关闭项目资料').click()
+                result['cases'].append('load more preserves all extracted text; genuine source-reference navigation reveals and scrolls to excerpt 56, including after image/body switching')
                 assert not result['page_errors'] and result['model_calls'] == 0
                 await browser.close()
                 result['status'] = 'passed'

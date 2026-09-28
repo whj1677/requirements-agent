@@ -10,6 +10,7 @@ import { activityNotice, beginActivity } from './activity';
 import { RequestFeedback } from './feedback';
 import './style.css';
 import './workflow.css';
+import './source-preview.css';
 
 const REQUIRED_CAPABILITIES = ['actions', 'five-step-workflow'];
 function compatOf(info?: SessionInfo['backend']): Compat {
