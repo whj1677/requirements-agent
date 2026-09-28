@@ -1,3 +1,4 @@
+import { beginActivity } from './activity';
 export type JsonObject = Record<string, any>;
 export interface ProjectSummary { id: string; name: string; revision: number }
 export interface Run { id: string; stage: string; status: string; message: string; calls: number; error?: string; cost?: number }
@@ -24,17 +25,34 @@ export type ErrorKind = 'json' | 'text' | 'empty' | 'network';
 export class ApiError extends Error {
   constructor(public status: number, public code: string, message: string, public kind: ErrorKind = 'json', public path = '') { super(message); }
 }
+export function requestTimeout(path: string, method = 'GET') {
+  if (/\/models\/[^/]+\/test$/.test(path)) return 75_000;
+  if (/\/(sources|exports)(\/|$)/.test(path) && method !== 'GET') return 300_000;
+  return method === 'GET' ? 15_000 : 30_000;
+}
+function requestLabel(path: string) {
+  if (/\/models\/[^/]+\/test$/.test(path)) return '正在测试模型连接';
+  if (path.endsWith('/actions/plan')) return '正在核对本次任务';
+  if (path.endsWith('/actions')) return '正在提交任务';
+  if (path.endsWith('/cancel')) return '正在停止后续步骤';
+  if (path.includes('/sources')) return '正在处理项目资料';
+  if (path.endsWith('/exports')) return '正在生成交接包';
+  if (path.endsWith('/confirmations')) return '正在提交版本确认';
+  if (path === '/projects') return '正在创建项目';
+  return '正在提交当前操作';
+}
 export async function api<T = any>(path: string, method = 'GET', body?: unknown, signal?: AbortSignal): Promise<T> {
-  const options: RequestInit = { method, credentials: 'same-origin', signal, headers: { 'X-CSRF-Token': csrf } };
+  const controller = new AbortController();
+  let timedOut = false;
+  const cancel = () => controller.abort();
+  if (signal?.aborted) cancel(); else signal?.addEventListener('abort', cancel, { once: true });
+  const timer = setTimeout(() => { timedOut = true; controller.abort(); }, requestTimeout(path, method));
+  const finish = method === 'GET' ? undefined : beginActivity(requestLabel(path));
+  const options: RequestInit = { method, credentials: 'same-origin', signal: controller.signal, headers: { 'X-CSRF-Token': csrf } };
   if (body instanceof FormData) options.body = body;
   else if (body !== undefined) { options.body = JSON.stringify(body); options.headers = { ...options.headers, 'Content-Type': 'application/json' }; }
-  let response: Response;
   try {
-    response = await fetch('/api' + path, options);
-  } catch (e) {
-    if (e instanceof DOMException && e.name === 'AbortError') throw e;
-    throw new ApiError(0, 'NETWORK', '无法连接服务，请确认服务已启动', 'network', path);
-  }
+  const response = await fetch('/api' + path, options);
   const text = await response.text();
   let data: any = null, kind: ErrorKind = 'empty';
   if (text) {
@@ -43,11 +61,21 @@ export async function api<T = any>(path: string, method = 'GET', body?: unknown,
   }
   if (!response.ok) {
     if (kind === 'json' && data && (data.code || data.message)) throw new ApiError(response.status, data.code || 'HTTP_ERROR', data.message || '请求失败', 'json', path);
+    if (response.status === 422) throw new ApiError(422, 'VALIDATION', '输入格式或必填项不符合要求，请检查当前表单。', 'json', path);
     if (kind === 'json') throw new ApiError(response.status, 'ROUTE_OR_OBJECT', `请求未成功（HTTP ${response.status}）`, 'json', path);
     if (kind === 'text') throw new ApiError(response.status, 'NON_JSON', `服务返回了无法识别的内容（HTTP ${response.status}）`, 'text', path);
     throw new ApiError(response.status, 'EMPTY_RESPONSE', `服务未返回内容（HTTP ${response.status}）`, 'empty', path);
   }
+  if (kind !== 'json' || data === null) throw new ApiError(response.status, kind === 'text' ? 'NON_JSON' : 'EMPTY_RESPONSE', '未取得有效处理结果，请刷新核对状态；不要直接重复提交。', kind, path);
+  finish?.(path.endsWith('/actions') ? '任务已提交，请查看本步运行进度。' : '请求已处理，请查看页面结果。');
   return data as T;
+  } catch (e) {
+    if (signal?.aborted && !timedOut) { finish?.(); throw e; }
+    const unknown = method !== 'GET' ? '服务端是否已处理尚未确认，请先刷新核对，避免重复提交。' : '请确认服务和网络正常后重试。';
+    const error = e instanceof ApiError ? e : new ApiError(0, timedOut ? 'REQUEST_TIMEOUT' : 'NETWORK', (timedOut ? '等待响应超时。' : '连接中断，未取得完整响应。') + unknown, 'network', path);
+    finish?.(error.message, true);
+    throw error;
+  } finally { clearTimeout(timer); signal?.removeEventListener('abort', cancel); }
 }
 
 export interface UploadProgress { loaded: number; total?: number }
@@ -95,12 +123,20 @@ export function categorizeError(e: unknown): ErrorCategory {
 }
 
 export async function downloadFile(url:string,fallback:string){
- const r=await fetch(url,{credentials:'same-origin',headers:{'X-CSRF-Token':csrf}});
+ const controller=new AbortController();let timedOut=false;
+ const timer=setTimeout(()=>{timedOut=true;controller.abort();},300_000),finish=beginActivity('正在准备下载文件');
+ try{
+ const r=await fetch(url,{credentials:'same-origin',headers:{'X-CSRF-Token':csrf},signal:controller.signal});
  if(!r.ok){const data=await r.json().catch(()=>null);throw new ApiError(r.status,data?.code||'DOWNLOAD_FAILED',data?.message||`下载未完成（HTTP ${r.status}）`);}
- const blob=await r.blob(),href=URL.createObjectURL(blob),a=document.createElement('a');
+ const type=r.headers.get('content-type')||'';
+ if(type.includes('text/html')&&!fallback.endsWith('.html')||type.includes('application/json')&&!fallback.endsWith('.json'))throw new ApiError(r.status,'DOWNLOAD_INVALID','服务未返回预期文件，请刷新核对后重试。');
+ const blob=await r.blob();if(!blob.size)throw new ApiError(r.status,'DOWNLOAD_EMPTY','下载文件为空，请核对生成状态后重试。');
+ const href=URL.createObjectURL(blob),a=document.createElement('a');
  const disposition=r.headers.get('content-disposition')||'';
  const encoded=disposition.match(/filename\*=UTF-8''([^;]+)/i);
- a.href=href;a.download=encoded?decodeURIComponent(encoded[1]):fallback;a.click();setTimeout(()=>URL.revokeObjectURL(href),1000);
+ a.href=href;try{a.download=encoded?decodeURIComponent(encoded[1]):fallback;}catch{a.download=fallback;}a.click();setTimeout(()=>URL.revokeObjectURL(href),1000);
+ finish('文件已交给浏览器下载，请在下载列表中查看。');
+ }catch(e){const error=e instanceof ApiError?e:new ApiError(0,'DOWNLOAD_FAILED',timedOut?'下载等待超时，请核对生成状态后重试。':'下载连接中断，请确认服务后重试。','network',url);finish(error.message,true);throw error;}finally{clearTimeout(timer);}
 }
 
 export const sourceStatusNames: JsonObject = { added: '已添加', reading: '读取中', read: '已读取', awaiting_vision: '待视觉分析', partial: '部分读取', failed: '读取失败', office_required: '需要本机 Office 处理', permission_denied: '权限受限' };

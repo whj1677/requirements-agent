@@ -3,8 +3,26 @@ import copy
 import re
 
 from .core import brief_hash
+from .requirements import delivery_items
 
-PRESENTATION_VERSION = 'document-reading-2'
+PRESENTATION_VERSION = 'document-reading-3'
+
+_INTERNAL_SECTIONS = {
+    '历史分析提示（非当前事实）',
+    '附录：条目身份与历史讨论',
+    '附录：未采纳与历史讨论（不作为本期要求）',
+}
+_PROCESS_PREFIXES = (
+    '以下已核对事实与已选条款未由章节建议指定位置',
+    '本轮未完整送入的来源片段：',
+    '章节建议未指定的已核对上下文字段：',
+    '章节建议未指定的已选规范条目：',
+)
+_PRODUCT_BUSINESS_KINDS = {'goal', 'actor', 'constraint', 'non_goal'}
+_PRODUCT_SECTION_TITLES = {
+    'goal': '目标与价值', 'actor': '使用者',
+    'constraint': '产品约束', 'non_goal': '本期范围边界',
+}
 
 
 def reading_structure(content, items, source_snapshot=()):
@@ -15,8 +33,6 @@ def reading_structure(content, items, source_snapshot=()):
     an item's placement in a block establish containment.
     """
     outline, numbers, child_counts = [], {}, {}
-    source_names = {s['id']:s.get('title') for s in source_snapshot}
-
     def heading(node_id, title, level, parent, **extra):
         child_counts[parent] = child_counts.get(parent, 0) + 1
         number = (numbers[parent] + '.' if parent in numbers else '') + str(child_counts[parent])
@@ -49,11 +65,6 @@ def reading_structure(content, items, source_snapshot=()):
                         if value:
                             nodes.append(heading(node_id+'-'+key, label, level+2, node_id))
                             nodes.append(dict(kind='paragraph', text=value, block_kind='behavior'))
-                refs = item.get('source_refs', [])
-                sources = '、'.join(dict.fromkeys(source_names.get(r['source_id']) or '历史材料名称未保存（见条目来源记录）' for r in refs)) or '未提供'
-                identity = {'reported':'材料陈述','inferred':'推断，待核对','proposed':'建议，非已定事实'}.get(item.get('epistemic_status'), item.get('epistemic_status','未记录'))
-                selection = '草稿已采纳，不代表业务负责人批准' if item.get('selection_status')=='selected' else '尚未采纳'
-                nodes.append(dict(kind='metadata', text=f'{identity}；{selection}；来源：{sources}', source_refs=copy.deepcopy(refs)))
         section['reading_nodes'] = nodes
     content['outline'] = outline
     content['presentation_version'] = PRESENTATION_VERSION
@@ -70,39 +81,79 @@ def filename(artifact):
 
 
 def reader_document(artifact):
-    """Only remove recognized compiler scaffolding, never arbitrary business prose."""
-    from .prd import DISCUSSION_APPENDIX_TITLE, discussion_status
+    """Return product content only; retain canonical audit evidence in the project."""
     content = copy.deepcopy(artifact['content'])
+    original_sections = list(content.get('sections', []))
     name = document_name(artifact)
     content['title'] = name + ('｜产品需求文档（PRD）' if content['document_type']=='prd' else '｜市场需求文档（MRD）')
     items = {i['id']:i for i in artifact.get('item_snapshot', [])}
     questions = {q['id']:q for q in artifact.get('question_snapshot', [])}
-    covered={c['item_id'] for c in content.get('coverage',[])}
-    delivered=set(artifact.get('delivery_item_ids',covered))
-    stable=[i for i in items.values() if i['id'] in covered and i['id'] in delivered
-            and i.get('selection_status')=='selected' and i.get('applies_to')=='to_be'
-            and i.get('kind') in ('requirement','rule','acceptance')]
-    business_fields=('kind','statement','behavior','applies_to','epistemic_status')
-    def same_stable(item):
-        matches=[candidate for candidate in stable if candidate['id']!=item['id']
-                 and all(candidate.get(key)==item.get(key) for key in business_fields)]
-        exact=next((candidate for candidate in matches
-                    if candidate.get('change_type')==item.get('change_type')),None)
-        if exact:return exact,False
-        return (matches[0],True) if item['kind']=='acceptance' and matches else (None,False)
+    delivered = set(artifact.get('delivery_item_ids', []))
     sections = []
-    appendix_blocks=[]
-    appendix_section=None
-    appendix_title=DISCUSSION_APPENDIX_TITLE
-    appendix_titles={appendix_title,'附录：未采纳与历史讨论（不作为本期要求）'}
+    source_snapshots=artifact.get('source_snapshot',[])
+    source_by_title={s.get('title'):s for s in source_snapshots}
+    source_by_id={s.get('id'):s for s in source_snapshots}
+    # A layout-only section may carry its product content as a mapped picture.
+    # Keep it only for an explicitly selected in-scope requirement, never for a
+    # discussion-only/candidate page that filtering has removed.
+    picture_dimension = 'PRD-4.F.1' if content['document_type']=='prd' else 'MRD-5.1.F.3'
+    picture_sections = set()
+    for mapping in content.get('reference_mapping', []):
+        item = items.get(mapping.get('scope_ref'), {})
+        if (mapping.get('profile_section_id') == picture_dimension
+                and mapping.get('disposition') in ('included', 'merged')
+                and item.get('kind') == 'requirement'
+                and item.get('selection_status') == 'selected'
+                and item.get('applies_to') == 'to_be'
+                and ('delivery_item_ids' not in artifact or item.get('id') in delivered)):
+            picture_sections.update(mapping.get('output_section_ids', []))
     for section in content['sections']:
-        if section['title'] == '历史分析提示（非当前事实）':
+        if section['title'] in _INTERNAL_SECTIONS:
+            # compile_plan places any selected but unplanned items in its
+            # audit appendix. Promote only explicit, reported, in-scope
+            # business statements to neutral product sections.
+            business = {}
+            for block in section.get('blocks', []):
+                refs = block.get('ref_ids', [])
+                item = items.get(refs[0]) if len(refs) == 1 else None
+                if not item:
+                    continue
+                kind = item.get('kind')
+                if (kind not in _PRODUCT_BUSINESS_KINDS
+                        or item.get('id') not in delivered
+                        or item.get('selection_status') != 'selected'
+                        or item.get('epistemic_status') != 'reported'
+                        or item.get('applies_to') != 'to_be'):
+                    continue
+                line = item.get('title', '') + '\n' + item.get('statement', '')
+                business.setdefault(kind, []).append(dict(kind='narrative', ref_ids=[], text=line))
+            for kind, product_blocks in business.items():
+                product_section = dict(
+                    section_id=f'PRODUCT-{content["document_type"].upper()}-BUSINESS-{kind.upper()}',
+                    title=_PRODUCT_SECTION_TITLES[kind], level=1,
+                    parent_section_id=None, blocks=product_blocks)
+                sections.append(product_section)
+                original_sections.append(product_section)
+            continue
+        if section['title'] in ('已有回答与未决问题','当前决定与未决事项','当前决定',
+                                 '已有回答与待核对修订'):
+            blocks=[]
+            seen_questions=set()
+            for block in section['blocks']:
+                q=questions.get(block['ref_ids'][0]) if len(block.get('ref_ids',[]))==1 else None
+                if not q or q['id'] in seen_questions or q.get('status')=='answered' or q.get('superseded_by'):
+                    continue
+                seen_questions.add(q['id'])
+                state='本期范围外，仍未决定' if q.get('out_of_scope_reason') else '本期未决'
+                text='待决事项：'+q['question']+'\n影响：'+(q.get('why') or '尚未明确')+'\n状态：'+state
+                blocks.append(dict(kind='open_question',ref_ids=[],text=text))
+            if blocks:
+                sections.append(dict(section, title='未决产品事项', blocks=blocks))
             continue
         blocks = []
         for block in section['blocks']:
             text = block.get('text') or ''
-            generated_discussion=False
-            refs = block['ref_ids']
+            refs = block.get('ref_ids',[])
             item = items.get(refs[0]) if len(refs)==1 else None
             question = questions.get(refs[0]) if len(refs)==1 else None
             if block['kind'] in ('requirement','rule','acceptance'):
@@ -111,107 +162,88 @@ def reader_document(artifact):
                     from .product_flow import BEHAVIOR
                     text += ''.join('\n'+label+'：'+item['behavior'][key] for key,label in BEHAVIOR.items() if item.get('behavior',{}).get(key))
             elif item:
-                provenance = '；来源：'+('、'.join(r['source_id']+'/'+r['excerpt_id'] for r in item.get('source_refs',[])) or '未提供')
-                status = discussion_status(item)
-                outside=item['kind'] in ('requirement','rule','acceptance') and item['selection_status']=='selected' and 'delivery_item_ids' in artifact and item['id'] not in artifact['delivery_item_ids']
-                if outside:status='已草稿采纳但不在本期规范范围'
-                generated = f'【{status}；{item["epistemic_status"]}；{item["applies_to"]}】{item["id"]} — {item["statement"]}'+provenance
-                audit = f'{item["id"]}：{item["epistemic_status"]}；草稿采纳不代表业务负责人批准'+provenance
-                if text == audit:
+                # Selected, reported business statements can be product prose.
+                # Keep their wording while excluding proposal/hypothesis status
+                # and internal identity/provenance from the reader projection.
+                if (item.get('kind') not in _PRODUCT_BUSINESS_KINDS
+                        or item.get('id') not in delivered
+                        or item.get('selection_status') != 'selected'
+                        or item.get('epistemic_status') != 'reported'
+                        or item.get('applies_to') != 'to_be'):
                     continue
-                legacy_generated = text.startswith('【未采纳；') and text.endswith(item['statement']+provenance)
-                if text == generated or legacy_generated:
-                    generated_discussion=True
-                    if item['selection_status']=='rejected':label='已拒绝：'
-                    elif item['selection_status']=='deferred':label='已暂缓：'
-                    elif item['selection_status']=='candidate':label='独立条目尚未采纳（不改变已核对的产品上下文）：' if item['epistemic_status']=='reported' else '候选，尚未采纳：'
+                text = item.get('title', '') + '\n' + item.get('statement', '')
+                refs = []
+            elif question:
+                # Answers and workflow states remain in the project audit trail.
+                continue
+            if any(text.startswith(prefix) for prefix in _PROCESS_PREFIXES):
+                continue
+            if text.startswith('【模型讨论说明'):
+                continue
+            if section['title'] in ('限制及参考维度待核对','文档边界与资料限制'):
+                if (text.startswith('材料「') and '尚有读取限制：' in text) or text.startswith('材料限制：'):
+                    if text.startswith('材料「'):
+                        title=text.split('材料「',1)[1].split('」',1)[0]
+                        source=source_by_title.get(title,{})
                     else:
-                        scope={'to_be':'本期','as_is':'现状','reference':'参考'}.get(item['applies_to'],item['applies_to'])
-                        label='已在草稿采纳，不代表业务负责人批准；作用域：'+scope+'：'
-                        if item['epistemic_status']=='reported':label+='材料陈述：'
-                    if outside:label='不在本期规范范围：'
-                    if item['epistemic_status']=='inferred':
-                        label += '待核实的推断：'
-                    elif item['epistemic_status']=='proposed':
-                        label += '方案建议：'
-                    match,different_classification=same_stable(item) if item['selection_status'] in ('rejected','deferred') else (None,False)
-                    identity=''
-                    if match:
-                        decision='已拒绝' if item['selection_status']=='rejected' else '已暂缓'
-                        if different_classification:
-                            old=item.get('change_type') or 'unspecified'
-                            current=match.get('change_type') or 'unspecified'
-                            identity=(f'验收预期原文与已采纳 {match["id"]} 相同；本独立草稿{decision}，'
-                                      f'不撤销 {match["id"]} 的验收要求；两条分类记录不同（{old}/{current}）。')
-                        else:
-                            identity=f'本草稿{decision}；规范原文与 {match["id"]} 相同，以该已采纳条目为准。'
-                    text = item['id']+'｜'+label+item['statement']+('（'+identity+'）' if identity else '')
-                elif text.startswith('参见「') and text.endswith(('原文与依据不变。','身份及原文不变。')):
-                    generated_discussion=text.endswith('身份及原文不变。')
-                    text = item['id']+'｜'+status+'；'+text.split('」中的 ')[0]+'」。'
-            elif question and section['title']=='已有回答与未决问题':
-                text = question['question']
-                if question['status']=='answered':
-                    applied=[r for r in question.get('applied_item_ids',question.get('applied_requirement_ids',[]))
-                             if r in items and items[r].get('selection_status')=='selected']
-                    if question.get('understanding_status')=='applied' and applied:
-                        label='已应用于当前草稿条款的回答：'
-                    elif question.get('understanding_status') in ('pending','candidate_ready'):
-                        label='已有回答，关联条款修订待核对采纳：'
-                    else:
-                        label='已有回答，关联条款更新状态未核实：'
-                    text = label+question['answer']
-                    related = [items[r]['statement'] for r in question.get('related_refs',[]) if r in items]
-                    if related:
-                        text += '\n关联条目当前快照：'+'\n'.join(related)
+                        source_id=text.split('材料限制：',1)[1].split()[0]
+                        source=source_by_id.get(source_id,{})
+                    status=source.get('parse_status')
+                    limits={
+                        'partial':'部分材料内容未能完整读取，相关内容仍待核对。',
+                        'failed':'有材料当前无法读取，相关内容尚未纳入本版。',
+                        'office_required':'有材料需要在本机 Office 中读取，相关内容尚未纳入本版。',
+                        'permission_denied':'有材料因权限限制未能读取，相关内容尚未纳入本版。',
+                        'awaiting_vision':'有图片材料尚未完成读取，相关内容仍待核对。',
+                    }
+                    text=limits.get(status,'部分材料内容尚待核对，相关结论未作为已确认事实。')
+                    refs=[]
                 else:
-                    if question.get('superseded_by'):
-                        text += '（已拆分，具体子问题见工作台）'
-                    elif question.get('out_of_scope_reason'):
-                        text += '（本期以外，仍未知：'+question['out_of_scope_reason']+'）'
-                    else:
-                        text += '（待澄清）'
-            prefix = '【模型讨论说明，未核实；不构成规范或批准】'
-            if text.startswith(prefix):
-                text = text[len(prefix):]
-            if not refs:
-                # Replace only known internal identifiers in model prose, not canonical statements.
-                for index, (qid, q) in enumerate(questions.items(), 1):
-                    text = re.sub(r'(?<![\w-])'+re.escape(qid)+r'(?![\w-])', f'澄清记录 {index}', text)
-                for source in artifact.get('source_snapshot',[]):
-                    # Only the artifact's own source snapshot supplies display names.
-                    # Canonical business clauses and the stored model output remain unchanged.
-                    pattern=r'(?<![\w-])'+re.escape(source['id'])+r'(?![\w-])'
-                    label='材料「'+(source.get('title') or '未命名材料')+'」'
-                    text=re.sub(pattern+r'\s+(partial|failed|read|pending)\b',lambda m:label+'（'+{'partial':'部分读取','failed':'读取失败','read':'已读取','pending':'待读取'}[m[1]]+'）',text)
-                    text=re.sub(pattern,lambda _:label,text)
-            if section['title']=='限制及参考维度待核对':
-                if text == '讨论稿，不构成正式确认；章节语义覆盖待核对。':
+                    # Reference mapping and model planning notes are retained in the project.
                     continue
-                if text.startswith('未成文规范条目：'):
-                    iid = text.split('：',1)[1]
-                    text = '尚未编入正文：'+items.get(iid,{}).get('statement','存在尚未编入正文的需求。')
-            destination=appendix_blocks if generated_discussion else blocks
-            if not any(b['text']==text and b['ref_ids']==refs for b in destination):
-                destination.append(dict(block, text=text))
-        if section['title'] in appendix_titles and not blocks:
-            appendix_section=section
+            if not any(b['text']==text and b['ref_ids']==refs for b in blocks):
+                blocks.append(dict(block, text=text, ref_ids=refs))
+        if blocks or (not section['blocks'] and section['section_id'] in picture_sections):
+            title='文档边界与资料限制' if section['title']=='限制及参考维度待核对' else section['title']
+            sections.append(dict(section, title=title, blocks=blocks))
+    # Preserve empty ancestors for retained sections so parent links remain valid.
+    section_by_id = {s['section_id']: s for s in original_sections}
+    retained = {s['section_id']: s for s in sections}
+    needed = set(retained)
+    for section in list(retained.values()):
+        parent = section.get('parent_section_id')
+        while parent and parent in section_by_id and parent not in needed:
+            needed.add(parent)
+            parent = section_by_id[parent].get('parent_section_id')
+    sections = []
+    for section in original_sections:
+        if section['section_id'] not in needed:
             continue
-        if blocks or any(s.get('parent_section_id')==section['section_id'] for s in content['sections']):
-            active_questions=[q for q in questions.values() if not q.get('superseded_by')]
-            if any(q['status']!='answered' for q in active_questions):question_title='当前决定与未决事项'
-            elif active_questions and all(q.get('understanding_status')=='applied' for q in active_questions):question_title='当前决定'
-            else:question_title='已有回答与待核对修订'
-            titles = {'材料陈述、未成文条目与讨论建议':'补充背景与讨论建议',
-                      '已有回答与未决问题':question_title, '限制及参考维度待核对':'文档边界与补充说明'}
-            titles.update({title:appendix_title for title in appendix_titles})
-            sections.append(dict(section, title=titles.get(section['title'],section['title']), blocks=blocks))
-    if appendix_blocks:
-        base=appendix_section or dict(section_id=content['document_type'].upper()+'-READER-DISCUSSION-APPENDIX',
-                                      level=1,parent_section_id=None)
-        sections.append(dict(base,title=appendix_title,blocks=appendix_blocks))
+        if section['section_id'] in retained:
+            sections.append(retained[section['section_id']])
+            continue
+        title = section['title']
+        if title in _INTERNAL_SECTIONS:
+            title = '产品内容'
+        elif title in ('已有回答与未决问题','当前决定与未决事项','当前决定',
+                       '已有回答与待核对修订'):
+            title = '未决产品事项'
+        sections.append(dict(section, title=title, blocks=[]))
     content['sections'] = sections
-    return reading_structure(content, items, artifact.get('source_snapshot', []))
+    # Mapping explanations and raw coverage are audit/provenance structures, not
+    # part of a product document. Rebuild coverage from clauses actually shown.
+    content.pop('reference_mapping', None)
+    coverage = {}
+    for section in sections:
+        for block in section['blocks']:
+            for ref in block.get('ref_ids', []):
+                if ref in items and items[ref].get('kind') in ('requirement', 'rule', 'acceptance'):
+                    coverage.setdefault(ref, []).append(section['section_id'])
+    content['coverage'] = [
+        dict(item_id=ref, section_ids=list(dict.fromkeys(ids)))
+        for ref, ids in coverage.items()
+    ]
+    return reading_structure(content, items)
 
 
 def export_readiness(p, kind):
@@ -224,4 +256,19 @@ def export_readiness(p, kind):
     for q in p['questions']:
         if q['status'] != 'answered' and not q.get('out_of_scope_reason'):
             issues.append(dict(code='CLARIFICATION_REQUIRED', question_id=q['id'], message=q['question']))
+        elif q['status']=='answered' and q.get('understanding_status')!='applied':
+            from .understanding import answer_targets
+            targets={i['id'] for i in answer_targets(p,q)}
+            selected={i['id'] for i in delivery_items(p)}
+            if targets & selected:
+                issues.append(dict(code='CLARIFICATION_REQUIRED',question_id=q['id'],
+                                   message='已保存回答尚未完整纳入关联产品条款，请先核对采纳。'))
+        elif q['status']=='answered':
+            from .understanding import answer_targets
+            targets={i['id'] for i in answer_targets(p,q)}
+            selected={i['id'] for i in delivery_items(p)}
+            applied=set(q.get('applied_item_ids',q.get('applied_requirement_ids',[])))
+            if (targets & selected)-applied:
+                issues.append(dict(code='CLARIFICATION_REQUIRED',question_id=q['id'],
+                                   message='已保存回答尚未完整纳入关联产品条款，请先核对采纳。'))
     return dict(ready=not issues, issues=issues)

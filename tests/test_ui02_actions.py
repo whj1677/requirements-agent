@@ -156,7 +156,12 @@ def test_draft_with_unknowns_direct_document_and_option_identity(case,topic):
     p=c.get(root).json()
     assert p['documents']['prd']['content']['title']==p['name']
     readable='\n'.join(b['text'] for s in p['documents']['prd']['reader']['sections'] for b in s['blocks'])
-    assert f'管理员维护{topic}列表。' in readable
+    # Candidate-only legacy runs remain available in the project audit trail,
+    # but their statements are not product requirements until adopted.
+    assert f'管理员维护{topic}列表。' not in readable
+    canonical=json.dumps(p['documents']['prd']['content'],ensure_ascii=False)
+    assert f'管理员维护{topic}列表。' in canonical
+    assert any(i['selection_status']=='candidate' and i['statement'] in canonical for i in p['items'])
     assert any(b['kind']=='open_question' for s in p['documents']['prd']['content']['sections'] for b in s['blocks'])
     assert all(i['selection_status']=='candidate' for i in p['items'])
     assert p['confirmation_issues'] and not p['active_baseline_id']

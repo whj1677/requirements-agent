@@ -55,12 +55,15 @@ async def capture(spec):
     return images
 
 
-async def document_files(p, kind, status='草稿／待产品经理内容确认', *, reader=False):
+async def document_files(p, kind, status='草稿／待产品经理内容确认', *, reader=True):
     require(kind in p['documents'], 'NOT_FOUND', '请先生成此类型文档', 404)
     artifact = p['documents'][kind]
     require(artifact['brief_hash'] == brief_hash(p), 'STALE_REVISION', '底稿已改变，请重新成文', 409)
     require(kind not in p.get('stale_document_kinds', []), 'STALE_REVISION', '页面已改变，请重新生成此文档后导出', 409)
     content = reader_document(artifact) if reader else artifact['content']
+    # Keep machine-level source/profile mapping available to export internals
+    # without placing its workflow explanations in the product reading view.
+    reference_mapping = artifact['content'].get('reference_mapping', []) if reader else content.get('reference_mapping', [])
     meta = f'{status} · 底稿版本 {artifact["draft_revision"]} · 内容哈希 {digest(content)[:16]}'
     if reader:
         meta=f'{status} · 文档 v{artifact.get("document_version","旧版未记录")} · 底稿 v{artifact["draft_revision"]}'
@@ -144,7 +147,7 @@ async def document_files(p, kind, status='草稿／待产品经理内容确认',
                 md.append(text)
                 doc.add_paragraph(text)
         picture_dimension = 'PRD-4.F.1' if kind == 'prd' else 'MRD-5.1.F.3'
-        maps = [m for m in content['reference_mapping'] if s['section_id'] in m['output_section_ids'] and m['profile_section_id'] == picture_dimension and m['disposition'] in ('included','merged')]
+        maps = [m for m in reference_mapping if s['section_id'] in m['output_section_ids'] and m['profile_section_id'] == picture_dimension and m['disposition'] in ('included','merged')]
         if maps and images:
             allowed_refs = {m['scope_ref'] for m in maps if m['scope_ref']}
             if not allowed_refs:
@@ -180,7 +183,7 @@ async def document_files(p, kind, status='草稿／待产品经理内容确认',
         labels={d['id']:d['reference_heading'] for d in profile(kind,content['content_profile_id'].startswith('builtin-'))['sections']}
         groups={}
         states={'pending':'待确认','not_applicable':'不适用','merged':'合并表达'}
-        for m in content['reference_mapping']:
+        for m in reference_mapping:
             if m['disposition'] in states:
                 key=(m['disposition'],m['reason'],m['scope_ref'])
                 groups.setdefault(key,[]).append(labels.get(m['profile_section_id'],m['profile_section_id']))
@@ -200,7 +203,7 @@ async def document_files(p, kind, status='草稿／待产品经理内容确认',
     files[kind.upper()+'.docx'] = out.getvalue()
     files[kind.upper()+'.md'] = ('\n\n'.join(md)+'\n').encode('utf-8')
     files['document_asset_bindings.json'] = dumps(bindings).encode('utf-8')
-    files['reference_mapping.json'] = dumps(content['reference_mapping']).encode('utf-8')
+    files['reference_mapping.json'] = dumps(reference_mapping).encode('utf-8')
     return files
 
 
@@ -291,7 +294,7 @@ def handoff_files(baseline, changes):
     files['requirements-exchange.json']=dumps(payload)
     for kind,artifact in p['documents'].items():
         content=reader_document(artifact)
-        files[kind.upper()+'.content.json']=dumps(artifact)
+        files[kind.upper()+'.content.json']=dumps(content)
         files[kind.upper()+'.md']='# '+content['title']+'\n\n'+'\n\n'.join(
             '## '+s['title']+'\n\n'+'\n\n'.join(b['text'] for b in s['blocks']) for s in content['sections'])
     for role,keys in (('frontend',('actor','entry','flow','result','exceptions')),('backend',('data','permissions','result','exceptions'))):

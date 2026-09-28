@@ -36,7 +36,7 @@ def test_hierarchy_uses_explicit_objects_and_never_promotes_short_prose(tmp_path
     p=hierarchy_project(tmp_path);artifact=p['documents']['prd'];before=copy.deepcopy(artifact)
     view=reader_document(artifact);outline=view['outline'];sections=view['sections']
     assert artifact==before
-    assert view['presentation_version']=='document-reading-2'
+    assert view['presentation_version']=='document-reading-3'
     req=next(n for n in outline if n.get('item_id')=='REQ-0001')
     assert req['level']==2 and req['parent_id']==sections[0]['section_id']
     actor=next(n for n in outline if n['text']=='谁操作')
@@ -50,7 +50,8 @@ def test_hierarchy_uses_explicit_objects_and_never_promotes_short_prose(tmp_path
     nodes=[n for s in sections for n in s['reading_nodes']]
     for item in p['items']:
         assert any(n['kind']=='paragraph' and n['text']==item['statement'] for n in nodes)
-    assert any(n.get('source_refs')==p['items'][0]['source_refs'] for n in nodes if n['kind']=='metadata')
+    assert all('source_refs' not in n for n in nodes)
+    assert artifact['item_snapshot'][0]['source_refs']==p['items'][0]['source_refs']
 
 
 def test_long_id_missing_snapshot_and_unknown_keep_their_identity(tmp_path):

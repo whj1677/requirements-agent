@@ -109,8 +109,10 @@ def test_current_ui_context_and_discussion_image_without_adoption(tmp_path):
     before=copy.deepcopy(p['items'])
     apply_response(p,value)
     files=asyncio.run(document_files(p,'prd'))
-    assert len(json.loads(files['document_asset_bindings.json']))==1
-    assert '低保真模拟' in files['PRD.md'].decode()
+    # The current sketch is linked only to unadopted candidate statements, so
+    # a product document must not publish it as if it were an accepted design.
+    assert json.loads(files['document_asset_bindings.json'])==[]
+    assert '原型模拟，不能证明业务系统已经实现' in files['PRD.md'].decode()
     from docx import Document
     from docx.shared import Inches
     import io

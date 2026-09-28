@@ -31,12 +31,17 @@ from .product_flow import status as flow_status, checkpoint, INTAKE, SCOPE, BEHA
 from .requirements import exchange, requirement_ref, delivery_items
 from .budgets import MODEL_OUTPUT_LIMIT
 
+MODEL_TEST_TIMEOUT_SECONDS = 60
+
 
 class Strict(BaseModel):
     model_config = ConfigDict(extra='forbid')
 
 class Revision(Strict):
     expected_revision: int
+
+class SourcePurpose(Revision):
+    purpose: Literal['current','goal','reference','template']
 
 class Name(Strict):
     name: str = Field(min_length=1,max_length=100)
@@ -555,6 +560,30 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
                 if child.get('container_source_id')==sid:child['excluded']=s['excluded']
         return s
 
+    @app.post('/api/projects/{pid}/sources/{sid}/purpose')
+    async def source_purpose(pid:str,sid:str,body:SourcePurpose):
+        with store.edit(pid,body.expected_revision,'修改材料用途') as (p,db):
+            source=next((item for item in p['sources'] if item['id']==sid),None)
+            require(source is not None,'NOT_FOUND','材料不存在',404)
+            source['purpose']=body.purpose
+            for child in p['sources']:
+                if child.get('container_source_id')==sid:
+                    child['purpose']=body.purpose
+        return source
+
+    @app.get('/api/projects/{pid}/sources/{sid}/file')
+    async def source_file(pid:str,sid:str):
+        p=store.get(pid)
+        source=next((item for item in p['sources'] if item['id']==sid),None)
+        require(source is not None,'NOT_FOUND','材料不存在',404)
+        # Only serve the stored original addressed by a source record. Never accept a path from the request.
+        require(Path(sid).name==sid and sid not in ('.','..'),'NOT_FOUND','原始附件不存在',404)
+        path=store.folder/'sources'/sid
+        require(path.is_file(),'NOT_FOUND','原始附件不存在',404)
+        safe_name=Path(source.get('title') or 'attachment').name or 'attachment'
+        return FileResponse(path,media_type='application/octet-stream',filename=safe_name,
+                            content_disposition_type='attachment')
+
     @app.get('/api/projects/{pid}/sources/{sid}/image')
     async def source_image(pid:str,sid:str):
         p=store.get(pid)
@@ -738,7 +767,12 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
             draw.rectangle((10,10,70,70),fill='red');draw.rectangle((90,10,150,70),fill='blue')
             buffer=io.BytesIO();image.save(buffer,format='PNG')
             content=[{'type':'text','text':'Describe the left and right rectangle colors as JSON {"left":"English color","right":"English color"}.'},{'type':'image_url','image_url':{'url':'data:image/png;base64,'+base64.b64encode(buffer.getvalue()).decode()}}]
-        value,meta=await provider.request(c,[{'role':'system','content':'Return a JSON object only.'},{'role':'user','content':content}])
+        try:
+            value,meta=await asyncio.wait_for(
+                provider.request(c,[{'role':'system','content':'Return a JSON object only.'},{'role':'user','content':content}]),
+                timeout=min(c['timeout'],MODEL_TEST_TIMEOUT_SECONDS))
+        except asyncio.TimeoutError as error:
+            raise Problem('TIMEOUT','连接测试等待超时；可重试；不会改变项目资料') from error
         if slot=='vision':
             require(value.get('left','').lower()=='red' and value.get('right','').lower()=='blue','VISION_UNAVAILABLE','视觉探针未正确识别；不标记已验证')
             c['vision']='verified';c['documented_at']=now();store.setting(slot,c)

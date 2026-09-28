@@ -48,9 +48,10 @@ def test_reader_preserves_business_text_without_internal_audit_dump(tmp_path, mo
         for item in p['items']:
             assert item['statement'] in text
         assert p['questions'][0]['question'] in text
-        # PRODUCT-01 explicitly restores stable requirement identities in human documents.
+        # Stable product identities and content versions remain available.
         assert 'REQ-0001｜' in text and 'v1' in text
-        for technical in ('SRC-0001', 'reported', '模型讨论说明', '参考维度', '历史分析提示'):
+        for technical in ('SRC-0001', '冻结工程材料', '来源：', 'reported', '草稿已采纳',
+                          '模型讨论说明', '参考维度', '历史分析提示'):
             assert technical not in text
         assert artifact['content'] == app.state.store.get(p['id'])['documents']['prd']['content']
 
@@ -74,7 +75,8 @@ def test_named_export_after_answers_and_regeneration_matches_reader_and_snapshot
     app, p = setup(tmp_path, monkeypatch)
     old = generate(app.state.store, p['id'])
     with app.state.store.edit(p['id'], p['revision'], '合成预定答案') as (state, _):
-        state['questions'][0].update(status='answered', answer='相接边界允许。')
+        state['questions'][0].update(status='answered', answer='相接边界允许。',
+                                     understanding_status='applied', applied_item_ids=['REQ-0001'])
     with TestClient(app) as client:
         login(client)
         root = '/api/projects/'+p['id']
@@ -103,7 +105,7 @@ def test_named_export_after_answers_and_regeneration_matches_reader_and_snapshot
         assert any(n['text']=='电价时段维护' and n['kind']=='heading' for s in reader['sections'] for n in s['reading_nodes'])
         for noise in ('内容哈希', '参考维度处置', 'reported', 'SRC-0001'):
             assert noise not in paragraphs and noise not in md.text
-        assert '相接边界允许。' in paragraphs
+        assert '相接边界允许。' not in paragraphs
         assert not app.state.store.records(p['id'], 'baseline')
         current = app.state.store.get(p['id'])
         with app.state.store.edit(p['id'], current['revision'], '合成项目重命名') as (state, _):
@@ -112,7 +114,7 @@ def test_named_export_after_answers_and_regeneration_matches_reader_and_snapshot
         assert all(p['name'] in d['reader']['title'] for d in history)
 
 
-def test_reader_keeps_candidate_and_inference_identity_and_original_evidence(tmp_path, monkeypatch):
+def test_reader_omits_candidate_and_inference_discussion_but_keeps_canonical_artifact(tmp_path, monkeypatch):
     from app.document_reader import reader_document
     app, p = setup(tmp_path, monkeypatch)
     candidate = copy.deepcopy(p['items'][0])
@@ -126,14 +128,16 @@ def test_reader_keeps_candidate_and_inference_identity_and_original_evidence(tmp
     artifact = copy.deepcopy(p['documents']['prd'])
     content = reader_document(artifact)
     text = '\n'.join(b['text'] for s in content['sections'] for b in s['blocks'])
-    assert '候选，尚未采纳：待核实的推断：'+candidate['statement'] in text
-    assert '澄清记录 1 仍待澄清。' in text
+    assert candidate['statement'] not in text
+    assert candidate['id'] not in text
+    assert '部分材料内容未能完整读取' in text
+    assert 'Q-0001 仍待澄清' not in text and 'partial' not in text
     assert artifact == p['documents']['prd']
     assert p['items'][-1]['selection_status']=='candidate'
 
 
 def test_answer_reader_distinguishes_saved_candidate_and_applied_revision(tmp_path, monkeypatch):
-    from app.document_reader import reader_document
+    from app.document_reader import export_readiness, reader_document
     app,p=setup(tmp_path,monkeypatch)
     original=copy.deepcopy(p['questions'][0])
     p['questions']=[dict(original,id='Q-PENDING',status='answered',answer='已保存但尚未理解。',
@@ -148,13 +152,16 @@ def test_answer_reader_distinguishes_saved_candidate_and_applied_revision(tmp_pa
     apply_response(p,compile_plan(dict(plan_version='2',sections=[dict(section_key='function',
         context_refs=[],normative_refs=['REQ-0001'],discussion_refs=[])]),p,'prd'))
     artifact=copy.deepcopy(p['documents']['prd'])
-    blocks={b['ref_ids'][0]:b['text'] for s in reader_document(artifact)['sections'] for b in s['blocks']
-            if len(b['ref_ids'])==1 and b['ref_ids'][0].startswith('Q-')}
-    assert blocks['Q-PENDING'].startswith('已有回答，关联条款修订待核对采纳：')
-    assert blocks['Q-CANDIDATE'].startswith('已有回答，关联条款修订待核对采纳：')
-    assert blocks['Q-APPLIED'].startswith('已应用于当前草稿条款的回答：')
-    assert blocks['Q-UNBOUND'].startswith('已有回答，关联条款更新状态未核实：')
-    assert all('关联条目当前快照：' in b and '当前决定：' not in b for b in blocks.values())
+    view=reader_document(artifact)
+    text='\n'.join(b['text'] for s in view['sections'] for b in s['blocks'])
+    for private in ('Q-PENDING','Q-CANDIDATE','Q-APPLIED','Q-UNBOUND','已保存但尚未理解。',
+                    '修订候选待采纳。','已写入稳定条款。','标记应用但目标未选。',
+                    '已有回答，关联条款修订待核对采纳','关联条目当前快照'):
+        assert private not in text
+    readiness=export_readiness(p,'prd')
+    assert not readiness['ready']
+    assert any(i['code']=='CLARIFICATION_REQUIRED' and '尚未完整纳入' in i['message']
+               for i in readiness['issues'])
     assert p['items']==before['items'] and p['questions']==before['questions']
 
 
@@ -166,6 +173,7 @@ def test_source_diagnostics_use_artifact_snapshot_names_without_changing_origina
     artifact['content']['sections'][-1]['blocks'].append(dict(kind='narrative',ref_ids=[],text='材料限制：'+source['id']+' partial 图像有不可辨认部分。'))
     original=copy.deepcopy(artifact)
     text='\n'.join(b['text'] for s in reader_document(artifact)['sections'] for b in s['blocks'])
-    assert '材料「'+source['title']+'」（部分读取） 图像有不可辨认部分。' in text
+    assert '部分材料内容尚待核对，相关结论未作为已确认事实。' in text
+    assert source['title'] not in text
     assert source['id'] not in text and 'partial' not in text
     assert artifact==original

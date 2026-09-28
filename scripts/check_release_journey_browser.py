@@ -272,7 +272,7 @@ async def run(folder: Path, result: dict):
                                                 and response.url.endswith('/exports') and response.status == 200):
                     await work.get_by_role('button', name='生成此基线的研发交接包').click()
                 async with page.expect_download() as pending:
-                    await work.get_by_role('link', name='下载交接包', exact=False).click()
+                    await work.get_by_role('button', name='下载交接包', exact=False).click()
                 download = await pending.value
                 handoff_path = folder / 'handoff.zip'
                 await download.save_as(str(handoff_path))

@@ -74,12 +74,23 @@ def test_draft_assembly_preserves_answers_unknowns_and_exports(tmp_path):
     assert gate(p) and p['active_baseline_id'] is None
     assert p['items'][-1]['selection_status']=='candidate'
     from app.exports import document_files
+    from app.document_reader import export_readiness
+    readiness=export_readiness(p,'prd')
+    assert not readiness['ready']
+    assert any(i['code']=='CLARIFICATION_REQUIRED' and i.get('question_id')=='Q-ANSWER'
+               for i in readiness['issues'])
     files=asyncio.run(document_files(p,'prd'))
     md=files['PRD.md'].decode('utf-8')
     word='\n'.join(x.text for x in Document(io.BytesIO(files['PRD.docx'])).paragraphs)
-    for text in [p['items'][0]['statement'],'建议删除时必填原因。','重复姓名如何处理？','姓名规则尚未确定，先保留原记录。','未采纳','SRC-0001','EX-0001','尚无原型','不代表业务负责人批准']:
+    for text in [p['items'][0]['statement'],'重复姓名如何处理？',
+                 '未提供当前底稿可用的页面方案；本文未插入原型图片。']:
         assert text in md and text in word
-    assert '电价' not in md
+    for process in ['建议删除时必填原因。','姓名规则尚未确定，先保留原记录。',
+                    '未采纳','SRC-0001','EX-0001','不代表业务负责人批准']:
+        assert process not in md and process not in word
+    assert '建议删除时必填原因。' in dumps(p['documents']['prd']['content'])
+    assert '姓名规则尚未确定，先保留原记录。' in dumps(p['documents']['prd']['content'])
+    assert '电价时段维护' in md and '电价时段维护' in word
     assert all(c['item_id']!='REQ-CANDIDATE' for c in r['result']['coverage'])
 
 

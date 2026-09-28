@@ -132,6 +132,7 @@ async def main():
                 results.append({'case': 'answered-unknown-action-hidden', 'status': 'VERIFIED'})
                 await work.get_by_role('button', name='项目资料', exact=False).first.click()
                 drawer = page.get_by_role('dialog', name='项目资料')
+                await drawer.get_by_text('粘贴文字或添加公开网页（辅助方式）', exact=True).click()
                 url = drawer.get_by_label('公开网页 URL')
                 async def reject_url(route):
                     await route.abort()
@@ -164,6 +165,8 @@ async def main():
                 await page.unroute('**/api/projects/*/sources/url', accepted_url)
                 results.append({'case': 'successful-url-clears-only-submitted-value', 'status': 'UI_STATE_VERIFIED_WITH_SYNTHETIC_RESPONSE'})
                 source_count = len(app.state.store.get(project['id'])['sources'])
+                if not await url.is_visible():
+                    await drawer.get_by_text('粘贴文字或添加公开网页（辅助方式）', exact=True).click()
                 await url.fill(synthetic_url)
                 async with page.expect_response(lambda response: response.request.method == 'POST' and response.url.endswith('/sources/url') and response.status == 200) as accepted:
                     await drawer.get_by_role('button', name='确认有权读取并添加').click()
@@ -182,7 +185,7 @@ async def main():
                 await page.reload()
                 await page.get_by_role('button', name='合成工程验证项目').first.click()
                 work = page.locator('.project-workspace:not([hidden])')
-                await work.locator('.task-status').wait_for()
+                await work.locator('.task-status:visible').first.wait_for()
                 slow['enabled'] = True
                 for _ in range(50):
                     if slow['inflight']:
@@ -204,7 +207,7 @@ async def main():
                 saved = app.state.store.get(project['id'])
                 assert saved['questions'][0]['answer'] == '慢轮询中保存的回答。'
                 assert saved['items'][0]['behavior']['flow'] == '慢轮询中保存的流程。'
-                await work.locator('.task-status').wait_for(state='hidden', timeout=10000)
+                await work.locator('.task-status:visible').wait_for(state='hidden', timeout=10000)
                 slow['enabled'] = False
                 assert slow['maximum'] <= 1, slow
                 results.append({'case': 'slow-poll-and-two-drafts-final-state', 'status': 'VERIFIED', 'maximum_project_reads': slow['maximum']})
@@ -276,7 +279,7 @@ async def main():
                 assert await settings.get_by_label('配置用途').input_value() == 'model'
                 await page.route('**/api/models/model', reject_url)
                 await settings.get_by_role('button', name='保存模型配置').click()
-                await page.get_by_role('alert').filter(has_text='无法连接服务').wait_for()
+                await page.get_by_role('alert').filter(has_text='连接中断').first.wait_for()
                 assert await name.input_value() == '合成服务方设置'
                 await page.unroute('**/api/models/model', reject_url)
                 await settings.get_by_label('配置用途').select_option('vision')

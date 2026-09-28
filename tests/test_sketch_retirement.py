@@ -72,11 +72,15 @@ def test_new_document_assembly_and_exports_exclude_old_sketch_without_rewriting_
     picture=next(m for m in value['result']['reference_mapping'] if m['profile_section_id']=='PRD-4.F.1')
     assert picture['disposition']=='not_applicable' and picture['output_section_ids']==[]
     assert p==before
-    p['documents']['prd'].update(content=value['result'],sketch_policy='excluded')
+    p['documents']['prd'].update(content=value['result'],sketch_policy='excluded',
+        item_snapshot=copy.deepcopy(p['items']), question_snapshot=copy.deepcopy(p['questions']),
+        delivery_item_ids=[i['id'] for i in p['items']
+                           if i['selection_status']=='selected' and i['applies_to']=='to_be'])
     with patch('app.exports.capture',side_effect=AssertionError('retired sketch must not render')):
         files=asyncio.run(document_files(p,'prd'))
     assert json.loads(files['document_asset_bindings.json'])==[]
     assert not any(k.startswith('assets/') for k in files)
     md=files['PRD.md'].decode();word='\n'.join(x.text for x in Document(io.BytesIO(files['PRD.docx'])).paragraphs)
-    for i in p['items']:assert i['statement'] in md and i['statement'] in word
+    for i in p['items']:
+        assert i['statement'] in md and i['statement'] in word
     assert p['questions'][0]['question'] in md and p['questions'][0]['question'] in word

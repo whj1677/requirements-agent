@@ -70,7 +70,10 @@ def test_omission_is_supplemented_and_real_unknowns_survive(tmp_path):
     artifact=copy.deepcopy(r['result'])
     apply_response(p,r)
     view=dumps(reader_document(p['documents']['prd']))
-    assert p['questions'][0]['question'] in view and '附图无法辨认' in view
+    assert p['questions'][0]['question'] in view
+    assert '部分材料内容未能完整读取' in view
+    assert '附图无法辨认' not in view and 'EX-OMITTED' not in view
+    assert '过去曾称缺少资料' not in view
     assert artifact==r['result']
 
 
@@ -86,10 +89,9 @@ def test_candidate_rejected_and_deferred_have_distinct_reader_identity(tmp_path)
     assert all(i['statement'] in dumps(r) for i in originals.values())
     apply_response(p,r)
     view=dumps(reader_document(p['documents']['prd']))
-    assert '独立条目尚未采纳（不改变已核对的产品上下文）：' in view
-    assert '已拒绝：' in view
-    assert '已暂缓：' in view
-    assert '待纳入本期' not in view
+    assert all(i['statement'] in dumps(p['documents']['prd']['content']) for i in originals.values())
+    assert all(i['id'] not in view and i['statement'] not in view for i in originals.values())
+    assert '附录：条目身份与历史讨论' not in view
 
 
 def test_selected_normative_cannot_be_downgraded_to_discussion(tmp_path):
@@ -116,19 +118,13 @@ def test_rejected_and_deferred_identical_business_keep_id_and_point_to_stable(tm
     r=compile_plan(value,p,'prd')
     apply_response(p,r)
     view=reader_document(p['documents']['prd'])
-    appendix=next(s for s in view['sections'] if s['title']=='附录：条目身份与历史讨论')
     blocks={i['id']:[b['text'] for s in view['sections'] for b in s['blocks']
             if b['ref_ids']==[i['id']]] for i in copies}
     for item in copies:
-        expected='本草稿已拒绝' if item['selection_status']=='rejected' else '本草稿已暂缓'
-        assert all(t.startswith(item['id']+'｜') for t in blocks[item['id']])
-        assert any(item['statement'] in t and expected in t and
-                   '规范原文与 '+stable['id']+' 相同，以该已采纳条目为准' in t
-                   for t in blocks[item['id']])
-        assert len(blocks[item['id']])==1
-        assert any(b['ref_ids']==[item['id']] for b in appendix['blocks'])
-        assert not any(b['ref_ids']==[item['id']] for s in view['sections'] if s is not appendix
-                       for b in s['blocks'])
+        assert blocks[item['id']]==[]
+        assert item['id'] in dumps(p['documents']['prd']['content'])
+        assert item['statement'] in dumps(p['documents']['prd']['content'])
+    assert stable['statement'] in dumps(view)
 
 
 def test_changed_business_text_behavior_or_classification_has_no_identical_label(tmp_path):
@@ -145,12 +141,13 @@ def test_changed_business_text_behavior_or_classification_has_no_identical_label
         discussion=[i['id'] for i in copies]),p,'prd')
     apply_response(p,r)
     view=reader_document(p['documents']['prd'])
-    blocks={b['ref_ids'][0]:b['text'] for s in view['sections'] for b in s['blocks']
-            if len(b['ref_ids'])==1 and b['ref_ids'][0] in {i['id'] for i in copies}}
     for item in copies:
-        assert blocks[item['id']].startswith(item['id']+'｜已拒绝：')
-        assert item['statement'] in blocks[item['id']]
-        assert '规范原文与 ' not in blocks[item['id']]
+        assert item['id'] not in dumps(view)
+        if item['statement'] != stable['statement']:
+            assert item['statement'] not in dumps(view)
+        assert item['id'] in dumps(p['documents']['prd']['content'])
+        assert item['statement'] in dumps(p['documents']['prd']['content'])
+    assert stable['statement'] in dumps(view)
 
 
 def test_rejected_acceptance_with_different_classification_does_not_cancel_selected_ac(tmp_path):
@@ -167,13 +164,13 @@ def test_rejected_acceptance_with_different_classification_does_not_cancel_selec
         discussion=[same['id'],changed['id']]),p,'prd')
     apply_response(p,r)
     view=reader_document(p['documents']['prd'])
-    blocks={b['ref_ids'][0]:b['text'] for s in view['sections'] for b in s['blocks']
-            if len(b['ref_ids'])==1 and b['ref_ids'][0] in (same['id'],changed['id'])}
-    assert blocks[same['id']].startswith(same['id']+'｜已拒绝：')
-    assert ('验收预期原文与已采纳 '+stable['id']+' 相同；本独立草稿已拒绝，'
-            '不撤销 '+stable['id']+' 的验收要求；两条分类记录不同（new/unspecified）') in blocks[same['id']]
-    assert changed['statement'] in blocks[changed['id']]
-    assert '验收预期原文与已采纳' not in blocks[changed['id']]
+    for item in (same,changed):
+        assert item['id'] not in dumps(view)
+        if item['statement'] != stable['statement']:
+            assert item['statement'] not in dumps(view)
+        assert item['id'] in dumps(p['documents']['prd']['content'])
+        assert item['statement'] in dumps(p['documents']['prd']['content'])
+    assert stable['id'] in dumps(view) and stable['statement'] in dumps(view)
 
 
 def test_discussion_only_plan_places_candidate_in_explicit_appendix(tmp_path):
@@ -211,12 +208,12 @@ def test_old_artifact_moves_only_recognized_discussion_not_arbitrary_prose(tmp_p
     before=copy.deepcopy(artifact)
     view=reader_document(artifact)
     business=next(s for s in view['sections'] if s['section_id']==main['section_id'])
-    discussion=next(s for s in view['sections'] if s['title']=='附录：条目身份与历史讨论')
     assert artifact==before
     assert any('此旧叙述须原样送审' in b['text'] for b in business['blocks'])
     assert not any(b['ref_ids']==[candidate['id']] for b in business['blocks'])
-    assert any(b['ref_ids']==[candidate['id']] and candidate['statement'] in b['text']
-               for b in discussion['blocks'])
+    assert candidate['id'] not in dumps(view) and candidate['statement'] not in dumps(view)
+    assert candidate['id'] in dumps(artifact['content'])
+    assert candidate['statement'] in dumps(artifact['content'])
 
 
 def test_answer_section_title_reflects_applied_and_open_questions(tmp_path):
@@ -227,12 +224,19 @@ def test_answer_section_title_reflects_applied_and_open_questions(tmp_path):
     result=compile_plan(v2(p,context=[],normative=['REQ-0001']),p,'prd')
     apply_response(p,result)
     view=reader_document(p['documents']['prd'])
-    assert any(s['title']=='当前决定' for s in view['sections'])
+    assert not any(s['title']=='当前决定' for s in view['sections'])
+    assert question['answer'] in dumps(p['documents']['prd']['content'])
+    assert question['answer'] not in dumps(view)
     artifact=p['documents']['prd']
-    artifact['question_snapshot'].append(dict(question,id='Q-OPEN',status='open',answer=None,
-                                               question='仍需决定的边界？',superseded_by=[]))
+    open_question=dict(question,id='Q-OPEN',status='open',answer=None,
+                       question='仍需决定的边界？',superseded_by=[])
+    artifact['question_snapshot'].append(open_question)
+    answer_section=next(s for s in artifact['content']['sections'] if s['title']=='已有回答与未决问题')
+    answer_section['blocks'].append(dict(kind='open_question',ref_ids=['Q-OPEN'],
+                                           text='仍需决定的边界？'))
     view=reader_document(artifact)
-    assert any(s['title']=='当前决定与未决事项' for s in view['sections'])
+    assert any(s['title']=='未决产品事项' for s in view['sections'])
+    assert '仍需决定的边界？' in dumps(view)
 
 
 @pytest.mark.parametrize('kind', ['mrd', 'prd'])
@@ -240,7 +244,7 @@ def test_selected_goal_and_candidate_constraint_keep_their_actual_identity(tmp_p
     p=checked_project(tmp_path)
     goal=copy.deepcopy(p['items'][0])
     goal.update(id='GOAL-SELECTED',kind='goal',selection_status='selected',
-                statement='减少人工整理时间。',source_refs=[])
+                statement='减少人工整理时间。',source_refs=[],applies_to='reference')
     constraint=copy.deepcopy(goal)
     constraint.update(id='ITEM-CANDIDATE',kind='non_goal',selection_status='candidate',
                       statement=p['product_context']['preserve_scope'])
@@ -252,15 +256,12 @@ def test_selected_goal_and_candidate_constraint_keep_their_actual_identity(tmp_p
     assert not {goal['id'],constraint['id']} & {c['item_id'] for c in result['result']['coverage']}
     apply_response(p,result)
     view=reader_document(p['documents'][kind])
-    appendix=next(s for s in view['sections'] if s['title']=='附录：条目身份与历史讨论')
-    texts={b['ref_ids'][0]:b['text'] for b in appendix['blocks'] if b['ref_ids']}
-    assert goal['statement'] in texts[goal['id']]
-    assert '已在草稿采纳' in texts[goal['id']] and '不代表业务负责人批准' in texts[goal['id']]
-    assert '本期' in texts[goal['id']]
-    assert constraint['statement'] in texts[constraint['id']]
-    assert '独立条目尚未采纳（不改变已核对的产品上下文）' in texts[constraint['id']]
-    assert any(b.get('text')=='保持不变：'+before['product_context']['preserve_scope']
-               for s in view['sections'] if s is not appendix for b in s['blocks'])
+    assert goal['id'] not in dumps(view) and goal['statement'] not in dumps(view)
+    assert constraint['id'] not in dumps(view)
+    assert goal['id'] in dumps(p['documents'][kind]['content'])
+    assert constraint['id'] in dumps(p['documents'][kind]['content'])
+    assert any('保持不变：'+before['product_context']['preserve_scope'] in b.get('text','')
+               for s in view['sections'] for b in s['blocks'])
     assert p['items']==before['items']
     assert p['questions'][0]['question'] in dumps(view)
 
@@ -277,5 +278,8 @@ def test_legacy_appendix_heading_is_neutral_without_mutating_old_artifact(tmp_pa
     view=reader_document(artifact)
     assert artifact==before
     assert all('不作为本期要求' not in s['title'] for s in view['sections'])
-    assert '旧版补充说明原文，不能丢失。' in dumps(view)
-    assert '候选，尚未采纳：方案建议：' in dumps(view)
+    assert '旧版补充说明原文，不能丢失。' not in dumps(view)
+    assert '候选，尚未采纳：方案建议：' not in dumps(view)
+    assert '旧版补充说明原文，不能丢失。' in dumps(artifact['content'])
+    assert 'REQ-CANDIDATE' in dumps(artifact['content'])
+    assert p['items'][-1]['statement'] in dumps(artifact['content'])

@@ -124,8 +124,15 @@ def test_rule_answer_api_candidate_acceptance_updates_stable_rule_and_document(t
                   normative_refs=['REQ-0001','RULE-0001','AC-0001'],discussion_refs=[])])
         apply_response(p,compile_plan(plan,p,'prd'))
         content=reader_document(p['documents']['prd'])
-        text=[b['text'] for s in content['sections'] for b in s['blocks'] if b['ref_ids']==[q['id']]]
-        assert any(value.startswith('已应用于当前草稿条款的回答：') for value in text)
+        product_text='\n'.join(b['text'] for s in content['sections'] for b in s['blocks'])
+        canonical_text='\n'.join(b['text'] or '' for s in p['documents']['prd']['content']['sections']
+                                  for b in s['blocks'])
+        assert q['answer'] in canonical_text
+        assert all(q['id'] not in b.get('ref_ids', [])
+                   for s in content['sections'] for b in s['blocks'])
+        assert '回答来源：' not in product_text and '关联条目当前快照：' not in product_text
+        assert p['items'][1]['statement']==q['answer']
+        assert q['answer'] in product_text
 
 
 def test_legacy_applied_requirement_ids_are_retained_when_adopting_related_rule():
