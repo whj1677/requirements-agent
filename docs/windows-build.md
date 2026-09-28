@@ -51,7 +51,7 @@ python -m pip install -r requirements.lock.txt -r packaging/requirements-build.t
 npm.cmd --prefix web ci
 $env:PLAYWRIGHT_BROWSERS_PATH = 'C:\approved-build\browsers'
 python -m playwright install --only-shell chromium
-python scripts/build_windows.py --output C:\approved-build\release-1.2.0 `
+python scripts/build_windows.py --output C:\approved-build\release-1.2.1 `
   --iscc 'C:\approved-build\InnoSetup-6.7.3\ISCC.exe' `
   --browser-cache C:\approved-build\browsers
 ```
