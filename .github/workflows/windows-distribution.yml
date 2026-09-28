@@ -138,7 +138,7 @@ jobs:
       - name: Verify a real unlicensed installation with an isolated user profile
         run: |
           $ErrorActionPreference = 'Stop'
-          $installer = Join-Path $env:RA_BUILD_OUTPUT 'installer/RequirementsAgent-1.2.0-windows-x64-setup.exe'
+          $installer = Join-Path $env:RA_BUILD_OUTPUT 'installer/RequirementsAgent-1.2.1-windows-x64-setup.exe'
           $verification = Join-Path $env:RA_BUILD_BASE 'installation-verification'
           python scripts/verify_windows_install.py --installer $installer --output $verification 2>&1 |
             Tee-Object -FilePath (Join-Path $env:RA_BUILD_LOGS 'installation-verification.log')
@@ -155,7 +155,7 @@ jobs:
           if-no-files-found: error
           include-hidden-files: false
           path: |
-            ${{ env.RA_BUILD_OUTPUT }}/installer/RequirementsAgent-1.2.0-windows-x64-setup.exe
+            ${{ env.RA_BUILD_OUTPUT }}/installer/RequirementsAgent-1.2.1-windows-x64-setup.exe
             ${{ env.RA_BUILD_OUTPUT }}/application/RequirementsAgent/release-manifest.json
             ${{ env.RA_BUILD_OUTPUT }}/build-result.json
             ${{ env.RA_BUILD_OUTPUT }}/native-byte-verification.json

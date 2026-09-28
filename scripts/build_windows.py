@@ -18,7 +18,7 @@ import sys
 from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
-VERSION = '1.2.0'
+VERSION = '1.2.1'
 KIT = 'requirements-agent-codex-kit-v1.1'
 NATIVE_FILES = ('DeviceLicense.dll', 'DeviceLicense.Bridge.exe', 'build-manifest.json', 'README.md')
 DOCUMENTS = ('user-guide.md', 'windows-installation.md')
