@@ -69,9 +69,13 @@ def test_omission_is_supplemented_and_real_unknowns_survive(tmp_path):
     assert '过去曾称缺少资料' not in dumps(r['limitations'])
     artifact=copy.deepcopy(r['result'])
     apply_response(p,r)
-    view=dumps(reader_document(p['documents']['prd']))
+    saved_artifact=p['documents']['prd']
+    saved_source=saved_artifact['source_snapshot'][0]
+    assert saved_source['purpose']==p['sources'][0]['purpose']=='goal'
+    view=dumps(reader_document(saved_artifact))
     assert p['questions'][0]['question'] in view
-    assert '部分材料内容未能完整读取' in view
+    assert (f'《{saved_source["title"]}》（本期诉求资料）：部分内容未能完整读取；'
+            '未读取内容不作为本版产品结论的依据。') in view
     assert '附图无法辨认' not in view and 'EX-OMITTED' not in view
     assert '过去曾称缺少资料' not in view
     assert artifact==r['result']

@@ -1,0 +1,26 @@
+{
+  "fixture_id": "stability_contacts_v1",
+  "label": "合成验收用例，非真实客户需求",
+  "current_state": {
+    "contact_list_fields": ["姓名", "电话", "类型"],
+    "administrator": ["新增联系人", "编辑联系人"],
+    "read_only_user": ["查看联系人"],
+    "existing_behaviors_to_preserve": ["查找", "排序", "分页", "删除"]
+  },
+  "initial_request": {
+    "summary": "在联系人列表及新增/编辑表单增加可选的单行纯文本备注。管理员可以编辑；只读用户可以查看但不能修改。",
+    "rules": [
+      "备注允许为空；旧联系人备注为空。",
+      "保存后刷新仍显示备注。",
+      "列表完整显示备注，不截断。",
+      "备注中的空格保留。",
+      "不增加筛选、导出、批量编辑或其他能力。",
+      "目标是方便交接、减少另行记录；没有量化收益。"
+    ],
+    "unresolved": ["备注长度上限及超长处理待产品经理回答"]
+  },
+  "expected_change": {
+    "summary": "澄清后长度上限从初始答案120个字符变更为200个字符，其它规则不变。",
+    "counting": "按Unicode码点计数；换行不允许；emoji和空格均计数。"
+  }
+}

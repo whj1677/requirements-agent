@@ -60,7 +60,7 @@ def test_reader_markdown_docx_and_handoff_json_share_clean_product_projection(
         artifact['item_snapshot'].append(copy.deepcopy(rejected))
         artifact['item_snapshot'].extend([copy.deepcopy(approved_goal), copy.deepcopy(proposed_constraint)])
         artifact['question_snapshot'] = copy.deepcopy(p['questions'])
-        artifact['source_snapshot'] = [dict(id='SRC_PRIVATE_ID', title='PRIVATE_SOURCE_NAME',
+        artifact['source_snapshot'] = [dict(id='SRC_PRIVATE_ID', title='联系人现状.docx', purpose='current',
                                              parse_status='partial',
                                              failure_reason='SOURCE_PRIVATE_ID EX_PRIVATE_ID')]
         sections = artifact['content']['sections']
@@ -82,7 +82,7 @@ def test_reader_markdown_docx_and_handoff_json_share_clean_product_projection(
         sections.append(dict(section_id=document_kind.upper()+'-LIMITS', title='文档边界与资料限制',
                              level=1, parent_section_id=None, blocks=[
                                  dict(kind='narrative', ref_ids=[],
-                                      text='材料「PRIVATE_SOURCE_NAME」尚有读取限制：SOURCE_PRIVATE_ID EX_PRIVATE_ID PRIVATE_SOURCE_EXCEPTION'),
+                                      text='材料「联系人现状.docx」尚有读取限制：SOURCE_PRIVATE_ID EX_PRIVATE_ID PRIVATE_SOURCE_EXCEPTION'),
                                  dict(kind='open_question', ref_ids=[],
                                       text='本轮未完整送入的来源片段：EX_PRIVATE_ID'),
                                  dict(kind='narrative', ref_ids=[],
@@ -118,12 +118,12 @@ def test_reader_markdown_docx_and_handoff_json_share_clean_product_projection(
     assert 'PRIVATE_REJECTED_DISCUSSION_TEXT' not in reader_text
     assert 'PRIVATE_ANSWER_TEXT_NOT_FOR_PRODUCT_DOC' not in reader_text
     assert 'PRIVATE_MODEL_STAGE_PROMPT_MARKER' not in reader_text
-    assert 'PRIVATE_SOURCE_NAME' not in reader_text
     assert 'SOURCE_PRIVATE_ID' not in reader_text and 'EX_PRIVATE_ID' not in reader_text
     assert '产品边界仍需决定？' in reader_text
     assert '决定相邻时段是否允许。' in reader_text
     assert '本期未决' in reader_text
-    assert '部分材料内容未能完整读取' in reader_text
+    assert '《联系人现状.docx》（现状资料）：部分内容未能完整读取；未读取内容不作为本版产品结论的依据。' in reader_text
+    assert '相关内容仍待核对' not in reader_text
     assert '降低操作负担' in reader_text and '值班人员能够快速完成日常核对。' in reader_text
     assert 'GOAL-INTERNAL-77' not in reader_text
     assert 'PRIVATE_PROPOSED_CONSTRAINT' not in reader_text
@@ -147,14 +147,15 @@ def test_reader_markdown_docx_and_handoff_json_share_clean_product_projection(
                            Document(io.BytesIO(files[kind.upper()+'.docx'])).paragraphs)
     for output in (markdown, paragraphs):
         for private in ('PRIVATE_REJECTED_DISCUSSION_TEXT', 'PRIVATE_ANSWER_TEXT_NOT_FOR_PRODUCT_DOC',
-                        'PRIVATE_MODEL_STAGE_PROMPT_MARKER', 'PRIVATE_SOURCE_NAME',
+                        'PRIVATE_MODEL_STAGE_PROMPT_MARKER',
                         'SOURCE_PRIVATE_ID', 'EX_PRIVATE_ID', 'PRIVATE_SOURCE_EXCEPTION',
                         'PRIVATE_ANSWER'):
             assert private not in output
         assert 'REQ-0001' in output and 'v1' in output
         assert '产品边界仍需决定？' in output
         assert '决定相邻时段是否允许。' in output
-        assert '部分材料内容未能完整读取' in output
+        assert '《联系人现状.docx》（现状资料）：部分内容未能完整读取；未读取内容不作为本版产品结论的依据。' in output
+        assert '相关内容仍待核对' not in output
         assert '降低操作负担' in output and '值班人员能够快速完成日常核对。' in output
         assert 'GOAL-INTERNAL-77' not in output and 'PRIVATE_PROPOSED_CONSTRAINT' not in output
 

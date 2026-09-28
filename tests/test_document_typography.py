@@ -36,7 +36,7 @@ def test_hierarchy_uses_explicit_objects_and_never_promotes_short_prose(tmp_path
     p=hierarchy_project(tmp_path);artifact=p['documents']['prd'];before=copy.deepcopy(artifact)
     view=reader_document(artifact);outline=view['outline'];sections=view['sections']
     assert artifact==before
-    assert view['presentation_version']=='document-reading-3'
+    assert view['presentation_version']=='document-reading-4'
     req=next(n for n in outline if n.get('item_id')=='REQ-0001')
     assert req['level']==2 and req['parent_id']==sections[0]['section_id']
     actor=next(n for n in outline if n['text']=='谁操作')

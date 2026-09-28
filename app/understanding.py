@@ -12,6 +12,10 @@ def contract():
         questions='一个问题只问一个可独立回答的决定。复合问题必须列出decision_points（完整Question对象，各自独立temp_id/topic_key/关联需求/阻塞属性），程序展开为独立回答。拆分已有未答问题使用target_question_id；原问题保留为分组记录，不能拆掉已有回答。已答问题若问题文字或风险条件发生变化，不能假定原答案仍适用；材料已回答的事项不要再次提问，编号错字记findings。',
         answer_binding='answer_refs只用于基于已保存回答修订该问题直接关联的原requirement/rule/acceptance：action=revise、target_item_id为该问题related_refs中的原条目ID，kind必须与目标一致，不能指向另一修订候选。使用本轮真实回答片段的source_refs说明依据；新增acceptance等action=add候选不得填写answer_refs，其回答依据放source_refs并用related_refs关联原需求。保留原条目编号与内容，回答不会自动采纳候选；所有直接关联条目的修订明确采纳后才闭环。',
         question_shape='普通单问题省略decision_points或写空数组[]；不能写仅含一个子项的数组。只有确有两项及以上独立决定时才用decision_points分组，每个子项都要是完整Question。',
+        question_self_check='输出前检查每个可回答问题只包含一个决定、至多一个问号。'
+            '例如“在哪里编辑？只读用户如何展示？”是两个决定，必须从首轮就分别写成两个完整questions项，'
+            '或保留父问题并用decision_points放两个完整子项；不能把两个决定混入同一组选项。'
+            '示例只解释结构，不得复制到项目问题。材料已经说明的编辑入口或权限不得重复追问。',
         single_question_example=dict(temp_id='QTMP-example',topic_key='example',question='一个待决定的问题？',why='影响实现或验收',
             options=[],blocking=True,related_refs=['实际需求ID'],source_refs=[],decision_points=[]),
         classification_shape='kind=requirement时，change_type为new/modified/preserved/existing必须有非空scope_evidence；每条须有state、逐字quote、真实source_ref。没有充分材料依据时用unspecified并可用空scope_evidence，不能猜测分类。示例只说明字段，禁止复制占位文本或ID。',
@@ -23,6 +27,8 @@ def contract():
         classification_example=dict(change_type='new',scope_evidence=[dict(state='change',quote='本轮真实片段的原文',
             source_ref=dict(source_id='实际来源ID',excerpt_id='实际片段ID'))],classification_reason='依据所引变化原文'),
         revision_identity='action=revise 表示修订需求记录，change_type 表示本期功能相对真实系统现状的变化，两者独立。补齐一个尚未实现的新增功能的回答或验收，仍是 new；不能因底稿里已经有该候选就变成 modified。只有来源同时说明该功能已有行为和本期改动，才是 modified。原候选、上轮模型输出和本次修订动作都不是 current 的业务现状证据。scope_evidence 的 quote 必须来自同一片段的连续原文，不拼接省略句。',
+        revision_dependencies='已保存回答变更时，逐项核对关联的已采纳需求、规则和验收。旧值仍在已采纳验收里时，对该原验收提出 revise，不另建同义验收而遗留旧值；未直接绑定该问题的条款不能填写 answer_refs，其修订依据使用本轮真实回答的 source_refs。尚未采纳的未来功能不能写成 as_is 现状。',
+        source_pair_check='每一个 source_id 与 excerpt_id 必须成对复制自本轮 excerpts 的同一条记录。不同文件的片段不能共用另一文件的 source_id；used_source_refs 同样逐对核对，不能凭编号外观拼接。',
         boundaries='每个问题关联实际requirement、rule或acceptance。回答只解除该决定的未知，关联业务条款更新需明确采纳修订候选；selected不代表正式业务批准。')
 
 
@@ -118,6 +124,7 @@ def validate(value,p,excerpts):
             identity=i['temp_id']+' ('+i['kind']+'/'+i['action']+', target_item_id='+str(i['target_item_id'])+')'
             allowed='、'.join(q.get('related_refs',[])) if q else '无（问题不存在）'
             advice='；answer_refs仅用于该问题related_refs中原requirement/rule/acceptance的同kind revise候选；新增条目使用真实回答片段的source_refs，不能以新增条目代替原条款修订'
+            advice+='；已存在的间接关联条款仍保留 action=revise 和原 target_item_id，删除不适用的 answer_refs，保留真实回答 source_refs 作为依据；不要把修订改成新增。'
             require(q is not None and q['status']=='answered','REFERENCE_INVALID',
                     identity+' 的 answer_refs='+qid+' 没有已保存回答；允许目标='+allowed+advice)
             require(answer_target(p,q,i) is not None,

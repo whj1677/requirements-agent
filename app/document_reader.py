@@ -5,7 +5,7 @@ import re
 from .core import brief_hash
 from .requirements import delivery_items
 
-PRESENTATION_VERSION = 'document-reading-3'
+PRESENTATION_VERSION = 'document-reading-4'
 
 _INTERNAL_SECTIONS = {
     '历史分析提示（非当前事实）',
@@ -23,6 +23,28 @@ _PRODUCT_SECTION_TITLES = {
     'goal': '目标与价值', 'actor': '使用者',
     'constraint': '产品约束', 'non_goal': '本期范围边界',
 }
+_SOURCE_PURPOSE_LABELS = {
+    'current': '现状资料',
+    'reference': '参考资料',
+    'goal': '本期诉求资料',
+    'template': '模板资料',
+}
+
+
+def _source_limit_text(source):
+    """Describe only the source's declared purpose and recorded read state."""
+    title = source.get('title') or '未命名文件'
+    purpose = _SOURCE_PURPOSE_LABELS.get(source.get('purpose'), '用途未标注资料')
+    status = source.get('parse_status')
+    limits = {
+        'partial': '部分内容未能完整读取',
+        'failed': '当前无法读取',
+        'office_required': '需要在本机 Office 中读取',
+        'permission_denied': '因权限限制未能读取',
+        'awaiting_vision': '图片内容尚未完成读取',
+    }
+    state = limits.get(status, '读取状态尚待核对')
+    return f'《{title}》（{purpose}）：{state}；未读取内容不作为本版产品结论的依据。'
 
 
 def reading_structure(content, items, source_snapshot=()):
@@ -98,6 +120,7 @@ def reader_document(artifact):
     # discussion-only/candidate page that filtering has removed.
     picture_dimension = 'PRD-4.F.1' if content['document_type']=='prd' else 'MRD-5.1.F.3'
     picture_sections = set()
+    pending_promotion = {}
     for mapping in content.get('reference_mapping', []):
         item = items.get(mapping.get('scope_ref'), {})
         if (mapping.get('profile_section_id') == picture_dimension
@@ -128,12 +151,28 @@ def reader_document(artifact):
                 line = item.get('title', '') + '\n' + item.get('statement', '')
                 business.setdefault(kind, []).append(dict(kind='narrative', ref_ids=[], text=line))
             for kind, product_blocks in business.items():
-                product_section = dict(
-                    section_id=f'PRODUCT-{content["document_type"].upper()}-BUSINESS-{kind.upper()}',
-                    title=_PRODUCT_SECTION_TITLES[kind], level=1,
-                    parent_section_id=None, blocks=product_blocks)
-                sections.append(product_section)
-                original_sections.append(product_section)
+                product_title = _PRODUCT_SECTION_TITLES[kind]
+                product_section = next((candidate for candidate in original_sections
+                                        if candidate['title'] == product_title
+                                        and candidate['level'] == 1
+                                        and candidate['parent_section_id'] is None
+                                        and candidate['title'] not in _INTERNAL_SECTIONS), None)
+                if product_section is not None:
+                    # Only the exact root product section is a valid destination.
+                    # Keep the canonical appendix and its identity/source audit intact.
+                    retained_section = next((candidate for candidate in sections
+                                             if candidate['section_id'] == product_section['section_id']), None)
+                    if retained_section is None:
+                        pending_promotion.setdefault(product_section['section_id'], []).extend(product_blocks)
+                    else:
+                        retained_section['blocks'].extend(product_blocks)
+                else:
+                    product_section = dict(
+                        section_id=f'PRODUCT-{content["document_type"].upper()}-BUSINESS-{kind.upper()}',
+                        title=product_title, level=1,
+                        parent_section_id=None, blocks=product_blocks)
+                    original_sections.append(product_section)
+                    sections.append(product_section)
             continue
         if section['title'] in ('已有回答与未决问题','当前决定与未决事项','当前决定',
                                  '已有回答与待核对修订'):
@@ -188,24 +227,24 @@ def reader_document(artifact):
                     else:
                         source_id=text.split('材料限制：',1)[1].split()[0]
                         source=source_by_id.get(source_id,{})
-                    status=source.get('parse_status')
-                    limits={
-                        'partial':'部分材料内容未能完整读取，相关内容仍待核对。',
-                        'failed':'有材料当前无法读取，相关内容尚未纳入本版。',
-                        'office_required':'有材料需要在本机 Office 中读取，相关内容尚未纳入本版。',
-                        'permission_denied':'有材料因权限限制未能读取，相关内容尚未纳入本版。',
-                        'awaiting_vision':'有图片材料尚未完成读取，相关内容仍待核对。',
-                    }
-                    text=limits.get(status,'部分材料内容尚待核对，相关结论未作为已确认事实。')
+                    text=_source_limit_text(source)
                     refs=[]
                 else:
                     # Reference mapping and model planning notes are retained in the project.
                     continue
             if not any(b['text']==text and b['ref_ids']==refs for b in blocks):
                 blocks.append(dict(block, text=text, ref_ids=refs))
-        if blocks or (not section['blocks'] and section['section_id'] in picture_sections):
+        pending_blocks = pending_promotion.pop(section['section_id'], [])
+        if blocks or pending_blocks or (not section['blocks'] and section['section_id'] in picture_sections):
             title='文档边界与资料限制' if section['title']=='限制及参考维度待核对' else section['title']
+            blocks.extend(pending_blocks)
             sections.append(dict(section, title=title, blocks=blocks))
+    # A matching product heading may have been empty and omitted by the normal
+    # pass; append its promotion once, using the original section identity.
+    for section in original_sections:
+        pending_blocks = pending_promotion.pop(section['section_id'], [])
+        if pending_blocks:
+            sections.append(dict(section, blocks=pending_blocks))
     # Preserve empty ancestors for retained sections so parent links remain valid.
     section_by_id = {s['section_id']: s for s in original_sections}
     retained = {s['section_id']: s for s in sections}

@@ -264,7 +264,7 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
                 artifact.setdefault('item_snapshot',snapshot['items'])
                 artifact.setdefault('question_snapshot',snapshot['questions'])
                 artifact.setdefault('requirement_name',snapshot['name'])
-                artifact.setdefault('source_snapshot',[{k:s.get(k) for k in ('id','title','parse_status','failure_reason')} for s in snapshot['sources']])
+                artifact.setdefault('source_snapshot',[{k:s.get(k) for k in ('id','title','purpose','parse_status','failure_reason')} for s in snapshot['sources']])
         artifact['reader']=reader_document(artifact)
         return artifact
 

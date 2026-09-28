@@ -138,7 +138,7 @@ def context(p, *, include_sketch=True):
         A_normative={kind:[copy.deepcopy(i) for i in p['items'] if allowed(i,p) and i['kind']==kind] for kind in NORMATIVE},
         B_statements_answers=dict(items=[copy.deepcopy(i) for i in p['items'] if not allowed(i,p) and i['selection_status']=='selected' and i['epistemic_status'] not in ('proposed','inferred')],
             answers=[copy.deepcopy(q) for q in p['questions'] if q['status']=='answered'],
-            notice='selected仅为当前草稿采纳，不代表业务负责人批准；原条目和后续回答可能存在差异，必须并列保留。'),
+            notice='本组条目均不在本期规范白名单，不能放入 normative_refs。selected 可能是范围外已采纳条目，不能据此推翻 plan_contract.normative_item_ids。只有明确列入 discussion_item_ids 的条目才可放入 discussion_refs，其余仅用于核对背景。selected仅为当前草稿采纳，不代表业务负责人批准；原条目和后续回答可能存在差异，必须并列保留。'),
         C_discussion=dict(items=[copy.deepcopy(i) for i in discussion if not allowed(i,p) and (i['selection_status']!='selected' or i['epistemic_status'] in ('proposed','inferred'))],
             options=copy.deepcopy(p['options']), notice='讨论方向不等于采纳条目；建议和假设不成为规范。'),
         D_unknowns_limits=dict(questions=[copy.deepcopy(q) for q in p['questions'] if q['status']!='answered'],

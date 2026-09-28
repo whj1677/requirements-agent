@@ -151,7 +151,7 @@ def anchor_hash(anchor):
     return digest([[list(k), v] for k, v in anchor.items()])
 
 
-def response_anchor(value, excerpts, stage):
+def response_anchor(value, excerpts, stage, project=None):
     """Conservatively retain valid business fields in a malformed non-ingest reply."""
     if not isinstance(value, dict):
         return {}
@@ -178,6 +178,16 @@ def response_anchor(value, excerpts, stage):
                     locked[(*prefix,key,'@ids')]=ids
                     child_properties=rule['items']['properties']
                     for child in field:fields(child,child_properties,(*prefix,key,child['temp_id']))
+            elif isinstance(field, list) and rule.get('type') == 'array' and isinstance(rule.get('items'), dict):
+                item_rule = rule['items']
+                if '$ref' in item_rule:
+                    item_rule = definitions[item_rule['$ref'].rsplit('/',1)[1]]
+                if item_rule.get('type') == 'object':
+                    locked[(*prefix,key,'@count')] = len(field)
+                    for index, child in enumerate(field):
+                        fields(child, item_rule.get('properties', {}), (*prefix,key,index))
+                elif rule_valid(rule,field):
+                    locked[(*prefix,key)] = copy.deepcopy(field)
             elif rule_valid(rule,field):
                 locked[(*prefix,key)]=copy.deepcopy(field)
             elif isinstance(field,dict) and '$ref' in rule:
@@ -190,7 +200,18 @@ def response_anchor(value, excerpts, stage):
         ids=[r.get('temp_id') for r in rows if isinstance(r,dict)]
         if len(ids)!=len(rows) or any(not isinstance(i,str) for i in ids) or len(ids)!=len(set(ids)):continue
         locked[(name,'@ids')]=ids
-        for row in rows:fields(row,definitions[definition]['properties'],(name,row['temp_id']))
+        for row in rows:
+            fields(row,definitions[definition]['properties'],(name,row['temp_id']))
+            if name == 'proposals' and project is not None:
+                from .understanding import answer_target
+                # Preserve actual bindings, not invalid references that validation
+                # already rejects. This only builds the anchor; never edits output.
+                refs = row.get('answer_refs', [])
+                questions = {q['id']: q for q in project['questions'] if q['status'] == 'answered'}
+                locked[(name, row['temp_id'], 'answer_refs')] = [
+                    ref for ref in refs if isinstance(ref, str) and ref in questions
+                    and answer_target(project, questions[ref], row) is not None
+                ] if isinstance(refs, list) else []
     findings=value.get('findings')
     if isinstance(findings,list):
         locked[('findings','@count')]=len(findings)
@@ -290,12 +311,90 @@ def temporary_id_repair(original, value, stage):
     return normalized if dumps(normalized)==dumps(value) else None
 
 
-def preserve_response(anchor, value, excerpts, stage, original=None):
-    if original is not None and anchor==response_anchor(original,excerpts,stage):
-        normalized=temporary_id_repair(original,value,stage)
-        if normalized is not None:
-            anchor=response_anchor(normalized,excerpts,stage)
-    current=response_anchor(value,excerpts,stage)
+def reference_repair_anchor(original, value, excerpts, stage, project):
+    """Align only invalid reference slots for comparison; never amend model output.
+
+    A source-pair correction must keep its excerpt and have a unique actual
+    source. Unknown review IDs may be dropped, never replaced to expand coverage.
+    Existing valid references cannot be removed, moved, or replaced.
+    """
+    normalized = copy.deepcopy(original)
+    pairs = {(e['source_id'], e['id']) for e in excerpts}
+    by_excerpt = {}
+    for source, excerpt in pairs:
+        by_excerpt.setdefault(excerpt, set()).add(source)
+    known = ({i['id'] for i in project['items']} | {q['id'] for q in project['questions']}) if project else set()
+    if project and project.get('ui'):
+        known.update(page['page_id'] for page in project['ui']['spec']['pages'])
+
+    def pair(ref):
+        if isinstance(ref, dict) and isinstance(ref.get('source_id'), str) and isinstance(ref.get('excerpt_id'), str):
+            return ref['source_id'], ref['excerpt_id']
+        return None, None
+
+    def align(before, after, valid, replacement):
+        if not isinstance(before, list) or not isinstance(after, list):
+            return False
+        # Try both deletion and correction: a wrong pair before an identical
+        # valid pair must not consume the valid pair's slot greedily.
+        reachable = {0}
+        for old in before:
+            following = set()
+            for index in reachable:
+                if valid(old):
+                    if index < len(after) and after[index] == old:
+                        following.add(index + 1)
+                else:
+                    following.add(index)
+                    if index < len(after) and replacement(old, after[index]):
+                        following.add(index + 1)
+            reachable = following
+            if not reachable:
+                return False
+        return len(after) in reachable
+
+    def walk(before, after, path=()):
+        if isinstance(before, dict) and isinstance(after, dict):
+            for key in before.keys() & after.keys():
+                old, new = before[key], after[key]
+                if key in ('source_refs', 'used_source_refs'):
+                    def valid(ref):
+                        return pair(ref) in pairs
+                    def replacement(a, b):
+                        source, excerpt = pair(b)
+                        return (valid(b) and excerpt == pair(a)[1]
+                                and by_excerpt.get(excerpt) == {source})
+                    if align(old, new, valid, replacement):
+                        before[key] = copy.deepcopy(new)
+                elif key == 'source_ref' and isinstance(old, dict) and isinstance(new, dict):
+                    old_pair, new_pair = pair(old), pair(new)
+                    source, excerpt = new_pair
+                    if (old_pair not in pairs and new_pair in pairs
+                            and old_pair[1] == excerpt
+                            and by_excerpt.get(excerpt) == {source}):
+                        before[key] = copy.deepcopy(new)
+                    else:
+                        walk(old, new, (*path, key))
+                elif stage == 'review' and project is not None and (*path, key) == ('result', 'reviewed_refs'):
+                    if align(old, new, lambda ref: isinstance(ref, str) and ref in known,
+                             lambda a, b: False):
+                        before[key] = copy.deepcopy(new)
+                else:
+                    walk(old, new, (*path, key))
+        elif isinstance(before, list) and isinstance(after, list) and len(before) == len(after):
+            for index, (old, new) in enumerate(zip(before, after)):
+                walk(old, new, (*path, index))
+
+    walk(normalized, value)
+    return normalized
+
+
+def preserve_response(anchor, value, excerpts, stage, original=None, project=None):
+    if original is not None and anchor==response_anchor(original,excerpts,stage,project):
+        normalized=reference_repair_anchor(original,value,excerpts,stage,project)
+        renamed=temporary_id_repair(normalized,value,stage)
+        anchor=response_anchor(renamed if renamed is not None else normalized,excerpts,stage,project)
+    current=response_anchor(value,excerpts,stage,project)
     changed=[list(path) for path,original in anchor.items() if current.get(path)!=original]
     require(not changed,'SEMANTIC_BLOCKED',
             '格式修复改变了已有问题、规则、决定或引用，结果未采纳；请单独核对：'+str(changed))

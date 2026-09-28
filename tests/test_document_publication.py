@@ -126,11 +126,14 @@ def test_reader_omits_candidate_and_inference_discussion_but_keeps_canonical_art
         normative_refs=[], discussion_refs=[candidate['id']])])
     apply_response(p, compile_plan(plan, p, 'prd'))
     artifact = copy.deepcopy(p['documents']['prd'])
+    source = artifact['source_snapshot'][0]
+    assert source['purpose'] == p['sources'][0]['purpose'] == 'goal'
     content = reader_document(artifact)
     text = '\n'.join(b['text'] for s in content['sections'] for b in s['blocks'])
     assert candidate['statement'] not in text
     assert candidate['id'] not in text
-    assert '部分材料内容未能完整读取' in text
+    assert (f'《{source["title"]}》（本期诉求资料）：部分内容未能完整读取；'
+            '未读取内容不作为本版产品结论的依据。') in text
     assert 'Q-0001 仍待澄清' not in text and 'partial' not in text
     assert artifact == p['documents']['prd']
     assert p['items'][-1]['selection_status']=='candidate'
@@ -170,10 +173,13 @@ def test_source_diagnostics_use_artifact_snapshot_names_without_changing_origina
     app,p=setup(tmp_path,monkeypatch)
     artifact=generate(app.state.store,p['id'])
     source=artifact['source_snapshot'][0]
+    source['parse_status']='partial'
     artifact['content']['sections'][-1]['blocks'].append(dict(kind='narrative',ref_ids=[],text='材料限制：'+source['id']+' partial 图像有不可辨认部分。'))
     original=copy.deepcopy(artifact)
     text='\n'.join(b['text'] for s in reader_document(artifact)['sections'] for b in s['blocks'])
-    assert '部分材料内容尚待核对，相关结论未作为已确认事实。' in text
-    assert source['title'] not in text
+    purpose_labels = {'current': '现状资料', 'goal': '本期诉求资料',
+                      'reference': '参考资料', 'template': '模板资料'}
+    assert (f'《{source["title"]}》（{purpose_labels[source["purpose"]]}）：'
+            '部分内容未能完整读取；未读取内容不作为本版产品结论的依据。') in text
     assert source['id'] not in text and 'partial' not in text
     assert artifact==original

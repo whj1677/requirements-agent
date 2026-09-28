@@ -1,5 +1,6 @@
 import copy
 import hashlib
+import json
 import re
 import jsonschema
 from referencing import Registry, Resource
@@ -41,6 +42,29 @@ def nodes(value):
             yield from nodes(v)
 
 
+def nodes_with_paths(value, path=()):
+    """Yield each mapping with its JSON path for actionable reference diagnostics."""
+    if isinstance(value, dict):
+        yield path, value
+        for key, child in value.items():
+            yield from nodes_with_paths(child, (*path, key))
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            yield from nodes_with_paths(child, (*path, index))
+
+
+def json_path(path):
+    result = '$'
+    for part in path:
+        if isinstance(part, int):
+            result += f'[{part}]'
+        elif re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', part):
+            result += '.' + part
+        else:
+            result += '[' + json.dumps(part, ensure_ascii=False) + ']'
+    return result
+
+
 def describe_schema_error(errors):
     flat = []
     stack = list(errors)
@@ -70,9 +94,22 @@ def validate_response(value, stage, project, excerpts, document_type='prd'):
     if project.get('ui'):
         allowed |= {p['page_id'] for p in project['ui']['spec']['pages']}
     pairs = {(x['source_id'], x['id']) for x in excerpts}
-    for node in nodes(value):
+    sources_by_excerpt = {}
+    for source_id, excerpt_id in pairs:
+        sources_by_excerpt.setdefault(excerpt_id, set()).add(source_id)
+    invalid_source_refs = []
+    for path, node in nodes_with_paths(value):
         if 'source_id' in node and 'excerpt_id' in node:
-            require((node['source_id'], node['excerpt_id']) in pairs, 'REFERENCE_INVALID', '来源不在本轮实际输入范围')
+            pair = (node['source_id'], node['excerpt_id'])
+            if pair not in pairs:
+                diagnostic = (f'{json_path(path)}：source_id={node["source_id"]!r}，'
+                              f'excerpt_id={node["excerpt_id"]!r}，不在本轮实际输入范围')
+                candidates = sources_by_excerpt.get(node['excerpt_id'], set())
+                if len(candidates) == 1:
+                    source_id = next(iter(candidates))
+                    diagnostic += (f'；此 excerpt_id 唯一对应本轮 source_id={source_id!r}、'
+                                   f'excerpt_id={node["excerpt_id"]!r}，仅供修复参考')
+                invalid_source_refs.append(diagnostic)
         for key in ('related_refs', 'ref_ids', 'canonical_refs', 'requirement_refs', 'proposed_item_refs', 'reviewed_refs', 'impacted_refs', 'unimpacted_refs', 'rule_ids', 'ac_ids'):
             if key in node:
                 bad = sorted(set(node[key]) - allowed)
@@ -80,6 +117,13 @@ def validate_response(value, stage, project, excerpts, document_type='prd'):
         for key in ('target_ref', 'target_item_id', 'requirement_id', 'item_id', 'scope_ref'):
             if node.get(key) is not None:
                 require(node[key] in allowed, 'REFERENCE_INVALID', '未知关联：' + key + '（' + str(node[key]) + '）')
+    if invalid_source_refs:
+        limit = 5
+        message = '来源引用不在本轮实际输入范围（最多列出 '+str(limit)+' 项）：' + '；'.join(invalid_source_refs[:limit])
+        if len(invalid_source_refs) > limit:
+            message += f'；另有 {len(invalid_source_refs)-limit} 项未展开'
+        message += '。上述提示仅供修复参考，程序不会自动替换引用'
+        require(False, 'REFERENCE_INVALID', message)
     for proposal in value['proposals']:
         require((proposal['action'] == 'add' and proposal['target_item_id'] is None) or
                 (proposal['action'] == 'revise' and proposal['target_item_id'] in item_ids),
