@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Business context bundle v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "bundle_id", "generated_at", "project", "source_snapshot", "overview", "modules", "claims", "evidence", "unknowns", "conflicts", "coverage", "technical_summary"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "bundle_id": {"$ref": "#/$defs/id"},
+    "generated_at": {"type": "string", "format": "date-time", "maxLength": 40},
+    "project": {"type": "object", "additionalProperties": false, "required": ["id", "name"], "properties": {"id": {"$ref": "#/$defs/id"}, "name": {"$ref": "#/$defs/short"}}},
+    "source_snapshot": {"type": "object", "additionalProperties": false, "required": ["repositories", "deployment"], "properties": {"deployment": {"$ref": "#/$defs/short"}, "repositories": {"type": "array", "minItems": 1, "maxItems": 20, "items": {"type": "object", "additionalProperties": false, "required": ["id", "revision", "dirty"], "properties": {"id": {"$ref": "#/$defs/id"}, "revision": {"$ref": "#/$defs/short"}, "dirty": {"type": ["boolean", "null"]}}}}}},
+    "overview": {"$ref": "#/$defs/text"},
+    "modules": {"type": "array", "minItems": 1, "maxItems": 100, "items": {"type": "object", "additionalProperties": false, "required": ["id", "name", "summary", "claim_ids", "depends_on"], "properties": {"id": {"$ref": "#/$defs/id"}, "name": {"$ref": "#/$defs/short"}, "summary": {"$ref": "#/$defs/text"}, "claim_ids": {"$ref": "#/$defs/ids"}, "depends_on": {"$ref": "#/$defs/ids"}}}},
+    "claims": {"type": "array", "maxItems": 1000, "items": {"type": "object", "additionalProperties": false, "required": ["id", "module_ids", "dimension", "text", "origin", "evidence_ids"], "properties": {"id": {"$ref": "#/$defs/id"}, "module_ids": {"$ref": "#/$defs/ids"}, "dimension": {"$ref": "#/$defs/short"}, "text": {"$ref": "#/$defs/text"}, "origin": {"enum": ["code_observation", "document_claim", "inference"]}, "evidence_ids": {"$ref": "#/$defs/ids"}}}},
+    "evidence": {"type": "array", "maxItems": 2000, "items": {"type": "object", "additionalProperties": false, "required": ["id", "repository_id", "path", "symbol", "line_start", "line_end", "sha256", "kind"], "properties": {"id": {"$ref": "#/$defs/id"}, "repository_id": {"$ref": "#/$defs/id"}, "path": {"type": "string", "minLength": 1, "maxLength": 500}, "symbol": {"$ref": "#/$defs/short"}, "line_start": {"type": "integer", "minimum": 1}, "line_end": {"type": "integer", "minimum": 1}, "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "kind": {"enum": ["implementation", "documentation", "test", "comment", "configuration"]}, "snippet": {"type": "string", "maxLength": 1000}}}},
+    "unknowns": {"type": "array", "maxItems": 300, "items": {"type": "object", "additionalProperties": false, "required": ["id", "question", "module_ids"], "properties": {"id": {"$ref": "#/$defs/id"}, "question": {"$ref": "#/$defs/text"}, "module_ids": {"$ref": "#/$defs/ids"}}}},
+    "conflicts": {"type": "array", "maxItems": 300, "items": {"type": "object", "additionalProperties": false, "required": ["id", "description", "claim_ids"], "properties": {"id": {"$ref": "#/$defs/id"}, "description": {"$ref": "#/$defs/text"}, "claim_ids": {"$ref": "#/$defs/ids"}}}},
+    "coverage": {"type": "object", "additionalProperties": false, "required": ["inspected_modules", "indexed_modules", "excluded", "limitations"], "properties": {"inspected_modules": {"$ref": "#/$defs/ids"}, "indexed_modules": {"$ref": "#/$defs/ids"}, "excluded": {"type": "array", "maxItems": 100, "items": {"$ref": "#/$defs/short"}}, "limitations": {"type": "array", "maxItems": 100, "items": {"$ref": "#/$defs/text"}}}},
+    "technical_summary": {"$ref": "#/$defs/text"}
+  },
+  "$defs": {
+    "id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$"},
+    "ids": {"type": "array", "maxItems": 100, "uniqueItems": true, "items": {"$ref": "#/$defs/id"}},
+    "short": {"type": "string", "minLength": 1, "maxLength": 300},
+    "text": {"type": "string", "minLength": 1, "maxLength": 5000}
+  }
+}

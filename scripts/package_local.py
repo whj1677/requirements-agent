@@ -33,9 +33,9 @@ def source_paths(root):
     paths += [Path('web') / name for name in WEB_FILES]
     paths += [p.relative_to(root) for p in sorted((root / 'web' / 'src').rglob('*'))
               if p.is_file() and p.suffix in SAFE_WEB_EXTENSIONS]
-    paths += [p.relative_to(root) for folder in ('examples', 'prompts', 'references')
+    paths += [p.relative_to(root) for folder in ('examples', 'prompts', 'references', 'schemas')
               for p in sorted((root / KIT / folder).iterdir()) if p.is_file() and
-              p.suffix.lower() in ({'.json'} if folder == 'examples' else
+              p.suffix.lower() in ({'.json'} if folder in ('examples','schemas') else
                                    {'.json', '.md'} if folder == 'prompts' else
                                    {'.json', '.docx'})]
     for relative in paths:

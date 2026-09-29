@@ -84,6 +84,10 @@ def fingerprint(p, step):
     else:
         value=dict(documents={k:dict(id=d['id'],content_hash=digest(d['content'])) for k,d in p['documents'].items()},
                    delivery=p.get('delivery_scope',{'documents':['mrd','prd']}))
+    if step in (2,3):
+        from .business_context import selection_identity
+        business=selection_identity(p)
+        if business:value=dict(content=value,business_context=business)
     return digest(value)
 
 

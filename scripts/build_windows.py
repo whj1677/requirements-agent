@@ -55,7 +55,7 @@ def required_inputs(root):
     workflow = root / '.github/workflows/windows-distribution.yml'
     if workflow.is_file():
         files.append(workflow)
-    for folder, extensions in [('examples', {'.json'}), ('prompts', {'.json', '.md'}),
+    for folder, extensions in [('examples', {'.json'}), ('schemas', {'.json'}), ('prompts', {'.json', '.md'}),
                                ('references', {'.json', '.docx'})]:
         files += sorted(path for path in (root / KIT / folder).iterdir() if path.suffix.lower() in extensions)
     for path in files:
@@ -343,7 +343,7 @@ def build(args):
             assets.append((path, 'app'))
     for name in NATIVE_FILES:
         assets.append((root / 'app/license_runtime' / name, 'app/license_runtime'))
-    for folder, extensions in [('examples', {'.json'}), ('prompts', {'.json', '.md'}),
+    for folder, extensions in [('examples', {'.json'}), ('schemas', {'.json'}), ('prompts', {'.json', '.md'}),
                                ('references', {'.json', '.docx'})]:
         for path in sorted((root / KIT / folder).iterdir()):
             if path.is_file() and path.suffix.lower() in extensions:

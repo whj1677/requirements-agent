@@ -49,6 +49,10 @@ def brief_hash(p):
     content={k:p[k] for k in ('items','questions','options')}
     # Old snapshots retain their original hash; new scope statements are real inputs.
     if 'product_context' in p:content['product_context']=p['product_context']
+    from .business_context import selection_identity
+    business = selection_identity(p)
+    if business:
+        content['business_context'] = business
     return digest(content)
 
 

@@ -1215,6 +1215,31 @@
                         "text"
                       ],
                       "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {"const": "explanation"},
+                        "ref_ids": {
+                          "type": "array",
+                          "items": {"type": "string", "minLength": 1, "maxLength": 120},
+                          "maxItems": 100,
+                          "uniqueItems": true
+                        },
+                        "text": {"type": "string", "minLength": 1, "maxLength": 1200},
+                        "evidence_refs": {
+                          "type": "object",
+                          "required": ["context_refs", "normative_refs", "business_claim_refs"],
+                          "additionalProperties": false,
+                          "properties": {
+                            "context_refs": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 120}, "maxItems": 100, "uniqueItems": true},
+                            "normative_refs": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 120}, "maxItems": 100, "uniqueItems": true},
+                            "business_claim_refs": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 120}, "maxItems": 100, "uniqueItems": true}
+                          }
+                        }
+                      },
+                      "required": ["kind", "ref_ids", "text", "evidence_refs"],
+                      "additionalProperties": false
                     }
                   ]
                 },

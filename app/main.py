@@ -30,6 +30,7 @@ from .document_reader import reader_document, export_readiness, filename
 from .product_flow import status as flow_status, checkpoint, INTAKE, SCOPE, BEHAVIOR, review_document, document_review_current
 from .requirements import exchange, requirement_ref, delivery_items
 from .budgets import MODEL_OUTPUT_LIMIT
+from . import business_context
 
 MODEL_TEST_TIMEOUT_SECONDS = 60
 
@@ -42,6 +43,10 @@ class Revision(Strict):
 
 class SourcePurpose(Revision):
     purpose: Literal['current','goal','reference','template']
+
+class BusinessSelection(Revision):
+    module_ids: list[str] = Field(max_length=200)
+    confirmed_claim_ids: list[str] = Field(default_factory=list, max_length=2000)
 
 class Name(Strict):
     name: str = Field(min_length=1,max_length=100)
@@ -367,6 +372,7 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
         result['document_review_status']={k:dict(reviewed=document_review_current(p,k),record=p.get('document_reviews',{}).get(k)) for k in ('mrd','prd')}
         result['review_status']=dict(available=bool(p.get('review')),current=bool(p.get('review') and p['review']['target_hash']==review_target(p)))
         result['source_capabilities']=dict(max_bytes=MAX_BYTES,extensions=SOURCE_EXTENSIONS,office_fallback='local-read-only')
+        result['business_context_status']=business_context.model_context(p)
         return result
 
     @app.post('/api/projects/{pid}/intake')
@@ -517,6 +523,53 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
             attach_document_snapshot(pid,artifact)
         return records
 
+    @app.post('/api/projects/{pid}/business-context')
+    async def import_business_context(pid:str,expected_revision:int=Form(...),file:UploadFile=File(...)):
+        raw=await file.read(business_context.MAX_BYTES+1)
+        require(len(raw)<=business_context.MAX_BYTES,'SOURCE_LIMIT','业务背景包超过 2 MiB，请按模块拆分')
+        bundle=business_context.parse_bundle(raw)
+        sha=hashlib.sha256(raw).hexdigest()
+        current=store.get(pid)
+        require(current['revision']==expected_revision,'STALE_REVISION','页面已过期，请先刷新项目资料',409)
+        existing=next((s for s in current['sources'] if s.get('business_context') and s['sha256']==sha),None)
+        if existing is not None:return existing
+        # Validate and deduplicate before storing the original. A package identity is immutable.
+        with store.edit(pid,expected_revision,'导入业务背景包，尚未选择模块') as (p,db):
+            existing=next((s for s in p['sources'] if s.get('business_context') and s['sha256']==sha),None)
+            if existing is not None:
+                return existing
+            require(not any(s.get('business_context',{}).get('bundle_id')==bundle['bundle_id']
+                            for s in p['sources']), 'BUSINESS_BUNDLE_CONFLICT',
+                    '同一业务包编号已有不同内容；请导出新编号版本，原包已保留',409)
+            source=business_context.build_source(store,Path(file.filename or 'business-context.json').name,raw)
+            previous=[s for s in p['sources'] if s.get('business_context',{}).get('project',{}).get('id')==bundle['project']['id']]
+            if previous:
+                source['version']=max(s.get('version',1) for s in previous)+1
+                source['parent_source_id']=previous[-1]['id']
+            p['sources'].append(source)
+        return source
+
+    @app.post('/api/projects/{pid}/business-context/{sid}/selection')
+    async def select_business_context(pid:str,sid:str,body:BusinessSelection):
+        with store.edit(pid,body.expected_revision,'选择业务模块并记录明确核对的事实') as (p,db):
+            source=next((s for s in p['sources'] if s['id']==sid and s.get('business_context')),None)
+            require(source is not None,'NOT_FOUND','业务背景包不存在',404)
+            require(not source['excluded'],'BUSINESS_CONTEXT_EXCLUDED','请先恢复此业务背景包，再选择模块',409)
+            selection=business_context.selection_update(source,body.module_ids,body.confirmed_claim_ids)
+            before=business_context.selection_identity(p)
+            if selection['module_ids']:
+                project_id=source['business_context']['project']['id']
+                for other in p['sources']:
+                    if other['id']!=sid and other.get('business_context',{}).get('project',{}).get('id')==project_id:
+                        other['business_active']=False
+            source['business_selection']=selection
+            source['business_active']=bool(selection['module_ids'])
+            if before!=business_context.selection_identity(p):
+                p.setdefault('stage_checks',{}).pop('2',None)
+                p.setdefault('stage_checks',{}).pop('3',None)
+                p['review']=None
+        return source
+
     @app.post('/api/projects/{pid}/sources/text')
     async def text_source(pid:str,body:TextSource):
         with store.edit(pid,body.expected_revision,'添加文字材料') as (p,db):
@@ -556,6 +609,17 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
             s=next((x for x in p['sources'] if x['id']==sid),None)
             require(s is not None,'NOT_FOUND','材料不存在',404)
             s['excluded']=not s['excluded']
+            if (s.get('business_context') and s.get('business_active',True)
+                    and s.get('business_selection',{}).get('module_ids')):
+                p.setdefault('stage_checks',{}).pop('2',None)
+                p.setdefault('stage_checks',{}).pop('3',None)
+                p['review']=None
+                if not s['excluded']:
+                    # Restoring an old package never enables two versions of one product.
+                    project_id=s['business_context']['project']['id']
+                    for other in p['sources']:
+                        if other['id']!=sid and other.get('business_context',{}).get('project',{}).get('id')==project_id:
+                            other['business_active']=False
             for child in p['sources']:
                 if child.get('container_source_id')==sid:child['excluded']=s['excluded']
         return s
@@ -565,6 +629,7 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
         with store.edit(pid,body.expected_revision,'修改材料用途') as (p,db):
             source=next((item for item in p['sources'] if item['id']==sid),None)
             require(source is not None,'NOT_FOUND','材料不存在',404)
+            require(not source.get('business_context'),'SOURCE_PURPOSE_FIXED','业务背景请在专用模块选择区管理，不能改为普通材料')
             source['purpose']=body.purpose
             for child in p['sources']:
                 if child.get('container_source_id')==sid:
@@ -597,6 +662,7 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
         require(p['revision']==body.expected_revision,'STALE_REVISION','页面已过期',409)
         old=next((x for x in p['sources'] if x['id']==sid),None)
         require(old is not None,'NOT_FOUND','材料不存在',404)
+        require(not old.get('business_context'),'BUSINESS_REIMPORT_REQUIRED','业务背景包请重新运行导出 Skill 后导入新版本，原包保持不变')
         if old.get('uri'):
             # Older successful records retain the extraction method in the locator.
             # If no strategy can be established, keep the old source unchanged.

@@ -29,6 +29,43 @@ PLAN_SCHEMA = {
                                 'maxItems':len(CONTEXT_LABELS),'uniqueItems':True},
                 'normative_refs':REFS,'discussion_refs':REFS}})}}
 
+EXPLANATION_REFS = {
+    'type':'object', 'additionalProperties':False,
+    'required':['context_refs','normative_refs','business_claim_refs'],
+    'properties':{'context_refs':REFS, 'normative_refs':REFS,
+                  'business_claim_refs':REFS},
+}
+PLAN_SCHEMA_V3 = copy.deepcopy(PLAN_SCHEMA)
+PLAN_SCHEMA_V3['properties']['plan_version'] = {'const':'3'}
+PLAN_SCHEMA_V3['properties']['sections']['items']['required'].append('explanations')
+PLAN_SCHEMA_V3['properties']['sections']['items']['properties']['explanations'] = {
+    'type':'array','maxItems':12,'items':{
+        'type':'object','additionalProperties':False,
+        'required':['text','evidence_refs'],
+        'properties':{'text':{'type':'string','minLength':1,'maxLength':1200},
+                      'evidence_refs':EXPLANATION_REFS}}}
+
+
+def verified_business_context(p):
+    """Only explicitly confirmed claims from selected bundles are prose evidence."""
+    from .business_context import selected_excerpts
+    verified={}
+    for source in p.get('sources', []):
+        if (not source.get('business_context') or source.get('parse_status')!='read' or
+                source.get('excluded') or
+                not (source.get('business_selection') or {}).get('module_ids')):
+            continue
+        confirmed=set(source['business_selection'].get('confirmed_claim_ids', []))
+        claims={c['id']:c for c in source['business_context']['claims']}
+        for excerpt in selected_excerpts(source):
+            claim_id=excerpt['business_claim_id']
+            if claim_id not in confirmed:
+                continue
+            ref=source['id']+'/'+claim_id
+            verified[ref]=dict(id=ref,text=claims[claim_id]['text'],
+                               source_id=source['id'],excerpt_id=excerpt['id'])
+    return verified
+
 
 def verified_context(p):
     """Only a current human-checked product context can become document prose."""
@@ -73,7 +110,43 @@ def discussion_status(item):
     return '已在草稿采纳，不代表业务负责人批准'
 
 
-def plan_contract(p):
+def plan_contract(p, kind=None):
+    if kind is not None:
+        require(kind in ('mrd','prd'),'SCHEMA_INVALID','文档类型仅支持 MRD/PRD')
+        context_ids=list(verified_context(p))
+        normative_ids=[i['id'] for i in p['items'] if allowed(i,p)]
+        discussion_ids=[i['id'] for i in discussion_items(p) if not allowed(i,p)]
+        claim_ids=list(verified_business_context(p))
+        section_key=('goal' if kind=='mrd' else 'function')
+        example=None
+        if context_ids or normative_ids or claim_ids:
+            sample=dict(section_key=section_key,context_refs=context_ids[:1],
+                        normative_refs=normative_ids[:1],discussion_refs=[],explanations=[])
+            if not context_ids and not normative_ids:
+                sample['explanations']=[dict(text='仅演示结构，不是项目结论。',
+                    evidence_refs=dict(context_refs=[],normative_refs=[],
+                                       business_claim_refs=claim_ids[:1]))]
+            example=dict(plan_version='3',sections=[sample])
+            jsonschema.Draft202012Validator(PLAN_SCHEMA_V3).validate(example)
+        elif discussion_ids:
+            example=dict(plan_version='3',sections=[dict(section_key='discussion',context_refs=[],
+                normative_refs=[],discussion_refs=discussion_ids[:1],explanations=[])])
+        focus=('MRD 解释问题、使用者、价值依据、目标、衡量方式和业务影响；没有数据时只写具名待决。'
+               if kind=='mrd' else
+               'PRD 解释场景、操作流程、状态、数据、权限、异常和可观察验收；未知行为只写具名待决。')
+        return dict(version='prd-plan-contract-5',plan_version='3',document_type=kind,
+            example=example,can_generate=example is not None,
+            example_notice='仅演示合法引用结构，不是项目答案。' if example else '没有可引用的已核对事实或条目，不可生成。',
+            section_keys=[key for key in SECTION_TITLES if key not in ('limits','discussion')],
+            context_ref_ids=context_ids,normative_item_ids=normative_ids,
+            discussion_item_ids=discussion_ids,business_claim_ref_ids=claim_ids,
+            rules='根节点只有 plan_version=3、sections；每节只有 section_key、context_refs、normative_refs、discussion_refs、explanations。'
+                  '每节至少有一项当前有效引用；explanations 为可选的有来源解释，每项只含 text 和 evidence_refs；'
+                  'evidence_refs 必须完整含 context_refs、normative_refs、business_claim_refs，至少一项非空，且仅引用对应白名单。'
+                  '解释只可归纳引用的已核对事实，不能发明数字、目标、权限、状态转换、默认行为或新规则；未知交还澄清候选。'
+                  '已选规范由程序逐字回填，解释不能更改其含义；候选与未确认的源码观察不能成为正文事实。'
+                  'context_refs、normative_refs、discussion_refs 的权限和附录规则沿用 v2。'+focus+
+                  '本文为待人工核对草稿；模型解释无法由机器保证语义保真，须继续语义审查和人工评审。')
     context_ids=list(verified_context(p))
     normative_ids=[i['id'] for i in p['items'] if allowed(i,p)]
     discussion_ids=[i['id'] for i in discussion_items(p) if not allowed(i,p)]
@@ -103,7 +176,14 @@ def plan_contract(p):
         'example 仅示范引用结构；can_generate=false 时不可生成，不把 null 或空结构当作章节建议。')
 
 
-def repair_instruction(error,p):
+def repair_instruction(error,p,kind=None):
+    if kind is not None:
+        contract=plan_contract(p,kind)
+        return ('重新输出完整 v3 文档计划，只修结构、出处与可追溯解释。保留所有有效引用，'
+                '逐项对照 context_ref_ids、normative_item_ids、discussion_item_ids、business_claim_ref_ids；'
+                'explanations 每段至少一条已核对依据，不能把候选、未知或未确认源码观察写成事实，'
+                '不能在解释中新增规则、数值或改变规范原文。空章节省略；未决问题返回澄清阶段。'
+                '\n实际错误：'+error.message+'\n唯一文档计划契约：'+dumps(contract))
     common=('重新输出完整 v2 章节引用对象，只修结构或引用；不重选方向、不补答、不改规则或采纳状态。业务原文由程序回填。'
             '本轮检查全部章节，逐项对照 context_ref_ids、normative_item_ids、discussion_item_ids 三类当前白名单；'
             '严格保留有效引用，不得改变规范身份，不把已选规范移入讨论，也不把候选升为规范。'
@@ -154,7 +234,8 @@ def context(p, *, include_sketch=True):
 
 def compile_plan(plan, p, kind, omitted=(), *, include_sketch=True):
     if not include_sketch:p=without_sketch(p)
-    errors=list(jsonschema.Draft202012Validator(PLAN_SCHEMA).iter_errors(plan))
+    schema=PLAN_SCHEMA_V3 if plan.get('plan_version')=='3' else PLAN_SCHEMA
+    errors=list(jsonschema.Draft202012Validator(schema).iter_errors(plan))
     details=[''.join('['+str(x)+']' if isinstance(x,int) else ('.' if j else '')+x for j,x in enumerate(e.absolute_path)) or '根节点' for e in errors]
     def error_message(e):
         if e.validator in ('maxItems','minItems','maxLength','minLength'):
@@ -162,7 +243,8 @@ def compile_plan(plan, p, kind, omitted=(), *, include_sketch=True):
         return e.message[:400]
     require(not errors,'SCHEMA_INVALID','成文章节建议错误：'+'；'.join(at+' '+error_message(e) for at,e in zip(details,errors)))
     items={i['id']:i for i in p['items']}
-    contract=plan_contract(p)
+    v3=plan.get('plan_version')=='3'
+    contract=plan_contract(p,kind if v3 else None)
     item_ref_ids=set(contract['normative_item_ids'])|set(contract['discussion_item_ids'])
     current_context=verified_context(p)
     sections=[]; coverage={}; discussed=set(); discussion_order=[]; placed={}; context_placed={}; discussion_locations={}
@@ -180,7 +262,8 @@ def compile_plan(plan, p, kind, omitted=(), *, include_sketch=True):
         status=discussion_status(i)
         if i['kind'] in NORMATIVE and i['selection_status']=='selected' and not allowed(i,p):status='已草稿采纳但不在本期规范范围'
         return text(f'【{status}；{i["epistemic_status"]}；{i["applies_to"]}】{i["id"]} — {i["statement"]}'+provenance(i),[i['id']])
-    require(any(s['context_refs'] or s['normative_refs'] or s['discussion_refs'] for s in plan['sections']),
+    require(any(s['context_refs'] or s['normative_refs'] or s['discussion_refs'] or
+                (v3 and s['explanations']) for s in plan['sections']),
             'OUTPUT_EMPTY','章节建议没有任何当前有效引用；不能将结构示例当作项目文档')
     for n,s in enumerate(plan['sections']):
         title=SECTION_TITLES[s['section_key']]
@@ -201,6 +284,22 @@ def compile_plan(plan, p, kind, omitted=(), *, include_sketch=True):
             blocks.append(dict(kind=items[r]['kind'],ref_ids=[r],text=None))
             blocks.append(text(f'{r}：{items[r]["epistemic_status"]}；草稿采纳不代表业务负责人批准'+provenance(items[r]),[r]))
             placed[r]=title
+        if v3:
+            require(s['section_key'] in contract['section_keys'] or
+                    (s['section_key']=='discussion' and s['discussion_refs']),
+                    'REFERENCE_INVALID',f'sections[{n}].section_key 不适用于 {kind.upper()} 正文')
+            for j,explanation in enumerate(s['explanations']):
+                basis=explanation['evidence_refs']
+                at=f'sections[{n}].explanations[{j}].evidence_refs'
+                require(any(basis.values()),'REFERENCE_INVALID',at+' 缺少已核对依据')
+                for group,allowed_refs in (('context_refs',set(contract['context_ref_ids'])),
+                    ('normative_refs',set(contract['normative_item_ids'])),
+                    ('business_claim_refs',set(contract['business_claim_ref_ids']))):
+                    for k,ref in enumerate(basis[group]):
+                        require(ref in allowed_refs,'REFERENCE_INVALID',
+                                f'{at}.{group}[{k}] {ref} 不在当前已核对依据白名单')
+                blocks.append(dict(kind='explanation',ref_ids=basis['normative_refs'],
+                                   evidence_refs=copy.deepcopy(basis),text=explanation['text']))
         for j,r in enumerate(s['discussion_refs']):
             if r in items and represented_revision(items[r],items):
                 require(False,'SEMANTIC_BLOCKED',f'sections[{n}].discussion_refs[{j}] {r} 已由稳定条目 {items[r]["target_item_id"]} 完整代表；历史修订保留在项目审计，不能再作为待采纳讨论项')

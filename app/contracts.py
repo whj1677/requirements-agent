@@ -8,7 +8,7 @@ from .core import KIT, brief_hash, digest, read_json, require
 from .requirements import delivery_items
 
 API_CAPABILITIES = tuple(sorted(('actions', 'artifacts', 'confirmations', 'documents', 'exports', 'models',
-                                 'options-direction', 'options-items', 'projects', 'runs', 'session', 'sources', 'product-flow', 'five-step-workflow', 'requirements-exchange')))
+                                 'options-direction', 'options-items', 'projects', 'runs', 'session', 'sources', 'product-flow', 'five-step-workflow', 'requirements-exchange', 'business-context')))
 
 SCHEMA = read_json(KIT / 'examples/runtime_response.schema.json')
 WIRE = read_json(KIT / 'examples/wireframe.schema.json')
@@ -216,6 +216,18 @@ def validate_document(doc, p, kind):
         require(all(any(c['item_id'] in b['ref_ids'] for b in sections[s]['blocks']) for s in c['section_ids']), 'REFERENCE_INVALID', '虚假覆盖关系')
     for s in doc['sections']:
         for b in s['blocks']:
+            if b['kind']=='explanation':
+                from .prd import verified_context, verified_business_context, plan_contract
+                basis=b.get('evidence_refs',{})
+                require(any(basis.values()),'REFERENCE_INVALID','解释性正文必须有已核对依据')
+                require(set(basis.get('context_refs',[]))<=set(verified_context(p)),
+                        'REFERENCE_INVALID','解释性正文引用未核对的产品上下文')
+                require(set(basis.get('normative_refs',[]))<=set(plan_contract(p,kind)['normative_item_ids']),
+                        'SEMANTIC_BLOCKED','解释性正文只能依赖本期已选规范')
+                require(set(basis.get('business_claim_refs',[]))<=set(verified_business_context(p)),
+                        'REFERENCE_INVALID','解释性正文引用未核对或未选中的业务背景')
+                require(set(b['ref_ids'])==set(basis.get('normative_refs',[])),
+                        'REFERENCE_INVALID','解释性正文的规范引用与依据不一致')
             if b['kind'] in ('requirement', 'rule', 'acceptance'):
                 unselected = sorted(r for r in b['ref_ids'] if r not in {i['id'] for i in delivery_items(p)})
                 require(not unselected, 'SEMANTIC_BLOCKED', '规范内容只能引用本期已选目标条目（' + '、'.join(unselected[:5]) + (' 等' if len(unselected) > 5 else '') + ' 未已选）')

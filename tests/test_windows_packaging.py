@@ -77,11 +77,14 @@ def test_build_inputs_do_not_collect_working_directory_secrets(tmp_path):
         path = tmp_path / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text('synthetic', 'utf-8')
-    for name in ('examples', 'prompts', 'references'):
+    for name in ('examples', 'prompts', 'references', 'schemas'):
         (tmp_path / 'requirements-agent-codex-kit-v1.1' / name).mkdir(parents=True)
+    schema = 'requirements-agent-codex-kit-v1.1/schemas/business-context.schema.json'
+    (tmp_path / schema).write_text('{}', 'utf-8')
     (tmp_path / 'packaging').mkdir()
     paths = {path.relative_to(tmp_path).as_posix() for path in required_inputs(tmp_path)}
     assert 'app/license_trust.py' in paths
+    assert schema in paths
     assert not paths & {'.env', 'data/requirements.sqlite3', 'issuer/private.json'}
 
 

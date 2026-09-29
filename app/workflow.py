@@ -77,6 +77,14 @@ def apply_response(p, response):
         document_version=p['documents'].get(kind,{}).get('document_version',0)+1
         p['documents'][kind] = dict(id=ident('DOC'), content=r['result'], requirement_name=p['name'], question_snapshot=copy.deepcopy(p['questions']), brief_hash=brief_hash(p), draft_revision=p['revision'], item_snapshot=copy.deepcopy(p['items']), created=now(), style_version='1', generator_version='1.1', reference_hashes={s['reference_id']:s['sha256'] for s in PROFILES['sources']} if p.get('reference_mode')!='builtin' else {}, limitations=r['limitations'])
         p['documents'][kind]['source_snapshot']=[{k:s.get(k) for k in ('id','title','purpose','parse_status','failure_reason')} for s in p['sources']]
+        from .business_context import model_context
+        if model_context(p):p['documents'][kind]['business_context_snapshot']=copy.deepcopy(model_context(p))
+        from .prd import verified_business_context
+        cited={ref for section in r['result']['sections'] for block in section['blocks']
+               for ref in block.get('evidence_refs',{}).get('business_claim_refs',[])}
+        if cited:
+            facts=verified_business_context(p)
+            p['documents'][kind]['business_fact_snapshot']={ref:copy.deepcopy(facts[ref]) for ref in cited}
         p['documents'][kind].update(document_version=document_version,document_family_id=p['id']+':'+kind,
             delivery_item_ids=[i['id'] for i in delivery_items(p)],
             requirement_versions=[requirement_ref(p,i) for i in p['items'] if i['kind'] in TRACKED])
@@ -141,7 +149,7 @@ class Workflow:
                 initial_max_tokens=out_budget,budget_policy=policy_summary(config),
                 approved_max_calls=config['max_calls'],config_hash=digest(run['provider']),
                 prompt_hash=digest(messages[0]['content'].split('可信任务头：',1)[0]),schema_hash=digest(header['schema']),
-                profile_hash=digest(header.get('content_profile')),input_revision=p['revision'],assembly_version='prd-plan-2' if run['stage']=='prd' else 'runtime-1.1')
+                profile_hash=digest(header.get('content_profile')),input_revision=p['revision'],assembly_version='prd-plan-3' if run['stage']=='prd' else 'runtime-1.1')
             self.store.update_run(pid, rid, status='running', sent_excerpt_ids=[x['id'] for x in excerpts], omitted_excerpt_ids=omitted, input_hash=digest(messages),authorization=authorization,input_metrics=input_metrics(messages))
             while True:
                 state = self.store.get_record(pid, rid, 'run')
@@ -219,7 +227,7 @@ class Workflow:
                         repair_parent = call_id
                         if e.code == 'OUTPUT_TRUNCATED':
                             events.append(dict(time=now(),phase='保持批准输出上限 '+str(out_budget)+'，压缩章节与叙述后修复',call=calls))
-                        repair=(KIT/'prompts/10_repair.md').read_text('utf-8') if run['stage']!='prd' else repair_instruction(e,p)
+                        repair=(KIT/'prompts/10_repair.md').read_text('utf-8') if run['stage']!='prd' else repair_instruction(e,p,run['document_type'])
                         if run['stage']=='ingest':
                             if repair_anchor is None:
                                 repair_anchor=ingest.business_anchor(value if value is not None else ingest.diagnostic_object(failed_output), excerpts)
@@ -267,7 +275,7 @@ class Workflow:
                 if run['stage']=='prd':
                     artifact=current['documents'][run['document_type']]
                     artifact['sketch_policy']='excluded'
-                    artifact['assembly_version']='prd-plan-2'
+                    artifact['assembly_version']='prd-plan-3'
                     current['stale_document_kinds']=[kind for kind in current.get('stale_document_kinds',[]) if kind!=run['document_type']]
                     current['document_update_needed']=bool(current['stale_document_kinds'])
                     self.store.record(pid,'document_artifact',artifact,db=db)

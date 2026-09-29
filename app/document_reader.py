@@ -200,6 +200,10 @@ def reader_document(artifact):
                 if item and item['kind']=='requirement':
                     from .product_flow import BEHAVIOR
                     text += ''.join('\n'+label+'：'+item['behavior'][key] for key,label in BEHAVIOR.items() if item.get('behavior',{}).get(key))
+            elif block['kind']=='explanation':
+                # The compiler validated these exact snapshot references. The
+                # reader shows product prose; claim IDs remain in the artifact.
+                refs=[]
             elif item:
                 # Selected, reported business statements can be product prose.
                 # Keep their wording while excluding proposal/hypothesis status
@@ -233,7 +237,10 @@ def reader_document(artifact):
                     # Reference mapping and model planning notes are retained in the project.
                     continue
             if not any(b['text']==text and b['ref_ids']==refs for b in blocks):
-                blocks.append(dict(block, text=text, ref_ids=refs))
+                visible=dict(block, text=text, ref_ids=refs)
+                if block['kind']=='explanation':
+                    visible.pop('evidence_refs',None)
+                blocks.append(visible)
         pending_blocks = pending_promotion.pop(section['section_id'], [])
         if blocks or pending_blocks or (not section['blocks'] and section['section_id'] in picture_sections):
             title='文档边界与资料限制' if section['title']=='限制及参考维度待核对' else section['title']
@@ -275,6 +282,8 @@ def reader_document(artifact):
     coverage = {}
     for section in sections:
         for block in section['blocks']:
+            if block['kind'] not in ('requirement','rule','acceptance'):
+                continue
             for ref in block.get('ref_ids', []):
                 if ref in items and items[ref].get('kind') in ('requirement', 'rule', 'acceptance'):
                     coverage.setdefault(ref, []).append(section['section_id'])
