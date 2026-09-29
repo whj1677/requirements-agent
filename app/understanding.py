@@ -177,6 +177,10 @@ def save_questions(p,questions):
 
 
 def record_answer(q):
+    if q.get('deferred_at'):
+        q.setdefault('deferred_history',[]).append(dict(note=q.get('deferred_note',''),created=q['deferred_at']))
+        q.pop('deferred_at', None)
+        q.pop('deferred_note', None)
     if q.get('answer') is not None:
         q.setdefault('answer_history',[]).append({k:copy.deepcopy(q.get(k)) for k in ('answer','answered_at','answer_source_refs')})
     q['understanding_status']='pending'

@@ -57,7 +57,7 @@ class Actions:
             config_snapshot.update(copy.deepcopy(configs))
         blockers=[]
         for stage in stages:
-            blockers.extend(execution_issues(p,stage,body['document_type']))
+            blockers.extend(execution_issues(p,stage,body['document_type'],body.get('target')))
         if not any(s['excerpts'] for s in active) and not p['items'] and not body['message'].strip():
             blockers.append('请先描述目标或添加项目资料。')
         if body['action'] in ('prototype','document','review') and not p['items']:
@@ -130,6 +130,8 @@ class Actions:
                 authorized_configs={s:{k:v for k,v in c.items() if k!='proxy'} for s,c in configs.items()},
                 approved_plan_hash=plan_hash,
                 generation_target=plan['generation_target'],completed_steps=0)
+            task['retry_input'] = {k:copy.deepcopy(body[k]) for k in
+                                   ('action','message','document_type','option_id','target') if k in body}
             self.store.record(pid,'user_task',task,tid,db)
         job=asyncio.create_task(self.execute(pid,tid,body,configs))
         self.jobs[tid]=job
@@ -154,7 +156,8 @@ class Actions:
                 if body.get('target'):
                     message='本次局部讨论对象：'+target_context(p,body['target'])+'\n仅围绕此对象提出候选；保留其他需求、未知和采纳状态。\n用户修改意图：'+message
                 run=self.workflow.start(pid,p['revision'],stage,message,body['document_type'],
-                    user_task_id=tid,config_override=config,generation_target=target)
+                    user_task_id=tid,config_override=config,generation_target=target,
+                    discussion_target=body.get('target'))
                 ids=current['run_ids']+[run['id']]
                 self.store.update_record(pid,tid,'user_task',status='running',run_ids=ids,message='正在'+('分析图片' if stage=='vision' else LABELS[body['action']]))
                 await self.workflow.tasks[run['id']]

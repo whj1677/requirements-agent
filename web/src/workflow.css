@@ -128,18 +128,23 @@ small { font-size:13px; }
 .facts-list p { margin:0; font-size:13px; }
 .facts-list p>span { color:var(--accent); margin-right:8px; }
 .scope-requirements { border:1px solid var(--line); border-radius:9px; padding:14px; }
+.scope-missing { margin-bottom:12px; padding:12px 16px; }
+.scope-missing h3 { margin:0 0 6px; font-size:16px; }
+.scope-missing ul { margin:0; padding-left:20px; }
+.scope-missing li { margin:5px 0; }
 .scope-requirements .section-heading { margin-bottom:10px; }
 .scope-requirements h3 { font-size:18px; }
 .scope-requirements h3 .ui-icon { color:var(--accent); margin-right:12px; }
 .scope-requirements .section-heading p { margin:2px 0 0 36px; color:var(--muted); font-size:14px; }
 .checkpoint .scope-requirement { border:1px solid var(--line); border-radius:8px; margin:6px 0; padding:0; }
 .scope-requirement>summary { display:flex; align-items:center; gap:14px; padding:9px; cursor:pointer; font-size:14px; }
-.scope-requirement label { margin:0; display:flex; align-items:center; gap:8px; flex:0 0 200px; }
+.scope-requirement label { margin:0; display:flex; align-items:center; gap:8px; flex:1 1 240px; min-width:0; }
+.scope-requirement label strong { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .requirement-id { font-size:12px; color:#234f68; overflow-wrap:anywhere; }
 .requirement-id small { display:block; font-size:11px; }
 .change-tag { padding:3px 10px; border-radius:7px; font-size:13px; background:#e7f5ee; color:var(--accent); }
 .scope-requirement strong { flex:0 1 210px; }
-.requirement-statement { color:var(--muted); flex:1; }
+.requirement-statement { color:var(--muted); flex:1 1 180px; max-width:35ch; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .selection-tag { color:var(--muted); flex:none; font-size:12px; }
 .requirement-details { padding:0 20px 16px; }
 .secondary-tools { margin:12px 0; font-size:14px; }
@@ -155,6 +160,8 @@ small { font-size:13px; }
 .question-item .section-heading { gap:10px; margin-bottom:6px; }
 .question-description p { font-size:13px; margin:0 0 6px; }
 .question-description>small { display:block; font-size:11px; overflow-wrap:anywhere; }
+.question-refs { font-size:11px; color:var(--muted); overflow-wrap:anywhere; }
+.question-refs>summary { cursor:pointer; }
 .question-answer label { margin:0; font-size:12px; color:var(--muted); }
 .question-answer textarea { min-height:68px; margin-top:5px; font-size:14px; }
 .question-suggestion { background:#f3f5ff; padding:10px; border-radius:7px; font-size:13px; }

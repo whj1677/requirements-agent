@@ -51,16 +51,28 @@ def origin(config):
 
 
 class Provider:
-    def __init__(self, env_path=None):
+    def __init__(self, env_path=None, credential_dir=None):
         self.keys = {}
         self.environment = ProjectEnvironment(env_path)
         self.env_origins = {'RA_DEEPSEEK_API_KEY':'https://api.deepseek.com'}
+        from .credentials import ProtectedKeyStore
+        self.credential_store = ProtectedKeyStore(credential_dir) if credential_dir is not None else None
+        self.key_storage_errors = {}
 
     def resolve_key(self, config):
         endpoint=origin(config)
         if endpoint in self.keys:
             value=self.keys[endpoint]
             return (value,'session') if usable_key(value) else ('','none')
+        self.key_storage_errors.pop(endpoint, None)
+        if self.credential_store:
+            try:
+                saved = self.credential_store.load(endpoint)
+            except Problem as error:
+                self.key_storage_errors[endpoint] = error.message
+                return '', 'protected_store_unavailable'
+            if saved is not None:
+                return (saved, 'protected_store') if usable_key(saved) else ('', 'none')
         env=config.get('key_env','')
         return self.environment.credential(env) if self.env_origins.get(env)==endpoint else ('','none')
 
@@ -69,7 +81,23 @@ class Provider:
 
     def key_status(self, config):
         value,source=self.resolve_key(config)
-        return dict(key_configured=bool(value),key_env=config.get('key_env',''),key_source=source,bound_origin=origin(config))
+        return dict(key_configured=bool(value),key_env=config.get('key_env',''),key_source=source,bound_origin=origin(config),
+                    persistent_key_supported=bool(self.credential_store and self.credential_store.supported),
+                    key_storage_error=self.key_storage_errors.get(origin(config), ''))
+
+    def set_key(self, config, key, persist=False):
+        endpoint = origin(config)
+        key = key.strip()
+        require(not key or usable_key(key), 'CONFIG_INVALID', '请输入有效的 API Key')
+        if persist:
+            require(self.credential_store is not None, 'KEY_STORAGE_UNSUPPORTED', '当前运行方式不支持保存 Key')
+            self.credential_store.save(endpoint, key)
+            self.keys.pop(endpoint, None)
+        elif key:
+            self.keys[endpoint] = key
+        else:
+            self.keys.pop(endpoint, None)
+        return self.key_status(config)
 
     async def request(self, config, messages, evidence=None):
         # A removed/replaced customer license also blocks the next paid model call.
@@ -224,6 +252,7 @@ def assemble(p, stage, user_message, config, folder, kind='prd', generation_targ
     if stage=='ingest':header['context_contract']='整理后必须输出 product_context_proposal 的全部字段，供用户核对，未知值填空字符串；不自动采纳或批准。已有条目仅因信息实质变化才提出修订，不重复建同义候选。'
     if stage=='ingest':header['ingest_contract']=ingest.contract()
     if stage in ('ingest','clarify','change'):header['understanding_contract']=understanding_contract()
+    header['question_note_policy']='问题的 deferred_note 是用户暂未决定时保存的调查备注，不是正式回答，不能据此解除阻塞或自动采纳规则。'
     if stage=='clarify':
         header['current_answer_binding_policy']='stage_focus.answer_binding_tasks 是全量待办清单，不扩大本轮授权范围。先根据本轮 user_message 中的任务指定对象和用户明确要求限定范围，仅处理范围内的回答与目标，范围外保持原状；无明确局部范围时，按当前澄清任务处理。本轮范围内的回答绑定以当前清单和 questions 的已保存回答为准。历史消息和旧文档仍用于核对业务事实，持续有效的业务范围与保持约束必须保留；仅与当前契约或本轮明确指令冲突的历史操作指令（例如旧的“规则不填 answer_refs”）不再适用。范围内每个尚无 reusable_candidate_ids 的绑定任务需由本轮同 kind revise 候选覆盖：target_item_id 对应该目标，answer_refs 必须包含该 question_id，source_refs 引用实际送入的回答来源。同一目标的多个范围内回答合并到一个候选的 answer_refs。规则原文已正确或原条目 selected 均不等于该回答已应用；保留完整业务原文，生成待人工核对的绑定候选，不自动采纳。仅有相同目标、同一回答版本并已记录 answer_refs 的待采纳候选才可复用。'
     if generation_target:
@@ -296,7 +325,7 @@ def assemble(p, stage, user_message, config, folder, kind='prd', generation_targ
     active_sources={s['id'] for s in p['sources'] if not s['excluded']}
     context['vision_observations']=[m['response'] for m in p['messages'] if m.get('stage')=='vision'
         and m.get('response') and all(r['source_id'] in active_sources for r in m['response']['used_source_refs'])]
-    context['source_status'] = [{k:s.get(k) for k in ('id','title','parse_status','failure_reason','excluded','purpose','parent_source_id','sha256','container_source_id','container_locator')} for s in p['sources']]
+    context['source_status'] = [{k:s.get(k) for k in ('id','title','parse_status','failure_reason','excluded','purpose','parent_source_id','sha256','container_source_id','container_locator','origin','intake_version','superseded_by')} for s in p['sources']]
     if stage=='review':
         from .requirements import delivery_items
         from .product_flow import status as flow_status

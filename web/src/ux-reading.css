@@ -1,0 +1,47 @@
+.source-add { margin-top: 18px; border: 1px solid var(--line); border-radius: 10px; background: #fff; }
+.source-add > summary { padding: 14px 18px; cursor: pointer; font-weight: 650; }
+.source-add[open] { padding: 0 16px 16px; }
+.source-add[open] > summary { margin: 0 -16px 14px; border-bottom: 1px solid var(--line); }
+.source-add-type { border-top: 1px solid var(--line); }
+.source-add-type > summary { cursor: pointer; padding: 12px 2px; font-weight: 600; }
+.source-add-type[open] { padding-bottom: 14px; }
+.source-add .business-import { margin-top: 0; }
+.source-library { margin-top: 6px; }
+.material-digest { color: var(--muted); font-size: 13px; line-height: 1.5; margin: 8px 0; overflow-wrap: anywhere; }
+.workflow-page .document-review-surface { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(260px, 1fr) auto; height: 100%; }
+.document-reading-area { min-height: 0; }
+.document-review-surface .document-layout { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+.guided-main .document-review-surface .document-layout { grid-template-columns: minmax(0, 1fr); }
+.document-review-surface .document-layout > nav { display: block; height: auto; max-height: none; overflow: visible; padding: 0; border-radius: 0; border-width: 0 0 1px; }
+.guided-main .document-layout nav { max-height: none; overflow: visible; }
+.document-layout > nav > details > summary { cursor: pointer; padding: 8px 16px; font-size: 13px; }
+.document-outline-list { display: flex; gap: 4px; max-height: 160px; overflow: auto; padding: 0 12px 8px; }
+.document-outline-list button { flex: none; max-width: 210px; white-space: normal; }
+.document-reader { width: 100%; max-width: none; }
+.document-controls .notice li { margin: 8px 0; }
+.document-controls .notice li button { margin-left: 8px; }
+.document-controls .notice li details { margin: 4px 0; font-size: 12px; }
+.document-problems > details > summary { cursor: pointer; margin-top: 4px; font-weight: 600; }
+.document-problems > details > p { margin: 8px 0; }
+.document-problems > details > ul { margin: 8px 0 0; padding-left: 22px; }
+.reading-node-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; color: var(--muted); font-size: 12px; margin: -6px 0 14px; }
+.reading-node-actions span { max-width: 24ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.reading-node-actions button { font-size: 12px; min-height: 28px; padding: 3px 8px; }
+.document-review-surface .review-sidebar { height: auto; max-height: none; overflow: visible; border-radius: 0 0 8px 8px; padding: 0 !important; }
+.review-sidebar > summary { cursor: pointer; display: flex; gap: 8px; align-items: center; padding: 11px 16px; font-weight: 650; }
+.review-sidebar > summary small { margin-left: auto; font-weight: 400; color: var(--muted); }
+.review-sidebar-content { padding: 0 16px 14px; max-height: 42vh; overflow: auto; }
+.review-problem, .review-finding { padding: 9px 0; border-top: 1px solid var(--line); font-size: 13px; }
+.review-problem b, .review-finding b { display: block; }
+.review-problem > span { color: var(--muted); margin-right: 8px; }
+.review-problem details, .review-finding details { margin-top: 6px; }
+.review-finding p { margin: 4px 0 !important; }
+@media (max-width: 900px) {
+  .workflow-page .document-review-surface { height: auto; grid-template-rows: auto auto; overflow: visible; }
+  .document-reading-area { height: 580px; }
+}
+@media (max-width: 700px) {
+  .workflow-page .document-review-surface { height: auto; grid-template-rows: auto auto; }
+  .document-reading-area { height: min(75vh, 680px); }
+  .reading-node-actions span { max-width: 16ch; }
+}

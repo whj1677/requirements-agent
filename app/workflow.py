@@ -110,14 +110,14 @@ class Workflow:
             config['thinking_disabled']=not config.get('review_thinking',True)
         return config
 
-    def start(self, pid, revision, stage, message, kind='prd', resumed_from=None, *, user_task_id=None, config_override=None, generation_target=None):
+    def start(self, pid, revision, stage, message, kind='prd', resumed_from=None, *, user_task_id=None, config_override=None, generation_target=None, discussion_target=None):
         require(stage in STAGES and stage != 'handoff', 'STAGE_INVALID', '请选择支持的分析阶段')
         config = copy.deepcopy(config_override or self.config(stage))
         require(not any(t['status'] in ('queued','running') and t['id'] != user_task_id for t in self.store.records(pid,'user_task')), 'PROJECT_BUSY','当前项目任务正在执行，请等待或取消',409)
         require(not any(t['status'] in ('queued','running') for t in self.store.records(pid,'run')), 'PROJECT_BUSY','当前项目已有模型任务',409)
         p = self.store.get(pid)
         require(p['revision'] == revision, 'STALE_REVISION', '页面已过期', 409)
-        issues=execution_issues(p,stage,kind)
+        issues=execution_issues(p,stage,kind,discussion_target)
         require(not issues,'STAGE_BLOCKED','；'.join(issues),409)
         run = dict(stage=stage, status='queued', revision=revision, message=message, document_type=kind, calls=0, attempts=[], events=[], created=now(), error=None, resumed_from=resumed_from, provider={k:v for k,v in config.items() if k not in ('proxy',)}, prompt_version='1.1', cost=None)
         rid = self.store.record(pid, 'run', run)

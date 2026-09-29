@@ -303,22 +303,30 @@ def export_readiness(p, kind):
         issues.append(dict(code='NOT_FOUND', message='请先生成文档。'))
     elif artifact['brief_hash'] != brief_hash(p) or kind in p.get('stale_document_kinds',[]):
         issues.append(dict(code='STALE_REVISION', message='需求或页面已更新，请重新生成文档后下载。'))
+    problems = []
     for q in p['questions']:
+        if q.get('superseded_by'):
+            continue
+        state = None
         if q['status'] != 'answered' and not q.get('out_of_scope_reason'):
-            issues.append(dict(code='CLARIFICATION_REQUIRED', question_id=q['id'], message=q['question']))
+            state = 'unanswered'
         elif q['status']=='answered' and q.get('understanding_status')!='applied':
             from .understanding import answer_targets
             targets={i['id'] for i in answer_targets(p,q)}
             selected={i['id'] for i in delivery_items(p)}
             if targets & selected:
-                issues.append(dict(code='CLARIFICATION_REQUIRED',question_id=q['id'],
-                                   message='已保存回答尚未完整纳入关联产品条款，请先核对采纳。'))
+                state = 'answer_pending'
         elif q['status']=='answered':
             from .understanding import answer_targets
             targets={i['id'] for i in answer_targets(p,q)}
             selected={i['id'] for i in delivery_items(p)}
             applied=set(q.get('applied_item_ids',q.get('applied_requirement_ids',[])))
             if (targets & selected)-applied:
-                issues.append(dict(code='CLARIFICATION_REQUIRED',question_id=q['id'],
-                                   message='已保存回答尚未完整纳入关联产品条款，请先核对采纳。'))
-    return dict(ready=not issues, issues=issues)
+                state = 'answer_pending'
+        if state:
+            message = q['question'] if state == 'unanswered' else q['question'] + '：回答已保存，尚未完整纳入关联条款，请核对采纳。'
+            issues.append(dict(code='CLARIFICATION_REQUIRED', question_id=q['id'], message=message))
+            problems.append(dict(question_id=q['id'], title=q['question'], state=state,
+                                 action='answer' if state == 'unanswered' else 'apply_answer',
+                                 message=message, related_refs=q.get('related_refs', [])))
+    return dict(ready=not issues, issues=issues, problems=problems)

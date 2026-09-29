@@ -189,6 +189,12 @@ class ModelConfig(Strict):
 class KeyInput(Strict):
     key: str = Field(max_length=2000)
 
+class ModelKeyInput(KeyInput):
+    persist: bool = False
+
+class DeferredQuestion(Revision):
+    note: str = Field(default='', max_length=6000)
+
 class Grant(Revision):
     slot: Literal['model','vision'] = 'model'
     source_ids: list[str]
@@ -211,7 +217,7 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
         license_manager = LicenseManager()
         license_manager.verify_cached()  # Before Store initialization or recovery of paid tasks.
     store = Store(folder)
-    provider = provider or Provider(env_path=env_path)
+    provider = provider or Provider(env_path=env_path, credential_dir=store.folder / '.credentials')
     for slot in ('model','vision'):
         saved = store.setting(slot)
         if saved:
@@ -342,7 +348,15 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
 
     @app.get('/api/projects')
     async def projects():
-        return [{k:p[k] for k in ('id','name','revision','created')} for p in store.list()]
+        with store.connect() as db:
+            updated = dict(db.execute('SELECT project_id,MAX(created) FROM revisions GROUP BY project_id'))
+        result = []
+        for p in store.list():
+            step = next((s for s in flow_status(p) if not s['retired'] and not s['complete']), None)
+            result.append(dict({k:p[k] for k in ('id','name','revision','created')},
+                               updated_at=updated.get(p['id'], p['created']),
+                               flow_current_title=step['title'] if step else '已确认与交接'))
+        return result
 
     @app.post('/api/projects')
     async def new_project(body:Name):
@@ -378,14 +392,8 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
     @app.post('/api/projects/{pid}/intake')
     async def save_intake(pid:str,body:Intake):
         with store.edit(pid,body.expected_revision,'保存本次诉求（未授权模型分析）') as (p,db):
-            text='\n\n'.join(v for v in (body.text.strip(), '平台/页面：'+body.platform.strip() if body.platform.strip() else '',
-                                             '保持/不涉及：'+body.preserved.strip() if body.preserved.strip() else '') if v)
-            require(text or any(not s['excluded'] and s.get('excerpts') for s in p['sources']),
-                    'INPUT_REQUIRED','请先描述本次需求或添加相关材料')
-            if text:
-                s=save_source(store,'本次诉求.txt',text.encode('utf-8'),'goal');p['sources'].append(s)
-            p['intake']=dict(text=body.text,platform=body.platform,preserved=body.preserved,
-                source_ids=[s['id'] for s in p['sources'] if not s['excluded']],saved_at=now())
+            from .intake import update_intake
+            update_intake(store, p, db, dict(text=body.text, platform=body.platform, preserved=body.preserved))
             checkpoint(p,1,flow_status(p)[0]['content_hash'])
             p['stage_checks']['1']['meaning']='输入已保存，尚非分析结论核对'
         return p
@@ -420,6 +428,18 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
         require(kind in ('mrd','prd'),'NOT_FOUND','文档类型不存在',404)
         with store.edit(pid,body.expected_revision,'核对 '+kind.upper()+' 指定文档') as (p,db):
             review_document(p,kind,body.document_id)
+        return p
+
+    @app.post('/api/projects/{pid}/questions/{qid}/defer')
+    async def defer_question(pid:str,qid:str,body:DeferredQuestion):
+        with store.edit(pid,body.expected_revision,'保留待决定问题与调查备注') as (p,db):
+            q=next((q for q in p['questions'] if q['id']==qid),None)
+            require(q is not None,'NOT_FOUND','问题不存在',404)
+            require(not q.get('superseded_by'),'QUESTION_SPLIT','请处理拆分后的具体问题',409)
+            require(q['status']!='answered','QUESTION_ANSWERED','问题已有回答，请核对最新内容后编辑回答',409)
+            if q.get('deferred_at'):
+                q.setdefault('deferred_history',[]).append(dict(note=q.get('deferred_note',''),created=q['deferred_at']))
+            q.update(deferred_note=body.note,deferred_at=now())
         return p
 
     @app.post('/api/projects/{pid}/answers')
@@ -613,6 +633,8 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
         with store.edit(pid,body.expected_revision,'切换材料排除状态') as (p,db):
             s=next((x for x in p['sources'] if x['id']==sid),None)
             require(s is not None,'NOT_FOUND','材料不存在',404)
+            require(not (s.get('origin')=='intake' and s.get('superseded_by')),
+                    'SOURCE_SUPERSEDED','此版本已被新的首步输入替换；如需采用其中内容，请在首步编辑当前诉求',409)
             s['excluded']=not s['excluded']
             if (s.get('business_context') and s.get('business_active',True)
                     and s.get('business_selection',{}).get('module_ids')):
@@ -808,6 +830,9 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
     async def set_model(slot:str,body:ModelConfig):
         require(slot in ('model','vision'),'CONFIG_INVALID','未知配置槽')
         c=body.model_dump(); origin(c)
+        if 'proxy' not in body.model_fields_set:
+            c['proxy']=(store.setting(slot) or {}).get('proxy','')
+        require(c.get('proxy')!='已配置','CONFIG_INVALID','代理地址需为实际地址；保留既有代理时不要提交掩码')
         c.update(budget_mode='unlimited', max_calls=None)
         require(body.vision!='verified','CONFIG_INVALID','已验证状态只能由实际能力测试记录，不能手工声明')
         bound=provider.env_origins.get(c['key_env'])
@@ -817,14 +842,11 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
         return {'saved':True}
 
     @app.put('/api/models/{slot}/key')
-    async def set_key(slot:str,body:KeyInput):
+    async def set_key(slot:str,body:ModelKeyInput):
         require(slot in ('model','vision'),'CONFIG_INVALID','未知配置槽')
         config=store.setting(slot) or dict(DEFAULT)
-        if body.key:
-            provider.keys[origin(config)]=body.key
-        else:
-            provider.keys.pop(origin(config),None)
-        return dict(provider.key_status(config),storage='server_process_memory' if body.key else 'environment_fallback')
+        state = provider.set_key(config, body.key, body.persist)
+        return dict(state, storage=state['key_source'])
 
     @app.post('/api/models/{slot}/test')
     async def test_model(slot:str):

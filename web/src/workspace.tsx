@@ -26,7 +26,8 @@ export function Workspace({ id, active, models, onProjectsChanged, compat, onExi
   const [help,setHelp]=useState<Obj|null>(null),[helpText,setHelpText]=useState(''),[candidateOpen,setCandidateOpen]=useState(false),[candidateTitle,setCandidateTitle]=useState(''),[candidateText,setCandidateText]=useState('');
   const [acceptanceOpen,setAcceptanceOpen]=useState(false),[acceptanceRequirement,setAcceptanceRequirement]=useState(''),[acceptanceTitle,setAcceptanceTitle]=useState(''),[acceptanceText,setAcceptanceText]=useState('');
   const guard=useNavigation();
-  const analysisNavigation=useRef<{taskId:string;ingestCount:number;resolving?:boolean}|null>(null);
+  const analysisNavigation=useRef<{taskId:string;ingestCount:number;itemCount:number;questionCount:number;resolving?:boolean}|null>(null);
+  const [focusQuestionId,setFocusQuestionId]=useState(''),[focusQuestionNonce,setFocusQuestionNonce]=useState(0);
   const currentView=useRef({active,phase});currentView.current={active,phase};
   function go(n:number){if(n===3)n=4;guard(()=>{analysisNavigation.current=null;setPhase(n);sessionStorage.setItem('ra-phase-'+id,String(n));});}
   const projectRef=useRef<Project|null>(null);
@@ -81,7 +82,7 @@ export function Workspace({ id, active, models, onProjectsChanged, compat, onExi
     if(!active||phase!==0){analysisNavigation.current=null;return;}
     const task=tasks.find(t=>t.id===intent.taskId);
     if(!task||['queued','running'].includes(task.status)||busy||intent.resolving)return;
-    if(task.status!=='succeeded'){analysisNavigation.current=null;return;}
+    if(!['succeeded','partial'].includes(task.status)){analysisNavigation.current=null;return;}
     intent.resolving=true;
     // The completion record can arrive after the project read in the same poll.
     // Read again before showing the result, and consume only this submitted task.
@@ -89,7 +90,8 @@ export function Workspace({ id, active, models, onProjectsChanged, compat, onExi
       if(analysisNavigation.current!==intent)return;
       analysisNavigation.current=null;
       if(!currentView.current.active||currentView.current.phase!==0)return;
-      if((projectRef.current?.messages.filter(m=>m.role==='assistant'&&m.stage==='ingest').length||0)>intent.ingestCount){scrollPositions.current[1]=0;go(1);}
+      const result=projectRef.current;
+      if(result&&((result.messages.filter(m=>m.role==='assistant'&&m.stage==='ingest').length>intent.ingestCount)||result.items.length>intent.itemCount||result.questions.length>intent.questionCount)){scrollPositions.current[1]=0;go(1);}
     }).catch(e=>{if(analysisNavigation.current===intent)analysisNavigation.current=null;onRefreshFail(e);});
   },[tasks,active,phase,busy]);
   useEffect(() => {
@@ -99,6 +101,7 @@ export function Workspace({ id, active, models, onProjectsChanged, compat, onExi
   }, [sourcesOpen, focusRefs]);
   function editValue(project:Project, proof:EditProof):unknown {
     if(proof.kind==='answers')return Object.fromEntries(Object.keys(proof.mine as Obj).map(id=>[id,project.questions.find(q=>q.id===id)?.answer||'']));
+    if(proof.kind==='question_note')return project.questions.find(q=>q.id===proof.id)?.deferred_note||'';
     if(proof.kind==='behavior'){const item=project.items.find(i=>i.id===proof.id);return {values:item?.behavior||{},change_type:item?.change_type||'unspecified'};}
     if(proof.kind==='item'){const item=project.items.find(i=>i.id===proof.id);return item&&{title:item.title,statement:item.statement,change_type:item.change_type||''};}
     if(proof.kind==='context')return {values:project.product_context||{},scope_ids:project.product_context?.scope_ids||[]};
@@ -123,11 +126,11 @@ export function Workspace({ id, active, models, onProjectsChanged, compat, onExi
       await refresh().catch(e=>{onRefreshFail(e);activityNotice('修改已保存，但最新页面尚未取得。请重试刷新，不要重复提交。',true);});return result;}
     catch(e){if(e instanceof ApiError&&e.status===409){await refresh().catch(onRefreshFail);const latest=proof&&projectRef.current&&editValue(projectRef.current,proof);if(proof&&latest!==undefined)throw new DraftConflictError(proof.before,latest,proof.mine);}throw e;}finally{finish();}
   }
-  async function planAction(action: BusinessAction, optionId?: string, target?: Obj, text = '') {
+  async function planAction(action: BusinessAction, optionId?: string, target?: Obj, text = '', retryInput?: Partial<ActionInput>) {
     const current=projectRef.current;
     if (!current) return;
     if (actionBlockReason) throw Error(actionBlockReason);
-    const input: ActionInput = { expected_revision: current.revision, action, message: text, document_type: docType, option_id: optionId || null, max_calls: null, ...(target?{target:{kind:target.kind,id:target.id,...(target.section_id?{section_id:target.section_id}:{})}}:{}) };
+    const input: ActionInput = { action, message: text, document_type: docType, option_id: optionId || null, max_calls: null, ...(target?{target:{kind:target.kind,id:target.id,...(target.section_id?{section_id:target.section_id}:{})}}:{}),...retryInput,expected_revision:current.revision };
     const plan = await api<ActionPlan>(root + '/actions/plan', 'POST', input);
     setActionError(''); setPending({ input, plan, key: crypto.randomUUID() });
   }
@@ -135,13 +138,15 @@ export function Workspace({ id, active, models, onProjectsChanged, compat, onExi
     if (!pending||busyRef.current) return;
     if (actionBlockReason) { setActionError(actionBlockReason); return; }
     busyRef.current=true;setBusy(true); setActionError('');
-    const ingestCount=projectRef.current?.messages.filter(m=>m.role==='assistant'&&m.stage==='ingest').length||0;
+    const snapshot=projectRef.current;
+    const ingestCount=snapshot?.messages.filter(m=>m.role==='assistant'&&m.stage==='ingest').length||0;
     try { const task=await api<UserTask>(root + '/actions', 'POST', { ...pending.input, plan_hash: pending.plan.plan_hash, idempotency_key: pending.key, authorize: pending.plan.recipients.some(r => r.needs_authorization) });
-      if(active&&phase===0&&pending.input.action==='organize'&&!pending.input.target)analysisNavigation.current={taskId:task.id,ingestCount};
-      setTasks(current=>[...current.filter(t=>t.id!==task.id),task]);setTasksLoaded(true);setPending(null);if(pending.input.target){setHelpText('');setHelp(null);}await refresh().catch(e=>{onRefreshFail(e);activityNotice('任务已提交，最新进度暂未取得；请刷新查看，不要重复发起。',true);}); }
+      if(active&&phase===0&&pending.input.action==='organize'&&!pending.input.target)analysisNavigation.current={taskId:task.id,ingestCount,itemCount:snapshot?.items.length||0,questionCount:snapshot?.questions.length||0};
+      setTasks(current=>[...current.filter(t=>t.id!==task.id),{...task,retry_input:task.retry_input||pending.input}]);setTasksLoaded(true);setPending(null);if(pending.input.target){setHelpText('');setHelp(null);}await refresh().catch(e=>{onRefreshFail(e);activityNotice('任务已提交，最新进度暂未取得；请刷新查看，不要重复发起。',true);}); }
     catch(e) { setActionError((e as Error).message); } finally { busyRef.current=false;setBusy(false); }
   }
   function navigate(tab:string){if(tab==='sources'){setSourcesOpen(true);return;}go(tab==='documents'?4:tab==='scope'?1:2);}
+  function openQuestion(questionId?:string){guard(()=>{analysisNavigation.current=null;setFocusQuestionId(questionId||'');setFocusQuestionNonce(n=>n+1);setPhase(2);sessionStorage.setItem('ra-phase-'+id,'2');});}
   function openHelp(target:Obj){guard(()=>{setHelp(target);setHelpText('');});}
   function stageAction(s: string) { const action: Record<string, BusinessAction> = { ingest: 'organize', vision: 'organize', brainstorm: 'explore', clarify: 'clarify', ui: 'prototype', prd: 'document', review: 'review', change: 'change' }; act(() => planAction(action[s] || 'organize')); }
   const actionBlockReason = fatal ? '最新项目内容读取失败，请重试刷新后再发起任务。' : !tasksLoaded ? '正在读取任务状态，请稍候。' : compat.status === 'incompatible' ? '后端缺少必需接口能力（' + compat.missing.join('、') + '），发起动作已暂停；请重启服务并重新加载本标签页' : stale.includes('任务列表') ? (tasksLoaded ? '任务状态读取失败，当前状态待刷新；页面显示的是此前取得的任务记录，发起动作已暂停，请重试刷新' : '任务状态尚未取得，发起动作已暂停；请先重试刷新') : '';
@@ -159,12 +164,14 @@ export function Workspace({ id, active, models, onProjectsChanged, compat, onExi
   }
   const direction = p.options.find(o => o.direction_status === 'selected');
   const phaseActions=[['organize'],['organize','explore'],['clarify','change'],['prototype','change'],['document','review'],['review']][phase];
-  const latest=tasks.filter(t=>phaseActions.includes(t.action)).slice(-1)[0];
+  const latest=tasks.filter(t=>phaseActions.includes(t.action)||Boolean(t.retry_input?.target)&&(phase===1&&t.retry_input?.target?.kind==='item'||phase===2&&t.retry_input?.target?.kind==='question'||phase===4&&t.retry_input?.target?.kind==='document')).slice(-1)[0];
+  const localTask=Boolean(latest?.retry_input?.target);
+  const retryTask=()=>{const input=latest?.retry_input;if(!input?.action||typeof input.message!=='string'||typeof input.document_type!=='string'||(['clarify','change'].includes(input.action)&&Boolean(input.message)&&!input.target)){activityNotice('无法恢复原任务对象和输入；请回到原对象重新填写后发起。',true);return;}void act(()=>planAction(input.action!,undefined,undefined,'',input));};
   const shared = { busy, project: p, setTab: () => {}, onOption: (option: Obj, action: string) => setOptionDecision({ option, action }), onItem: (item: Obj, status: string) => act(() => mutate('/items/' + item.id, { selection_status: status })), onIncludeScope: (item:Obj,reason:string,revision:number) => mutate('/items/'+item.id+'/include-scope',{expected_revision:revision,reason}), onEditItem: (item: Obj, statement: string, fields: Obj = {}) => mutate('/items/' + item.id, { selection_status: item.selection_status, statement, ...fields }), onStage: stageAction, onActivate: (cid: string) => act(() => mutate('/ui-candidates/' + cid + '/activate', {})), onReject: (cid: string) => act(() => mutate('/ui-candidates/' + cid + '/reject', {})), onNavigate: navigate, previewUrl: '/api' + root + '/prototype', runs, models, onCancel: (rid: string) => act(async () => { await api(root + '/runs/' + rid + '/cancel', 'POST'); await refresh(); }), onResume: (rid: string) => stageAction(runs.find(r => r.id === rid)?.stage || 'ingest'), embedded: true, onSource: (refs: Obj[]) => { setFocusRefs(refs); setSourcesOpen(true); }, onPreviewOption: setPreviewOption };
   const currentPreviewOption = previewOption && (p.options.find(o => o.id === previewOption.id) || previewOption);
   const intakeTask=tasks.filter(t=>t.action==='organize').slice(-1)[0];
   const intakeLabel=intakeTask&&['failed','cancelled','paused_budget'].includes(intakeTask.status)?'资料已保存 · 分析未成功':intakeTask&&['queued','running'].includes(intakeTask.status)?'资料已保存 · 分析中':!p.messages.some(m=>m.role==='assistant'&&m.stage==='ingest')?'资料已保存 · 待分析':'分析已生成 · 待核对';
-  const taskStatus = latest&&(phase===0||latest.status!=='succeeded'||running)&&<TaskStatus task={latest} busy={busy} uncertain={Boolean(fatal)||stale.includes('任务列表')} onRefresh={retry} onCancel={()=>act(async()=>{await api(root+'/actions/'+latest.id+'/cancel','POST');await refresh();})} onRetry={()=>act(()=>planAction(latest.action))} onViewResult={['succeeded','partial'].includes(latest.status)?()=>go(latest.action==='organize'?1:latest.action==='document'?4:phase):undefined}/>;
+  const taskStatus = latest&&(phase===0||localTask||latest.status!=='succeeded'||running)&&<><TaskStatus task={latest} busy={busy} uncertain={Boolean(fatal)||stale.includes('任务列表')} onRefresh={retry} onCancel={()=>act(async()=>{await api(root+'/actions/'+latest.id+'/cancel','POST');await refresh();})} onRetry={retryTask} onViewResult={!localTask&&!(phase===0&&(p.messages.some(m=>m.role==='assistant'&&m.stage==='ingest')||p.items.length>0||p.questions.length>0))&&['succeeded','partial'].includes(latest.status)?()=>go(latest.action==='organize'?1:latest.action==='document'?4:phase):undefined}/>{!latest.retry_input&&['failed','cancelled','paused_budget'].includes(latest.status)&&<p className="notice">原任务输入不可恢复。请从原对象重新输入并核对范围后发起。</p>}</>;
   return <div hidden={!active} className="project-workspace">
     <header className="project-bar"><div className="project-identity"><h1 title={p.name}>{p.name}</h1><small>内容草稿 v{p.revision} · {p.product_flow?.[5]?.complete?'当前版本已建立确认基线':p.active_baseline_id?'有历史确认基线，当前草稿须重新核对':'尚无正式确认基线'}</small></div><div className="toolbar"><button onClick={() => { setError(''); setFocusRefs([]); setSourcesOpen(true); }}>项目资料 · {p.sources.length}</button><button onClick={() => act(async () => { setHistory(await api<Obj[]>(root + '/history')); setHistoryOpen(true); })}>历史版本</button><button onClick={() => { setRename(p.name); setRenameOpen(true); }}>重命名</button></div></header>
     <nav className="phase-nav" aria-label="需求工作阶段">{phases.map((name,n)=>{if(n===3)return null;const st=p.product_flow?.[n];const state=st?.needs_recheck?'recheck':st?.complete?'complete':!st?.available?'blocked':phase===n?'current':'pending';return <button key={name} data-state={state} aria-current={phase===n?'step':undefined} onClick={()=>go(n)}><span className="step-number">{state==='complete'&&phase!==n?<Icon name="check"/>:n>3?n:n+1}</span><b>{state==='blocked'&&<Icon name="lock"/>}{name}</b><small>{n===0&&st?.complete?intakeLabel:state==='recheck'?'需重新核对':state==='complete'?(phase===n?'已核对 · 当前查看':'已完成'):state==='blocked'?'前置未完成':phase===n?'当前进行中':'尚未开始'}</small></button>;})}</nav>
@@ -175,7 +182,7 @@ export function Workspace({ id, active, models, onProjectsChanged, compat, onExi
     {error && <div className="error banner" role="alert">{error}<button onClick={() => act(refresh)}>刷新内容并保留输入</button><button onClick={() => setError('')}>关闭</button></div>}
     <div className="workflow-grid">
       <section className="workflow-main" ref={mainScroll} onScroll={e=>{scrollPositions.current[phase]=e.currentTarget.scrollTop;}}>
-        <div className="workflow-page" data-phase={phase}><div className="workflow-heading"><div className="task-icon" aria-hidden="true"><Icon name="document"/></div><p className="eyebrow">当前任务 · 第 {phase>3?phase:phase+1} / 5 步</p><h2>{phases[phase]}</h2><p className="muted">{['请先描述您要解决的问题，资料可随时补充。我们将基于你的描述，梳理现状并识别改动范围。','纠正理解偏差，确定这次改什么、保留什么。','回答会影响业务行为的问题，未知不会被自动补齐。','对照原页面，核对本次增量与操作意图。','分别阅读并核对 MRD、PRD 的当前版本。','复核范围与交付版本，再由服务端建立确认基线。'][phase]}</p>{phase<3&&<aside className="task-guidance"><Icon name="target"/><div><b>{['先提供已知信息，缺失项稍后澄清','核对整理结果','为什么需要澄清这些问题？'][phase]}</b><p>{['我们将梳理现状、改动目标与约束条件，再由你核对。','分析建议尚非业务决定，请检查现状、目标、保持项和不在本期的范围。','这些问题涉及业务规则、流程和约束，直接影响后续设计、开发与验收。'][phase]}</p></div></aside>}{phase===4&&<aside className="document-version"><span>当前底稿</span><b>v{p.revision}</b><small>{(p as any).document_review_status?.[docType]?.reviewed?'当前文档已核对':'当前文档待核对'}</small></aside>}</div>
+        <div className="workflow-page" data-phase={phase}><div className="workflow-heading"><div className="task-icon" aria-hidden="true"><Icon name="document"/></div><p className="eyebrow">当前任务 · 第 {phase>3?phase:phase+1} / 5 步</p><h2>{phases[phase]}</h2><p className="muted">{['请先描述您要解决的问题，资料可随时补充。我们将基于你的描述，梳理现状并识别改动范围。','纠正理解偏差，确定这次改什么、保留什么。','回答会影响业务行为的问题，未知不会被自动补齐。','对照原页面，核对本次增量与操作意图。','分别阅读并核对 MRD、PRD 的当前版本。','复核范围与交付版本，再由服务端建立确认基线。'][phase]}</p>{phase<3&&<aside className="task-guidance"><Icon name="target"/><div><b>{['先提供已知信息，缺失项稍后澄清','核对整理结果','为什么需要澄清这些问题？'][phase]}</b><p>{['我们将梳理现状、改动目标与约束条件，再由你核对。','分析建议尚非业务决定，请检查现状、目标、保持项和不在本期的范围。','这些问题涉及业务规则、流程和约束，直接影响后续设计、开发与验收。'][phase]}</p></div></aside>}{phase===4&&<aside className="document-version"><span>当前底稿</span><b>v{p.revision}</b><small>{(p as any).document_review_status?.[docType]?.reviewed?(p.product_flow?.[4]?.missing?.length?'此文档已核对 · 仍有交付阻塞':'此文档已核对 · 可继续检查'):'当前文档待核对'}</small></aside>}</div>
         {phase!==0&&!(phase===4&&latest?.status==='partial')&&taskStatus}
         <div hidden={phase!==0}><ProductCheckpoint p={p} phase={0} busy={busy||running} mutate={mutate} go={go} onSources={(sourceId)=>{setFocusRefs(sourceId?[{source_id:sourceId}]:[]);setSourcesOpen(true);}} analyzing={running} analysisStatus={taskStatus} onAnalyze={()=>planAction('organize')}/></div>
         <div hidden={phase!==1}>
@@ -184,20 +191,20 @@ export function Workspace({ id, active, models, onProjectsChanged, compat, onExi
           <details className="secondary-tools"><summary>按需比较方案方向（不是必选步骤）</summary><p>当前方向：{direction?.name||'尚未选择'}。方向不会自动采纳关联假设。</p><button disabled={busy||running||!!actionBlockReason} onClick={()=>act(()=>planAction('explore'))}>探索可选方案</button><ArtifactTabs {...shared} tab="options"/>{currentPreviewOption&&<article><h3>{currentPreviewOption.name}</h3><p>{currentPreviewOption.user_path}</p><p>方向讨论不等于条目采纳或正式确认。</p><button onClick={()=>setPreviewOption(null)}>收起预览</button></article>}</details>
         </div>
         <div hidden={phase!==2}>
-          <QuestionList p={p} mutate={mutate} busy={busy||running} onHelp={openHelp}/>
+          <QuestionList p={p} mutate={mutate} busy={busy||running} onHelp={openHelp} focusQuestionId={focusQuestionId} focusQuestionNonce={focusQuestionNonce}/>
           <details className="secondary-tools"><summary>核对条目与业务行为，或根据回答更新理解</summary><div className="toolbar"><button disabled={busy||running||!!actionBlockReason} onClick={()=>act(()=>planAction('clarify'))}>根据已保存回答更新理解</button><small>明确的模型任务，发送前核对范围。</small></div>
           <ArtifactTabs {...shared} tab="summary"/>
           </details><ProductCheckpoint p={p} phase={2} busy={busy||running} mutate={mutate} go={go} onAcceptance={()=>setAcceptanceOpen(true)}/>
         </div>
         <div className="document-stage" hidden={phase!==4} id={'document-result-'+id}>
-          <DocumentStudio taskStatus={latest?.status==='partial'?taskStatus:undefined} p={p} docType={docType} setDocType={setDocType} selectedDocId={selectedDocId} setSelectedDocId={setSelectedDocId} artifacts={artifacts} setStage={setStage} setShowAdvanced={setShowAdvanced} setTab={navigate} setOutcome={()=>{}} root={root} act={act} mutate={mutate} busy={busy||running} onHelp={openHelp} onGenerate={()=>act(()=>planAction('document'))}/>
+          <DocumentStudio taskStatus={latest?.status==='partial'&&!localTask?taskStatus:undefined} p={p} docType={docType} setDocType={setDocType} setSelectedDocId={setSelectedDocId} selectedDocId={selectedDocId} artifacts={artifacts} setStage={setStage} setShowAdvanced={setShowAdvanced} setTab={navigate} setOutcome={()=>{}} root={root} act={act} mutate={mutate} busy={busy||running} onHelp={openHelp} onGenerate={()=>act(()=>planAction('document'))} onSource={shared.onSource} onClarify={openQuestion}/>
           <ProductCheckpoint p={p} phase={4} busy={busy||running} mutate={mutate} go={go}/>
         </div>
         <section hidden={phase!==5} id={'confirmation-'+id}><ConfirmationPanel p={p} busy={busy} setBusy={setBusy} setError={setError} setTab={navigate} setStage={setStage} setShowAdvanced={setShowAdvanced} root={root} act={act} refresh={refresh} onReview={()=>act(()=>planAction('review'))}/></section>
         </div>
       </section>
     </div>
-    {help&&<div className="drawer-backdrop"><section className="source-drawer context-help" role="dialog" aria-modal="true" aria-label="当前对象的 AI 帮助"><button onClick={()=>guard(()=>setHelp(null))}>关闭帮助</button><p className="eyebrow">只围绕当前对象</p><h2>{help.label}</h2><small>{help.id}{help.section_id?' · '+help.section_id:''}</small><p>建议形成后仍需核对，不会自动回答问题或采纳条目。</p><label>希望怎样调整或澄清<textarea rows={5} value={helpText} onChange={e=>setHelpText(e.target.value)}/></label><button className="primary" disabled={busy||running||!helpText.trim()} onClick={()=>act(()=>planAction(help.kind==='ui'?'change':'clarify',undefined,help,helpText))}>核对本次讨论任务</button><details><summary>已保存的讨论历史 · {p.messages.length}</summary>{p.messages.map((m,n)=><article key={n}><b>{m.role==='user'?'用户输入':'助手建议'} · {m.stage}</b><p>{m.text}</p></article>)}</details></section></div>}
+    {help&&<div className="drawer-backdrop"><section className="source-drawer context-help" role="dialog" aria-modal="true" aria-label="当前对象的 AI 帮助"><button onClick={()=>guard(()=>setHelp(null))}>关闭帮助</button><p className="eyebrow">只围绕当前对象</p><h2>{help.label}</h2><small>{help.id}{help.section_id?' · '+help.section_id:''}</small><p>{help.kind==='document'?'文档局部修改需满足当前文档任务的前置条件；结果仍需核对。':'可在本步核对前求助；结果形成待核对候选，不会自动回答问题、采纳条目或确认范围。'}</p><label>希望怎样调整或澄清<textarea rows={5} value={helpText} onChange={e=>setHelpText(e.target.value)}/></label><button className="primary" disabled={busy||running||!helpText.trim()} onClick={()=>act(()=>planAction(help.kind==='document'||help.kind==='ui'?'change':'clarify',undefined,help,helpText))}>核对本次讨论任务</button><details><summary>已保存的讨论历史 · {p.messages.length}</summary>{p.messages.map((m,n)=><article key={n}><b>{m.role==='user'?'用户输入':'助手建议'} · {m.stage}</b><p>{m.text}</p></article>)}</details></section></div>}
     {candidateOpen&&<div className="modal-backdrop"><form className="modal" role="dialog" aria-modal="true" aria-label="补充候选需求" onSubmit={e=>{e.preventDefault();act(saveCandidate);}}><h2>补充一条候选需求</h2><p>保留你的原文和来源；保存不会自动采纳。</p><label>需求名称<input disabled={busy} required maxLength={200} value={candidateTitle} onChange={e=>setCandidateTitle(e.target.value)}/></label><label>需求原文<textarea disabled={busy} required maxLength={6000} value={candidateText} onChange={e=>setCandidateText(e.target.value)}/></label>{error&&<p role="alert">{error}</p>}<div className="toolbar"><button type="button" disabled={busy} onClick={()=>guard(()=>setCandidateOpen(false))}>取消</button><button disabled={busy} className="primary">保存候选</button></div></form></div>}
     {acceptanceOpen&&<div className="modal-backdrop"><form className="modal" role="dialog" aria-modal="true" aria-label="补充关联验收条件" onSubmit={e=>{e.preventDefault();act(saveAcceptance);}}><h2>补充关联验收条件</h2><p>请写明可观察的操作和预期结果。保存为候选，仍需在本步“待采纳候选”中明确采纳。</p><label>关联的本期需求<select required disabled={busy} value={acceptanceRequirement} onChange={e=>setAcceptanceRequirement(e.target.value)}><option value="">选择需求</option>{p.items.filter(i=>i.kind==='requirement'&&i.applies_to==='to_be'&&p.product_context?.scope_ids?.includes(i.id)).map(i=><option key={i.id} value={i.id}>{i.id}｜{i.title}</option>)}</select></label><label>验收名称<input required disabled={busy} maxLength={200} value={acceptanceTitle} onChange={e=>setAcceptanceTitle(e.target.value)}/></label><label>验收原文<textarea required disabled={busy} maxLength={6000} value={acceptanceText} onChange={e=>setAcceptanceText(e.target.value)}/></label>{error&&<p role="alert" className="error">{error}</p>}<div className="toolbar"><button type="button" disabled={busy} onClick={()=>guard(()=>setAcceptanceOpen(false))}>取消</button><button disabled={busy} className="primary">保存验收候选</button></div></form></div>}
     {sourcesOpen && <div className="drawer-backdrop"><section className="source-drawer" role="dialog" aria-modal="true" aria-label="项目资料"><button disabled={busy} onClick={() => setSourcesOpen(false)}>关闭项目资料</button><SourcePanel focusRefs={focusRefs} p={p} models={models} purpose={purpose} setPurpose={setPurpose} sourceText={sourceText} setSourceText={setSourceText} url={url} setUrl={setUrl} dynamic={dynamic} setDynamic={setDynamic} busy={busy} act={act} error={error} mutate={mutate} refresh={refresh} root={root} pendingGrant={null} setPendingGrant={() => {}} guided /></section></div>}

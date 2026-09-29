@@ -10,12 +10,25 @@ const descriptions: Record<string, string> = {
   goal: '本次想解决的问题、期望的结果与约束。', current: '已有系统、当前流程和实际页面。',
   reference: '墨刀原型截图、页面样式或竞品参考；不自动成为本期业务要求。', template: '文档结构与格式参考。', business: '有出处的业务与工程现状；新包默认使用全部模块，可按需缩小范围。',
 };
+function sourceIdentity(source: Obj, siblings: Obj[]): string {
+  const repeated = siblings.filter(item => item.title === source.title).length > 1;
+  const when = source.created ? new Date(source.created) : null;
+  const date = when && !Number.isNaN(when.valueOf()) ? when.toLocaleString('zh-CN') : source.created;
+  if (source.origin === 'intake') {
+    return ['诉求 v' + (source.intake_version || '未标明'), date || '', repeated ? '编号 ' + String(source.id).slice(0, 8) : ''].filter(Boolean).join(' · ');
+  }
+  return [repeated && source.version ? '读取 v' + source.version : '', date || '', repeated ? '编号 ' + String(source.id).slice(0, 8) : ''].filter(Boolean).join(' · ');
+}
+function sourceDigest(source: Obj): string {
+  const first = source.excerpts?.find((entry: Obj) => typeof entry.text === 'string' && entry.text.trim())?.text;
+  return first ? first.replace(/\s+/g, ' ').slice(0, 92) : '';
+}
 
 export function IntakeMaterialGroups({ sources, onOpen }: { sources: Obj[]; onOpen?: (sourceId?: string) => void }) {
   const parents = sources.filter(s => !s.container_source_id);
   return <>{Object.entries(sourcePurposes).map(([purpose, label]) => {
     const members = parents.filter(s => s.purpose === purpose);
-    return members.length ? <section className="intake-material-group" key={purpose} aria-label={label}><h4>{label} · {members.length}</h4><div className="material-cards">{members.map(source => <button className="material-file" key={source.id} onClick={() => onOpen?.(source.id)}>{source.image_mime ? <img src={'/api/projects/' + source.project_id + '/sources/' + source.id + '/image'} alt="材料缩略图" /> : <span aria-hidden="true">▤</span>}<span><b>{source.title}</b><small>{source.excluded ? '已排除' : sourceStatusNames[source.parse_status] || source.parse_status} · 点击查看内容</small></span></button>)}</div></section> : null;
+    return members.length ? <section className="intake-material-group" key={purpose} aria-label={label}><h4>{label} · {members.length}</h4><div className="material-cards">{members.map(source => <button className="material-file" key={source.id} onClick={() => onOpen?.(source.id)}>{source.image_mime ? <img src={'/api/projects/' + source.project_id + '/sources/' + source.id + '/image'} alt="材料缩略图" /> : <span aria-hidden="true">▤</span>}<span><b>{source.title}</b><small>{source.origin === 'intake' ? '诉求 v' + (source.intake_version || '未标明') + ' · ' : ''}{source.excluded ? '已排除' : sourceStatusNames[source.parse_status] || source.parse_status} · 点击查看内容</small></span></button>)}</div></section> : null;
   })}<button type="button" className="material-upload" onClick={() => onOpen?.()}><span>点击添加相关资料</span><small>文档、墨刀截图、文字或公开网址</small></button></>;
 }
 
@@ -106,12 +119,14 @@ export function SourceLibrary({ p, root, busy, act, mutate, refresh, focusRefs =
       <header><h3>{sourcePurposes[category] || '其他资料'} <span>{members.length}</span></h3><p>{descriptions[category]}</p></header>
       {!members.length && <p className="material-empty">尚未添加此类资料</p>}
       <div className="source-grid">{members.map((s: Obj) => <article className={'card material-card' + (s.excluded ? ' material-excluded' : '')} key={s.id} id={'source-' + s.id}>
-        <div className="section-heading"><h4>{s.title}</h4><span className="pill">{s.excluded ? '已排除' : sourceStatusNames[s.parse_status] || s.parse_status}</span></div>
+        <div className="section-heading"><h4>{s.title}</h4><span className="pill">{s.origin === 'intake' && s.superseded_by ? '历史诉求' : s.excluded ? '已排除' : sourceStatusNames[s.parse_status] || s.parse_status}</span></div>
         {s.image_mime && <button type="button" className="material-thumbnail" aria-label={'预览图片：' + s.title} onClick={() => setSelected(s.id)}><img loading="lazy" src={'/api' + root + '/sources/' + s.id + '/image'} alt={s.title} /></button>}
-        <p className="material-summary">{s.purpose === 'business' ? `${s.business_context?.project?.name || '工程上下文包'} · ${s.business_context?.modules?.length || 0} 个模块 · ${s.excluded || s.business_active === false ? '未启用' : `参考 ${s.business_selection?.module_ids?.length || 0} 个模块`}` : s.image_mime ? '图片可预览，文字与交互含义须经分析核对。' : `${s.excerpts.length} 个已提取片段${s.embedded_image_ids?.length ? ` · ${s.embedded_image_ids.length} 张内嵌图片` : ''}`}</p>
+        <p className="material-summary">{sourceIdentity(s, parents)}{sourceIdentity(s, parents) ? ' · ' : ''}{s.purpose === 'business' ? `${s.business_context?.project?.name || '工程上下文包'} · ${s.business_context?.modules?.length || 0} 个模块 · ${s.excluded || s.business_active === false ? '未启用' : `参考 ${s.business_selection?.module_ids?.length || 0} 个模块`}` : s.image_mime ? '图片可预览，文字与交互含义须经分析核对。' : `${s.excerpts.length} 个已提取片段${s.embedded_image_ids?.length ? ` · ${s.embedded_image_ids.length} 张内嵌图片` : ''}`}</p>
+        {sourceDigest(s) && <p className="material-digest">{sourceDigest(s)}</p>}
+        {s.origin === 'intake' && s.superseded_by && <p className="material-summary">历史诉求，只读保留，不再纳入当前材料</p>}
         {s.failure_reason && <p className="notice">{s.failure_reason}</p>}
-        <div className="toolbar"><button type="button" className="primary" aria-label={'查看内容：' + s.title} onClick={() => setSelected(s.id)}>{s.purpose === 'business' ? '查看工程上下文' : '查看内容'}</button><button disabled={busy} onClick={() => act(() => mutate('/sources/' + s.id + '/exclude', {}))}>{s.excluded ? '恢复使用' : '排除材料'}</button></div>
-        {s.purpose === 'business' ? <small>工程上下文使用专门导入与范围调整流程 · {s.id}</small> : <details><summary>分类与读取操作</summary><label>资料分类<select aria-label={'资料分类：' + s.title} disabled={busy} value={s.purpose} onChange={e => { const purpose = e.target.value; act(() => mutate('/sources/' + s.id + '/purpose', { purpose })); }}>{Object.entries(sourcePurposes).filter(([key]) => key !== 'business').map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></label><button disabled={busy} onClick={() => act(() => mutate('/sources/' + s.id + '/retry', {}))}>重新读取（保留原件）</button><small>{s.id}</small></details>}
+        <div className="toolbar"><button type="button" className="primary" aria-label={'查看内容：' + s.title} onClick={() => setSelected(s.id)}>{s.purpose === 'business' ? '查看工程上下文' : '查看内容'}</button>{!(s.origin === 'intake' && s.superseded_by) && <button disabled={busy} onClick={() => act(() => mutate('/sources/' + s.id + '/exclude', {}))}>{s.excluded ? '恢复使用' : '排除材料'}</button>}</div>
+        {s.origin === 'intake' && s.superseded_by ? <small>后续诉求已替代此版本；原文保留供追溯。</small> : s.purpose === 'business' ? <small>工程上下文使用专门导入与范围调整流程 · {s.id}</small> : <details><summary>分类与读取操作</summary><label>资料分类<select aria-label={'资料分类：' + s.title} disabled={busy} value={s.purpose} onChange={e => { const purpose = e.target.value; act(() => mutate('/sources/' + s.id + '/purpose', { purpose })); }}>{Object.entries(sourcePurposes).filter(([key]) => key !== 'business').map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></label><button disabled={busy} onClick={() => act(() => mutate('/sources/' + s.id + '/retry', {}))}>重新读取（保留原件）</button><small>{s.id}</small></details>}
       </article>)}</div>
     </section>; })}
     {source && (source.purpose === 'business' ? <BusinessContextView key={source.id} source={source} root={root} revision={p.revision} refresh={refresh} busy={busy} onClose={() => setSelected('')} /> : <SourcePreview key={source.id} source={source} p={p} root={root} focusExcerpt={focusRefs.find(ref => ref.source_id === source.id)?.excerpt_id} onClose={() => setSelected('')} />)}

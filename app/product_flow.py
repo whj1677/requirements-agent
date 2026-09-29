@@ -102,8 +102,12 @@ def missing(p, step):
         issues += ['请核对'+label for key,label in SCOPE.items() if not str(ctx.get(key,'')).strip()]
         scope=ctx.get('scope_ids',[])
         actual={i['id'] for i in p['items'] if i['kind']=='requirement' and i['applies_to']=='to_be'}
-        if not scope or not set(scope)<=actual:
-            issues.append('尚未形成带编号的独立本期需求；背景或目标条目不能代替功能需求。')
+        if not actual:
+            issues.append('尚无独立本期需求候选，请先整理或补充本次实际改动。')
+        elif not scope:
+            issues.append('请选择至少一条本期需求。')
+        elif not set(scope)<=actual:
+            issues.append('已选范围中有需求不再可用，请重新选择本期需求。')
         issues += [i['id']+' 改动性质无法确定，请核对依据' for i in p['items'] if i['id'] in scope and i.get('change_type')=='unspecified']
     elif step==3:
         reqs=selected_requirements(p)
@@ -199,10 +203,19 @@ def review_document(p, kind, document_id):
         brief_hash=brief_hash(p),reviewed_at=now(),actor='authenticated_local_user',meaning='文档评审核对，非正式业务批准')
 
 
-def execution_issues(p, stage, kind='prd'):
+def execution_issues(p, stage, kind='prd', discussion_target=None):
     if stage=='ui':return ['业务草图功能已取消，请通过需求条目、业务规则及文档表达改动。']
     # Intake remains possible with missing information. Later execution shares these checks.
     required={'brainstorm':1,'clarify':2,'change':2,'ui':3,'prd':3,'review':3}.get(stage,0)
+    # Local help may prepare an unconfirmed requirement. It never approves the
+    # scope or relaxes document-generation/delivery gates.
+    if stage == 'clarify' and discussion_target:
+        target = discussion_target
+        valid = (target.get('kind') == 'item' and any(i['id'] == target.get('id') and
+                 i['kind'] == 'requirement' and i['applies_to'] == 'to_be' for i in p['items']))
+        valid = valid or (target.get('kind') == 'question' and any(q['id'] == target.get('id') for q in p['questions']))
+        if valid:
+            required = 1
     if not required:return []
     steps=status(p)
     failures=[s for s in steps[:required] if not s['retired'] and not s['complete']]

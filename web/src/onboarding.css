@@ -1,0 +1,25 @@
+.onboarding-settings { max-width:900px; padding:4px 0 32px; }
+.onboarding-settings h1 { margin:0 0 8px; }
+.onboarding-settings h2 { margin:0 0 14px; font-size:19px; }
+.onboarding-settings>p { margin:0 0 20px; max-width:680px; }
+.settings-card, .settings-advanced { background:#fff; border:1px solid var(--line); border-radius:12px; padding:22px; margin-bottom:16px; }
+.settings-card label, .settings-advanced label { display:block; margin:12px 0; }
+.settings-card label input:not([type=checkbox]), .settings-advanced label input:not([type=checkbox]), .settings-card label select, .settings-advanced label select { display:block; width:100%; margin-top:6px; }
+.settings-status { padding:10px 12px; background:var(--soft); border-radius:8px; overflow-wrap:anywhere; }
+.settings-help { font-size:13px; margin:8px 0 16px; }
+.settings-advanced summary { cursor:pointer; font-weight:650; }
+.settings-advanced[open] summary { margin-bottom:16px; }
+.settings-advanced .check { display:flex; align-items:flex-start; gap:8px; }
+.settings-advanced .check input { flex:none; margin-top:4px; }
+.settings-advanced>button { margin:10px 8px 0 0; }
+.project-switcher>.project-search { margin:0 7px 0; font-size:12px; color:var(--muted); }
+.project-search input { width:100%; min-width:0; margin-top:6px; }
+.project-list button .project-list-text { min-width:0; display:flex; flex-direction:column; align-items:flex-start; gap:4px; }
+.project-list button .project-list-text strong { display:block; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:600; }
+.project-list button .project-list-text small { display:block; font-size:11px; color:var(--muted); font-weight:400; line-height:1.35; overflow-wrap:anywhere; }
+.project-empty { color:var(--muted); font-size:12px; padding:12px; }
+.onboarding-welcome { max-width:680px; }
+.onboarding-welcome>button { margin:12px 0; }
+.compact-projects>input[type=search] { width:140px; min-width:90px; margin:0; }
+@media(max-width:700px) { .onboarding-settings { padding:6px 0 24px; }.settings-card,.settings-advanced { padding:16px; }.settings-card .settings-grid,.settings-advanced .settings-grid { grid-template-columns:1fr; } }
+@media(max-width:700px) { .compact-projects { flex-wrap:wrap; }.compact-projects>input[type=search] { flex:1; }.compact-projects>select { flex:2; min-width:140px; }.compact-projects>form { width:100%; }.compact-projects>form input { flex:1; max-width:none; } }
