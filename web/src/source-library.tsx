@@ -5,10 +5,10 @@ import { Icon } from './ui-icons';
 import { BusinessContextView } from './business-context';
 
 type Obj = Record<string, any>;
-export const sourcePurposes: Record<string, string> = { goal: '目标与诉求', current: '现状资料', reference: '设计参考', template: '文档模板', business: '业务背景' };
+export const sourcePurposes: Record<string, string> = { goal: '目标与诉求', current: '现状资料', reference: '设计参考', template: '文档模板', business: '工程上下文' };
 const descriptions: Record<string, string> = {
   goal: '本次想解决的问题、期望的结果与约束。', current: '已有系统、当前流程和实际页面。',
-  reference: '墨刀原型截图、页面样式或竞品参考；不自动成为本期业务要求。', template: '文档结构与格式参考。', business: '有出处的产品现状；模块相关性与事实核对分别保存。',
+  reference: '墨刀原型截图、页面样式或竞品参考；不自动成为本期业务要求。', template: '文档结构与格式参考。', business: '有出处的业务与工程现状；新包默认使用全部模块，可按需缩小范围。',
 };
 
 export function IntakeMaterialGroups({ sources, onOpen }: { sources: Obj[]; onOpen?: (sourceId?: string) => void }) {
@@ -108,10 +108,10 @@ export function SourceLibrary({ p, root, busy, act, mutate, refresh, focusRefs =
       <div className="source-grid">{members.map((s: Obj) => <article className={'card material-card' + (s.excluded ? ' material-excluded' : '')} key={s.id} id={'source-' + s.id}>
         <div className="section-heading"><h4>{s.title}</h4><span className="pill">{s.excluded ? '已排除' : sourceStatusNames[s.parse_status] || s.parse_status}</span></div>
         {s.image_mime && <button type="button" className="material-thumbnail" aria-label={'预览图片：' + s.title} onClick={() => setSelected(s.id)}><img loading="lazy" src={'/api' + root + '/sources/' + s.id + '/image'} alt={s.title} /></button>}
-        <p className="material-summary">{s.purpose === 'business' ? `${s.business_context?.project?.name || '业务背景包'} · ${s.business_context?.modules?.length || 0} 个模块 · 已选 ${s.business_selection?.module_ids?.length || 0} 个` : s.image_mime ? '图片可预览，文字与交互含义须经分析核对。' : `${s.excerpts.length} 个已提取片段${s.embedded_image_ids?.length ? ` · ${s.embedded_image_ids.length} 张内嵌图片` : ''}`}</p>
+        <p className="material-summary">{s.purpose === 'business' ? `${s.business_context?.project?.name || '工程上下文包'} · ${s.business_context?.modules?.length || 0} 个模块 · ${s.excluded || s.business_active === false ? '未启用' : `参考 ${s.business_selection?.module_ids?.length || 0} 个模块`}` : s.image_mime ? '图片可预览，文字与交互含义须经分析核对。' : `${s.excerpts.length} 个已提取片段${s.embedded_image_ids?.length ? ` · ${s.embedded_image_ids.length} 张内嵌图片` : ''}`}</p>
         {s.failure_reason && <p className="notice">{s.failure_reason}</p>}
-        <div className="toolbar"><button type="button" className="primary" aria-label={'查看内容：' + s.title} onClick={() => setSelected(s.id)}>{s.purpose === 'business' ? '查看业务背景' : '查看内容'}</button><button disabled={busy} onClick={() => act(() => mutate('/sources/' + s.id + '/exclude', {}))}>{s.excluded ? '恢复使用' : '排除材料'}</button></div>
-        {s.purpose === 'business' ? <small>业务背景使用专门导入与核对流程 · {s.id}</small> : <details><summary>分类与读取操作</summary><label>资料分类<select aria-label={'资料分类：' + s.title} disabled={busy} value={s.purpose} onChange={e => { const purpose = e.target.value; act(() => mutate('/sources/' + s.id + '/purpose', { purpose })); }}>{Object.entries(sourcePurposes).filter(([key]) => key !== 'business').map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></label><button disabled={busy} onClick={() => act(() => mutate('/sources/' + s.id + '/retry', {}))}>重新读取（保留原件）</button><small>{s.id}</small></details>}
+        <div className="toolbar"><button type="button" className="primary" aria-label={'查看内容：' + s.title} onClick={() => setSelected(s.id)}>{s.purpose === 'business' ? '查看工程上下文' : '查看内容'}</button><button disabled={busy} onClick={() => act(() => mutate('/sources/' + s.id + '/exclude', {}))}>{s.excluded ? '恢复使用' : '排除材料'}</button></div>
+        {s.purpose === 'business' ? <small>工程上下文使用专门导入与范围调整流程 · {s.id}</small> : <details><summary>分类与读取操作</summary><label>资料分类<select aria-label={'资料分类：' + s.title} disabled={busy} value={s.purpose} onChange={e => { const purpose = e.target.value; act(() => mutate('/sources/' + s.id + '/purpose', { purpose })); }}>{Object.entries(sourcePurposes).filter(([key]) => key !== 'business').map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></label><button disabled={busy} onClick={() => act(() => mutate('/sources/' + s.id + '/retry', {}))}>重新读取（保留原件）</button><small>{s.id}</small></details>}
       </article>)}</div>
     </section>; })}
     {source && (source.purpose === 'business' ? <BusinessContextView key={source.id} source={source} root={root} revision={p.revision} refresh={refresh} busy={busy} onClose={() => setSelected('')} /> : <SourcePreview key={source.id} source={source} p={p} root={root} focusExcerpt={focusRefs.find(ref => ref.source_id === source.id)?.excerpt_id} onClose={() => setSelected('')} />)}

@@ -40,7 +40,7 @@ def main():
         async def request(self, *args, **kwargs):
             raise AssertionError('This UI fixture never calls a model')
 
-    app = create_app(directory / 'data',access_token='off',provider=NoModel(),env_path=directory/'absent.env')
+    app = create_app(directory / 'data',provider=NoModel(),env_path=directory/'absent.env')
     if not app.state.store.list():
         app.state.store.create('业务背景 · 隔离界面验收')
     app.router.routes[:] = [r for r in app.router.routes if getattr(r,'name','') != 'web']

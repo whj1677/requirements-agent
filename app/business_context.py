@@ -1,4 +1,4 @@
-"""Untrusted, versioned business context bundles and explicit project selection."""
+"""Untrusted, versioned business and engineering context bundles."""
 import copy
 import hashlib
 import json
@@ -125,8 +125,9 @@ def build_source(store, filename: str, raw: bytes) -> dict:
     return dict(id=sid, title=filename, purpose='business', uri=None, sha256=sha,
                 created=now(), version=1, excluded=False, parse_status='read',
                 failure_reason='', image_mime=None, excerpts=excerpts, business_context=bundle,
-                business_selection={'module_ids': [], 'confirmed_claim_ids': []},
-                business_active=False)
+                business_selection={'module_ids': [m['id'] for m in bundle['modules']],
+                                    'confirmed_claim_ids': []},
+                business_active=True)
 
 
 def selection_update(source: dict, module_ids: list, confirmed_claim_ids: list) -> dict:
@@ -169,7 +170,7 @@ def _related(bundle, module_ids):
 
 
 def selected_excerpts(source: dict) -> list[dict]:
-    """Stable claim excerpts for selected modules and their direct dependencies."""
+    """Selected claims with provenance and factual-use classification."""
     bundle = source.get('business_context')
     if not bundle or source.get('excluded') or not source.get('business_active', True):
         return []
@@ -180,6 +181,8 @@ def selected_excerpts(source: dict) -> list[dict]:
     related = _related(bundle, selection['module_ids'])
     confirmed = set(selection['confirmed_claim_ids'])
     claim_by_id = {c['id']: c for c in bundle['claims']}
+    evidence_by_id = {e['id']: e for e in bundle['evidence']}
+    conflicted = {cid for conflict in bundle['conflicts'] for cid in conflict['claim_ids']}
     excerpts = []
     for stored in source.get('excerpts', []):
         claim = claim_by_id.get(stored.get('business_claim_id'))
@@ -187,11 +190,28 @@ def selected_excerpts(source: dict) -> list[dict]:
             continue
         excerpt = copy.deepcopy(stored)
         excerpt['business_origin'] = claim['origin']
+        excerpt['business_dimension'] = claim['dimension']
         excerpt['business_confirmed'] = claim['id'] in confirmed
-        excerpt['business_status'] = ('用户已核对现状；不等于本期规范采纳' if claim['id'] in confirmed
-                                      else '未经用户确认的现状线索')
+        excerpt['business_conflicted'] = claim['id'] in conflicted
+        kinds = {evidence_by_id[eid]['kind'] for eid in claim['evidence_ids']}
+        supported = ((claim['origin'] == 'code_observation' and
+                      kinds <= {'implementation', 'configuration'}) or
+                     (claim['origin'] == 'document_claim' and
+                      kinds <= {'documentation', 'comment'}))
+        excerpt['business_usable'] = bool(supported and not excerpt['business_conflicted'])
+        excerpt['business_status'] = (
+            '冲突中的陈述，不能作为无争议现状' if excerpt['business_conflicted'] else
+            '推断，需保留推断身份' if claim['origin'] == 'inference' else
+            '来源类型与陈述身份不符，需核对' if not supported else
+            '源码/配置观察，可引用为导出快照现状' if claim['origin'] == 'code_observation' else
+            '文档陈述，可注明文档来源引用')
         excerpts.append(excerpt)
     return excerpts
+
+
+def usable_claims(source: dict) -> list[dict]:
+    """Facts usable for snapshot descriptions; never an approval of new requirements."""
+    return [e for e in selected_excerpts(source) if e['business_usable']]
 
 
 def model_context(project: dict) -> dict | None:
@@ -209,6 +229,8 @@ def model_context(project: dict) -> dict | None:
         selected_claims = {e['business_claim_id'] for e in excerpts}
         claims = [{'id': e['business_claim_id'], 'excerpt_id': e['id'],
                    'source_id': source['id'], 'origin': e['business_origin'],
+                   'dimension': e['business_dimension'],
+                   'usable': e['business_usable'], 'conflicted': e['business_conflicted'],
                    'confirmed': e['business_confirmed'], 'status': e['business_status'],
                    'evidence_ids': e['evidence_ids']} for e in excerpts]
         conflicts = []
@@ -226,7 +248,8 @@ def model_context(project: dict) -> dict | None:
         packages.append({'source_id': source['id'], 'source_sha256': source['sha256'],
             'bundle_id': bundle['bundle_id'], 'generated_at': bundle['generated_at'],
             'project': bundle['project'], 'source_snapshot': bundle['source_snapshot'],
-            'overview': bundle['overview'], 'technical_summary': bundle['technical_summary'],
+            'overview': bundle['overview'] if len(related) == len(bundle['modules']) else None,
+            'technical_summary': bundle['technical_summary'] if len(related) == len(bundle['modules']) else None,
             'selected_module_ids': selection['module_ids'],
             'modules': [{k: m[k] for k in ('id', 'name', 'summary', 'depends_on')}
                         for m in bundle['modules'] if m['id'] in related],
@@ -237,7 +260,7 @@ def model_context(project: dict) -> dict | None:
                          'indexed_modules': [mid for mid in bundle['coverage']['indexed_modules'] if mid in related],
                          'excluded': bundle['coverage']['excluded'],
                          'limitations': bundle['coverage']['limitations']}})
-    return {'packages': packages, 'confirmation_note': '用户核对现状不等于本期需求或规范采纳'}
+    return {'packages': packages, 'usage_note': '有出处的快照观察可用于现状描述；文档陈述须标明来源；推断、冲突及旧核对记录不构成已验证事实或新需求采纳'}
 
 
 def selection_identity(project: dict) -> list[dict] | None:

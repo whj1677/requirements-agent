@@ -77,6 +77,7 @@ def apply_response(p, response):
         document_version=p['documents'].get(kind,{}).get('document_version',0)+1
         p['documents'][kind] = dict(id=ident('DOC'), content=r['result'], requirement_name=p['name'], question_snapshot=copy.deepcopy(p['questions']), brief_hash=brief_hash(p), draft_revision=p['revision'], item_snapshot=copy.deepcopy(p['items']), created=now(), style_version='1', generator_version='1.1', reference_hashes={s['reference_id']:s['sha256'] for s in PROFILES['sources']} if p.get('reference_mode')!='builtin' else {}, limitations=r['limitations'])
         p['documents'][kind]['source_snapshot']=[{k:s.get(k) for k in ('id','title','purpose','parse_status','failure_reason')} for s in p['sources']]
+        p['documents'][kind]['product_context_snapshot']=copy.deepcopy(p.get('product_context',{}))
         from .business_context import model_context
         if model_context(p):p['documents'][kind]['business_context_snapshot']=copy.deepcopy(model_context(p))
         from .prd import verified_business_context
@@ -149,7 +150,7 @@ class Workflow:
                 initial_max_tokens=out_budget,budget_policy=policy_summary(config),
                 approved_max_calls=config['max_calls'],config_hash=digest(run['provider']),
                 prompt_hash=digest(messages[0]['content'].split('可信任务头：',1)[0]),schema_hash=digest(header['schema']),
-                profile_hash=digest(header.get('content_profile')),input_revision=p['revision'],assembly_version='prd-plan-3' if run['stage']=='prd' else 'runtime-1.1')
+                profile_hash=digest(header.get('content_profile')),input_revision=p['revision'],assembly_version='prd-plan-4' if run['stage']=='prd' else 'runtime-1.1')
             self.store.update_run(pid, rid, status='running', sent_excerpt_ids=[x['id'] for x in excerpts], omitted_excerpt_ids=omitted, input_hash=digest(messages),authorization=authorization,input_metrics=input_metrics(messages))
             while True:
                 state = self.store.get_record(pid, rid, 'run')
@@ -175,6 +176,7 @@ class Workflow:
                     attempt.update(meta)
                     require(self.store.get_record(pid, rid, 'run')['status'] != 'cancelled', 'CANCELLED', '已取消，结果未采纳')
                     if run['stage']=='prd':
+                        document_plan_version = value.get('plan_version')
                         value=compile_plan(value,p,run['document_type'],omitted,include_sketch=False)
                     if run['stage']=='ingest':
                         ingest.validate(value, excerpts)
@@ -275,7 +277,7 @@ class Workflow:
                 if run['stage']=='prd':
                     artifact=current['documents'][run['document_type']]
                     artifact['sketch_policy']='excluded'
-                    artifact['assembly_version']='prd-plan-3'
+                    artifact['assembly_version']='prd-plan-'+document_plan_version
                     current['stale_document_kinds']=[kind for kind in current.get('stale_document_kinds',[]) if kind!=run['document_type']]
                     current['document_update_needed']=bool(current['stale_document_kinds'])
                     self.store.record(pid,'document_artifact',artifact,db=db)

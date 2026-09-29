@@ -315,7 +315,9 @@ def reference_repair_anchor(original, value, excerpts, stage, project):
     """Align only invalid reference slots for comparison; never amend model output.
 
     A source-pair correction must keep its excerpt and have a unique actual
-    source. Unknown review IDs may be dropped, never replaced to expand coverage.
+    source. An engineering claim ID may resolve only within the same source to
+    one excerpt sent in this call. Unknown review IDs may be dropped, never
+    replaced to expand coverage.
     Existing valid references cannot be removed, moved, or replaced.
     """
     normalized = copy.deepcopy(original)
@@ -323,6 +325,12 @@ def reference_repair_anchor(original, value, excerpts, stage, project):
     by_excerpt = {}
     for source, excerpt in pairs:
         by_excerpt.setdefault(excerpt, set()).add(source)
+    by_business_claim = {}
+    for excerpt in excerpts:
+        claim_id = excerpt.get('business_claim_id')
+        if isinstance(claim_id, str):
+            key = excerpt['source_id'], claim_id
+            by_business_claim.setdefault(key, []).append(excerpt['id'])
     known = ({i['id'] for i in project['items']} | {q['id'] for q in project['questions']}) if project else set()
     if project and project.get('ui'):
         known.update(page['page_id'] for page in project['ui']['spec']['pages'])
@@ -331,6 +339,12 @@ def reference_repair_anchor(original, value, excerpts, stage, project):
         if isinstance(ref, dict) and isinstance(ref.get('source_id'), str) and isinstance(ref.get('excerpt_id'), str):
             return ref['source_id'], ref['excerpt_id']
         return None, None
+
+    def same_business_claim(before, after):
+        old_source, old_claim = pair(before)
+        new_source, new_excerpt = pair(after)
+        return (old_source == new_source and (new_source, new_excerpt) in pairs
+                and by_business_claim.get((old_source, old_claim)) == [new_excerpt])
 
     def align(before, after, valid, replacement):
         if not isinstance(before, list) or not isinstance(after, list):
@@ -362,16 +376,18 @@ def reference_repair_anchor(original, value, excerpts, stage, project):
                         return pair(ref) in pairs
                     def replacement(a, b):
                         source, excerpt = pair(b)
-                        return (valid(b) and excerpt == pair(a)[1]
+                        return (valid(b) and ((excerpt == pair(a)[1]
                                 and by_excerpt.get(excerpt) == {source})
+                                or same_business_claim(a, b)))
                     if align(old, new, valid, replacement):
                         before[key] = copy.deepcopy(new)
                 elif key == 'source_ref' and isinstance(old, dict) and isinstance(new, dict):
                     old_pair, new_pair = pair(old), pair(new)
                     source, excerpt = new_pair
                     if (old_pair not in pairs and new_pair in pairs
-                            and old_pair[1] == excerpt
-                            and by_excerpt.get(excerpt) == {source}):
+                            and ((old_pair[1] == excerpt
+                                  and by_excerpt.get(excerpt) == {source})
+                                 or same_business_claim(old, new))):
                         before[key] = copy.deepcopy(new)
                     else:
                         walk(old, new, (*path, key))

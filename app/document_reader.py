@@ -47,7 +47,7 @@ def _source_limit_text(source):
     return f'《{title}》（{purpose}）：{state}；未读取内容不作为本版产品结论的依据。'
 
 
-def reading_structure(content, items, source_snapshot=()):
+def reading_structure(content, items, source_snapshot=(), *, show_requirement_behavior=True):
     """Project explicit section/ref/behavior structure; never infer headings from prose.
 
     This is a versioned read view, not a migration of the signed content object.
@@ -80,7 +80,7 @@ def reading_structure(content, items, source_snapshot=()):
                 nodes.append(heading(node_id, item['title'], level+1, sid, item_id=ref, item_kind=item['kind']))
                 nodes.append(dict(kind='metadata', text=f'{ref} · v{item.get("content_version",1)}', item_id=ref))
                 nodes.append(dict(kind='paragraph', text=item['statement'], block_kind=item['kind']))
-                if item['kind'] == 'requirement':
+                if item['kind'] == 'requirement' and show_requirement_behavior:
                     from .product_flow import BEHAVIOR
                     for key, label in BEHAVIOR.items():
                         value = item.get('behavior', {}).get(key)
@@ -105,6 +105,8 @@ def filename(artifact):
 def reader_document(artifact):
     """Return product content only; retain canonical audit evidence in the project."""
     content = copy.deepcopy(artifact['content'])
+    v4_mrd = (artifact.get('assembly_version') == 'prd-plan-4'
+              and content['document_type'] == 'mrd')
     original_sections = list(content.get('sections', []))
     name = document_name(artifact)
     content['title'] = name + ('｜产品需求文档（PRD）' if content['document_type']=='prd' else '｜市场需求文档（MRD）')
@@ -197,7 +199,7 @@ def reader_document(artifact):
             question = questions.get(refs[0]) if len(refs)==1 else None
             if block['kind'] in ('requirement','rule','acceptance'):
                 text = '\n'.join(f'{r}｜{items[r]["title"]} · v{items[r].get("content_version",1)}\n{items[r]["statement"]}' if r in items else r+'：历史条款原文未保存，无法还原。' for r in refs)
-                if item and item['kind']=='requirement':
+                if item and item['kind']=='requirement' and not v4_mrd:
                     from .product_flow import BEHAVIOR
                     text += ''.join('\n'+label+'：'+item['behavior'][key] for key,label in BEHAVIOR.items() if item.get('behavior',{}).get(key))
             elif block['kind']=='explanation':
@@ -291,7 +293,7 @@ def reader_document(artifact):
         dict(item_id=ref, section_ids=list(dict.fromkeys(ids)))
         for ref, ids in coverage.items()
     ]
-    return reading_structure(content, items)
+    return reading_structure(content, items, show_requirement_behavior=not v4_mrd)
 
 
 def export_readiness(p, kind):

@@ -1,5 +1,6 @@
 """Bounded document planning contract; canonical text and bookkeeping stay local."""
 import copy
+import re
 import jsonschema
 from .core import digest, dumps, require
 from .contracts import profile
@@ -9,6 +10,7 @@ from .product_flow import INTAKE, SCOPE, status as flow_status
 
 NORMATIVE = ('requirement', 'rule', 'acceptance')
 DISCUSSION_APPENDIX_TITLE = '附录：条目身份与历史讨论'
+MRD_NORMATIVE_APPENDIX_TITLE = '附录：对应产品要求'
 REFS = dict(type='array', items=dict(type='string', minLength=1, maxLength=120), maxItems=100, uniqueItems=True)
 SECTION_TITLES = {
     'background':'背景与现状', 'goal':'目标与价值', 'scope':'本期范围与边界',
@@ -16,6 +18,12 @@ SECTION_TITLES = {
     'acceptance':'验收条件', 'discussion':'待核对内容', 'limits':'资料限制与未决事项',
 }
 CONTEXT_LABELS = {**INTAKE, **SCOPE}
+CONTEXT_SECTION_V4 = {
+    'product':'background', 'module':'background', 'current_state':'background',
+    'intent':'goal', 'value':'goal', 'priority':'goal',
+    'users':'users',
+    'change_scope':'scope', 'preserve_scope':'scope', 'out_of_scope':'scope',
+}
 PLAN_SCHEMA = {
     '$schema':'https://json-schema.org/draft/2020-12/schema', 'type':'object',
     'required':['plan_version','sections'], 'additionalProperties':False,
@@ -44,10 +52,17 @@ PLAN_SCHEMA_V3['properties']['sections']['items']['properties']['explanations'] 
         'required':['text','evidence_refs'],
         'properties':{'text':{'type':'string','minLength':1,'maxLength':1200},
                       'evidence_refs':EXPLANATION_REFS}}}
+PLAN_SCHEMA_V4 = copy.deepcopy(PLAN_SCHEMA_V3)
+PLAN_SCHEMA_V4['properties']['plan_version'] = {'const':'4'}
+PLAN_SCHEMA_V4['properties']['sections']['items']['properties']['explanations']['items']['properties']['text']['description'] = (
+    '直接交付读者的成稿正文，不是写作计划、作者指令或组装过程说明；无来源信息增量时 explanations 使用空数组。')
+WRITING_INSTRUCTION = re.compile(
+    r'(?:^|[。！？\n])\s*(?:本期)?(?:PRD|MRD|文档正文|规则层|验收层|功能层)\s*(?:需要|应当?|不应|必须|须)'
+    r'|(?:值班人员|用户|操作者)需要在文档中')
 
 
 def verified_business_context(p):
-    """Only explicitly confirmed claims from selected bundles are prose evidence."""
+    """Only supported, unconflicted selected excerpts are factual prose evidence."""
     from .business_context import selected_excerpts
     verified={}
     for source in p.get('sources', []):
@@ -55,15 +70,16 @@ def verified_business_context(p):
                 source.get('excluded') or
                 not (source.get('business_selection') or {}).get('module_ids')):
             continue
-        confirmed=set(source['business_selection'].get('confirmed_claim_ids', []))
         claims={c['id']:c for c in source['business_context']['claims']}
         for excerpt in selected_excerpts(source):
             claim_id=excerpt['business_claim_id']
-            if claim_id not in confirmed:
+            if not excerpt.get('business_usable'):
                 continue
             ref=source['id']+'/'+claim_id
             verified[ref]=dict(id=ref,text=claims[claim_id]['text'],
-                               source_id=source['id'],excerpt_id=excerpt['id'])
+                               source_id=source['id'],excerpt_id=excerpt['id'],
+                               origin=excerpt['business_origin'],
+                               evidence_status=excerpt['business_status'])
     return verified
 
 
@@ -126,25 +142,31 @@ def plan_contract(p, kind=None):
                 sample['explanations']=[dict(text='仅演示结构，不是项目结论。',
                     evidence_refs=dict(context_refs=[],normative_refs=[],
                                        business_claim_refs=claim_ids[:1]))]
-            example=dict(plan_version='3',sections=[sample])
-            jsonschema.Draft202012Validator(PLAN_SCHEMA_V3).validate(example)
+            example=dict(plan_version='4',sections=[sample])
+            jsonschema.Draft202012Validator(PLAN_SCHEMA_V4).validate(example)
         elif discussion_ids:
-            example=dict(plan_version='3',sections=[dict(section_key='discussion',context_refs=[],
+            example=dict(plan_version='4',sections=[dict(section_key='discussion',context_refs=[],
                 normative_refs=[],discussion_refs=discussion_ids[:1],explanations=[])])
         focus=('MRD 解释问题、使用者、价值依据、目标、衡量方式和业务影响；没有数据时只写具名待决。'
                if kind=='mrd' else
                'PRD 解释场景、操作流程、状态、数据、权限、异常和可观察验收；未知行为只写具名待决。')
-        return dict(version='prd-plan-contract-5',plan_version='3',document_type=kind,
+        return dict(version='prd-plan-contract-7',plan_version='4',document_type=kind,
             example=example,can_generate=example is not None,
             example_notice='仅演示合法引用结构，不是项目答案。' if example else '没有可引用的已核对事实或条目，不可生成。',
-            section_keys=[key for key in SECTION_TITLES if key not in ('limits','discussion')],
+            section_keys=([key for key in ('background','users','goal','scope')] if kind=='mrd' else
+                          [key for key in SECTION_TITLES if key not in ('limits','discussion')]),
             context_ref_ids=context_ids,normative_item_ids=normative_ids,
             discussion_item_ids=discussion_ids,business_claim_ref_ids=claim_ids,
-            rules='根节点只有 plan_version=3、sections；每节只有 section_key、context_refs、normative_refs、discussion_refs、explanations。'
+            rules='根节点只有 plan_version=4、sections；每节只有 section_key、context_refs、normative_refs、discussion_refs、explanations。'
                   '每节至少有一项当前有效引用；explanations 为可选的有来源解释，每项只含 text 和 evidence_refs；'
                   'evidence_refs 必须完整含 context_refs、normative_refs、business_claim_refs，至少一项非空，且仅引用对应白名单。'
+                  '解释只写有来源的信息增量，不在各节换词复述同一功能。MRD聚焦问题、场景、价值、目标范围和影响；PRD聚焦流程、状态数据、边界和可观察验收。'
+                  '已核对上下文若已在有该 context_ref 的解释里完整引用原句，不再重复回填展示；原始快照仍保留。'+
+                  ('MRD正文只安排背景、使用者、目标、范围；全部已选规范原文统一在末尾产品要求附录单次展示。'
+                   if kind=='mrd' else 'PRD的requirement、rule、acceptance原文固定分别进入功能需求、业务规则、验收条件；行为字段同步展示。')+
+                  'context_refs、normative_refs 所列原文及 PRD 行为字段会自动展示；explanations 没有新的有用关系或业务影响时用 []，不得换词复述或写组装过程。'
                   '解释只可归纳引用的已核对事实，不能发明数字、目标、权限、状态转换、默认行为或新规则；未知交还澄清候选。'
-                  '已选规范由程序逐字回填，解释不能更改其含义；候选与未确认的源码观察不能成为正文事实。'
+                  '已选规范由程序逐字回填，解释不能更改其含义；候选条款、推断及冲突观察不能成为无标签正文事实。'
                   'context_refs、normative_refs、discussion_refs 的权限和附录规则沿用 v2。'+focus+
                   '本文为待人工核对草稿；模型解释无法由机器保证语义保真，须继续语义审查和人工评审。')
     context_ids=list(verified_context(p))
@@ -179,9 +201,9 @@ def plan_contract(p, kind=None):
 def repair_instruction(error,p,kind=None):
     if kind is not None:
         contract=plan_contract(p,kind)
-        return ('重新输出完整 v3 文档计划，只修结构、出处与可追溯解释。保留所有有效引用，'
+        return ('重新输出完整 v4 文档计划，只修结构、出处与可追溯解释。保留所有有效引用，'
                 '逐项对照 context_ref_ids、normative_item_ids、discussion_item_ids、business_claim_ref_ids；'
-                'explanations 每段至少一条已核对依据，不能把候选、未知或未确认源码观察写成事实，'
+                'explanations 每段至少一条有效依据；有出处且无冲突的源码/配置观察可说明快照现状，无需逐条人工确认；候选、推断、未知和冲突不能写成确定事实，'
                 '不能在解释中新增规则、数值或改变规范原文。空章节省略；未决问题返回澄清阶段。'
                 '\n实际错误：'+error.message+'\n唯一文档计划契约：'+dumps(contract))
     common=('重新输出完整 v2 章节引用对象，只修结构或引用；不重选方向、不补答、不改规则或采纳状态。业务原文由程序回填。'
@@ -234,7 +256,8 @@ def context(p, *, include_sketch=True):
 
 def compile_plan(plan, p, kind, omitted=(), *, include_sketch=True):
     if not include_sketch:p=without_sketch(p)
-    schema=PLAN_SCHEMA_V3 if plan.get('plan_version')=='3' else PLAN_SCHEMA
+    version=plan.get('plan_version')
+    schema={'2':PLAN_SCHEMA,'3':PLAN_SCHEMA_V3,'4':PLAN_SCHEMA_V4}.get(version,PLAN_SCHEMA_V4)
     errors=list(jsonschema.Draft202012Validator(schema).iter_errors(plan))
     details=[''.join('['+str(x)+']' if isinstance(x,int) else ('.' if j else '')+x for j,x in enumerate(e.absolute_path)) or '根节点' for e in errors]
     def error_message(e):
@@ -243,11 +266,23 @@ def compile_plan(plan, p, kind, omitted=(), *, include_sketch=True):
         return e.message[:400]
     require(not errors,'SCHEMA_INVALID','成文章节建议错误：'+'；'.join(at+' '+error_message(e) for at,e in zip(details,errors)))
     items={i['id']:i for i in p['items']}
-    v3=plan.get('plan_version')=='3'
-    contract=plan_contract(p,kind if v3 else None)
+    explained=version in ('3','4')
+    v4=version=='4'
+    contract=plan_contract(p,kind if explained else None)
     item_ref_ids=set(contract['normative_item_ids'])|set(contract['discussion_item_ids'])
     current_context=verified_context(p)
+    # The exact checked context survives in the project snapshot. Its reader
+    # line need not repeat a sourced explanation that contains the full text.
+    covered_context=set()
+    if v4:
+        for planned in plan['sections']:
+            for explanation in planned['explanations']:
+                for key in explanation['evidence_refs']['context_refs']:
+                    value=current_context.get(key)
+                    if value and value.strip() in explanation['text']:
+                        covered_context.add(key)
     sections=[]; coverage={}; discussed=set(); discussion_order=[]; placed={}; context_placed={}; discussion_locations={}
+    prd_order=[]; prd_seen=set()
     def section(title,blocks):
         sid=kind.upper()+'-'+digest(dict(title=title,index=len(sections)))[:12]
         # The model chooses only a neutral section key and item order.
@@ -263,7 +298,7 @@ def compile_plan(plan, p, kind, omitted=(), *, include_sketch=True):
         if i['kind'] in NORMATIVE and i['selection_status']=='selected' and not allowed(i,p):status='已草稿采纳但不在本期规范范围'
         return text(f'【{status}；{i["epistemic_status"]}；{i["applies_to"]}】{i["id"]} — {i["statement"]}'+provenance(i),[i['id']])
     require(any(s['context_refs'] or s['normative_refs'] or s['discussion_refs'] or
-                (v3 and s['explanations']) for s in plan['sections']),
+                (explained and s['explanations']) for s in plan['sections']),
             'OUTPUT_EMPTY','章节建议没有任何当前有效引用；不能将结构示例当作项目文档')
     for n,s in enumerate(plan['sections']):
         title=SECTION_TITLES[s['section_key']]
@@ -272,25 +307,38 @@ def compile_plan(plan, p, kind, omitted=(), *, include_sketch=True):
             at=f'sections[{n}].context_refs[{j}]'
             require(key in contract['context_ref_ids'],'REFERENCE_INVALID',at+' '+key+' 不是当前已核对的非空产品上下文字段')
             if key not in context_placed:
-                blocks.append(text(CONTEXT_LABELS[key]+'：'+current_context[key]))
+                if key not in covered_context:
+                    blocks.append(text(CONTEXT_LABELS[key]+'：'+current_context[key]))
                 context_placed[key]=title
         for j,r in enumerate(s['normative_refs']):
             at=f'sections[{n}].normative_refs[{j}]'
             require_item(r,at,p,item_ref_ids)
             require(r in contract['normative_item_ids'],'SEMANTIC_BLOCKED',at+' '+r+' 不在本期已选规范白名单；需业务决定，不能自动采纳或改写为确定性叙述')
+            if v4 and kind=='mrd':
+                # The MRD body uses clauses as evidence only. The exact texts
+                # and coverage are placed once in its product-requirement annex.
+                continue
+            if v4 and kind=='prd':
+                if r not in prd_seen:
+                    prd_order.append(r)
+                    prd_seen.add(r)
+                continue
             if r in coverage:
                 blocks.append(text('参见「'+placed[r]+'」中的 '+r+'，原文与依据不变。',[r]))
                 continue
             blocks.append(dict(kind=items[r]['kind'],ref_ids=[r],text=None))
             blocks.append(text(f'{r}：{items[r]["epistemic_status"]}；草稿采纳不代表业务负责人批准'+provenance(items[r]),[r]))
             placed[r]=title
-        if v3:
-            require(s['section_key'] in contract['section_keys'] or
+        if explained:
+            require(s['section_key'] in (contract['section_keys'] if v4 else
+                                         [key for key in SECTION_TITLES if key not in ('limits','discussion')]) or
                     (s['section_key']=='discussion' and s['discussion_refs']),
                     'REFERENCE_INVALID',f'sections[{n}].section_key 不适用于 {kind.upper()} 正文')
             for j,explanation in enumerate(s['explanations']):
                 basis=explanation['evidence_refs']
                 at=f'sections[{n}].explanations[{j}].evidence_refs'
+                require(not (v4 and WRITING_INSTRUCTION.search(explanation['text'])),
+                        'SCHEMA_INVALID',f'sections[{n}].explanations[{j}].text 是写作指令而非读者正文；直接写有来源的产品事实或使用 []')
                 require(any(basis.values()),'REFERENCE_INVALID',at+' 缺少已核对依据')
                 for group,allowed_refs in (('context_refs',set(contract['context_ref_ids'])),
                     ('normative_refs',set(contract['normative_item_ids'])),
@@ -312,15 +360,29 @@ def compile_plan(plan, p, kind, omitted=(), *, include_sketch=True):
             # A model-only discussion section has no business-body content;
             # its validated refs are placed in the explicit appendix below.
             continue
+        if v4 and not blocks and s['normative_refs']:
+            continue
+        if v4 and not blocks and s['context_refs'] and all(key in covered_context for key in s['context_refs']):
+            # A later explanation may carry this section's complete context.
+            # Omit the now-empty heading instead of demanding a paid repair.
+            continue
         require(blocks,'OUTPUT_EMPTY',f'sections[{n}] 没有可呈现的新引用；不要生成空章节或只重复 context_refs')
         sid=section(title,blocks)
         for b in blocks:
             if b['kind'] in NORMATIVE:
                 for r in b['ref_ids']:coverage.setdefault(r,[]).append(sid)
     # Preserve all verified context and current normative clauses even if the plan omits them.
-    missing_context=[key for key in current_context if key not in context_placed]
-    missing_normative=[i for i in p['items'] if allowed(i,p) and i['id'] not in coverage]
-    if missing_context or missing_normative:
+    missing_context=[key for key in current_context if key not in context_placed and key not in covered_context]
+    missing_normative=[] if v4 else [i for i in p['items'] if allowed(i,p) and i['id'] not in coverage]
+    if v4:
+        for key in missing_context:
+            title=SECTION_TITLES[CONTEXT_SECTION_V4[key]]
+            target=next((existing for existing in sections if existing['title']==title),None)
+            if target is None:
+                section(title,[])
+                target=sections[-1]
+            target['blocks'].append(text(CONTEXT_LABELS[key]+'：'+current_context[key]))
+    elif missing_context or missing_normative:
         blocks=[text('以下已核对事实与已选条款未由章节建议指定位置，程序按原文补列供核对。')]
         blocks += [text(CONTEXT_LABELS[key]+'：'+current_context[key]) for key in missing_context]
         for item in missing_normative:
@@ -328,6 +390,37 @@ def compile_plan(plan, p, kind, omitted=(), *, include_sketch=True):
             blocks.append(text(f'{item["id"]}：{item["epistemic_status"]}；草稿采纳不代表业务负责人批准'+provenance(item),[item['id']]))
         sid=section('补列的已核对事实与规范条款',blocks)
         for item in missing_normative:coverage[item['id']]=[sid]
+    if v4 and kind=='prd':
+        prd_order.extend(i['id'] for i in p['items'] if allowed(i,p) and i['id'] not in prd_seen)
+        for item_kind,title in (('requirement',SECTION_TITLES['function']),
+                                ('rule',SECTION_TITLES['rules']),
+                                ('acceptance',SECTION_TITLES['acceptance'])):
+            ordered=[items[ref] for ref in prd_order if items[ref]['kind']==item_kind]
+            if not ordered:
+                continue
+            target=next((s for s in sections if s['title']==title),None)
+            if target is None:
+                sid=section(title,[])
+                target=sections[-1]
+            else:
+                sid=target['section_id']
+            normative_blocks=[]
+            for item in ordered:
+                normative_blocks.append(dict(kind=item_kind,ref_ids=[item['id']],text=None))
+                normative_blocks.append(text(f'{item["id"]}：{item["epistemic_status"]}；草稿采纳不代表业务负责人批准'+provenance(item),[item['id']]))
+                coverage[item['id']]=[sid]
+            target['blocks'][:0]=normative_blocks
+    # The MRD keeps every selected clause, after the product body, in one annex.
+    # PRD and historical plan versions retain their original clause placement.
+    if v4 and kind=='mrd':
+        normative=[i for i in p['items'] if allowed(i,p)]
+        if normative:
+            blocks=[]
+            for item in normative:
+                blocks.append(dict(kind=item['kind'],ref_ids=[item['id']],text=None))
+                blocks.append(text(f'{item["id"]}：{item["epistemic_status"]}；草稿采纳不代表业务负责人批准'+provenance(item),[item['id']]))
+            sid=section(MRD_NORMATIVE_APPENDIX_TITLE,blocks)
+            for item in normative:coverage[item['id']]=[sid]
     # Discussion is never interleaved with current normative body sections.
     # Keep model-selected order first, then retain other non-normative items
     # with their own selection/scope identity, including selected goals.

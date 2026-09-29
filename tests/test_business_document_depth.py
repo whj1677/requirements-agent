@@ -29,16 +29,17 @@ def v3(kind, evidence, text):
 
 def claim_source(tmp_path):
     source=build_source(SimpleNamespace(folder=tmp_path),'business-context.json',raw(bundle()))
-    source['business_selection']=selection_update(source,['ui'],['c-ui'])
+    source['business_selection']=selection_update(source,['ui'],[])
     source['business_active']=True
     return source
 
 
-def test_v3_contract_and_distinct_document_jobs(tmp_path):
+def test_v4_contract_and_distinct_document_jobs_with_v3_compatibility(tmp_path):
     p=checked_project(tmp_path)
     mrd=plan_contract(p,'mrd');prd=plan_contract(p,'prd')
-    jsonschema.Draft202012Validator(PLAN_SCHEMA_V3).validate(mrd['example'])
-    assert mrd['plan_version']==prd['plan_version']=='3'
+    from app.prd import PLAN_SCHEMA_V4
+    jsonschema.Draft202012Validator(PLAN_SCHEMA_V4).validate(mrd['example'])
+    assert mrd['plan_version']==prd['plan_version']=='4'
     assert mrd['document_type']=='mrd' and prd['document_type']=='prd'
     assert '价值' in mrd['rules'] and '权限' in prd['rules']
     m=compile_plan(v3('mrd',basis(context=['users']),
@@ -50,10 +51,10 @@ def test_v3_contract_and_distinct_document_jobs(tmp_path):
     assert m['document_type']=='mrd' and q['document_type']=='prd'
 
 
-def test_confirmed_claim_readable_and_exportable_with_canonical_basis(tmp_path):
+def test_usable_claim_readable_and_exportable_with_canonical_basis(tmp_path):
     from app.exports import document_files
     p=checked_project(tmp_path);source=claim_source(tmp_path);p['sources'].append(source)
-    ref=source['id']+'/c-ui'
+    ref=source['id']+'/c-data'
     assert ref in verified_business_context(p)
     response=compile_plan(v3('prd',basis(claims=[ref]),
         '值班人员核对联系人信息。'),p,'prd')
@@ -72,10 +73,9 @@ def test_confirmed_claim_readable_and_exportable_with_canonical_basis(tmp_path):
     assert '值班人员核对联系人信息。' in markdown
 
 
-def test_unconfirmed_claim_and_candidate_cannot_be_explanation_basis(tmp_path):
+def test_conflicted_claim_and_candidate_cannot_be_explanation_basis(tmp_path):
     p=checked_project(tmp_path);source=claim_source(tmp_path);p['sources'].append(source)
-    source['business_selection']['confirmed_claim_ids']=[]
-    assert verified_business_context(p)=={}
+    assert source['id']+'/c-ui' not in verified_business_context(p)
     for invalid in (basis(claims=[source['id']+'/c-ui']),
                     basis(normative=['REQ-CANDIDATE']),basis()):
         with pytest.raises(Problem) as error:

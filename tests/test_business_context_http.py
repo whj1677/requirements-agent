@@ -33,11 +33,13 @@ def test_import_is_non_normative_deduplicates_and_rejects_identity_conflict(tmp_
     response = upload(c, root, 0, bundle())
     assert response.status_code == 200, response.text
     source = response.json()
-    assert source['business_active'] is False
+    assert source['business_active'] is True
     p = app.state.store.get(pid)
     assert not p['items'] and not p['questions']
-    assert brief_hash(p) == brief_hash(original)
-    assert source['business_selection'] == {'module_ids': [], 'confirmed_claim_ids': []}
+    assert brief_hash(p) != brief_hash(original)
+    assert source['business_selection'] == {'module_ids': ['ui', 'service', 'data', 'other'], 'confirmed_claim_ids': []}
+    assert p['grants'] == original['grants'], 'import does not authorize a new external recipient'
+    assert set(verified_business_context(p)) == {source['id']+'/c-data', source['id']+'/c-other'}
     assert c.get(root + '/sources/' + source['id'] + '/file').content == raw(bundle())
     duplicate = upload(c, root, p['revision'], bundle())
     assert duplicate.status_code == 200 and duplicate.json()['id'] == source['id']
@@ -51,7 +53,7 @@ def test_import_is_non_normative_deduplicates_and_rejects_identity_conflict(tmp_
     assert len(list((tmp_path / 'sources').iterdir())) == 1
 
 
-def test_selection_controls_actual_input_confirmation_and_version_switch(tmp_path):
+def test_selection_controls_input_and_version_without_manual_fact_confirmation(tmp_path):
     c, app, pid, root = setup(tmp_path)
     sid = upload(c, root, 0, bundle()).json()['id']
     before = app.state.store.get(pid)
@@ -59,16 +61,17 @@ def test_selection_controls_actual_input_confirmation_and_version_switch(tmp_pat
     assert choose(c, app, pid, root, sid, ['ui']).status_code == 200
     p = app.state.store.get(pid)
     assert brief_hash(p) != brief_hash(before)
-    assert not verified_business_context(p)
+    assert list(verified_business_context(p)) == [sid + '/c-data']
     messages, actual, omitted = assemble(p, 'ingest', '增加明确的批量结果反馈', DEFAULT, tmp_path)
     assert not omitted
     payload = json.loads(messages[1]['content'][0]['text'])
     assert {e['business_claim_id'] for e in actual} == {'c-ui','c-service','c-data'}
     assert 'other 原文' not in json.dumps(payload, ensure_ascii=False)
-    assert '未经用户确认' in json.dumps(actual, ensure_ascii=False)
+    assert next(e for e in actual if e['business_claim_id']=='c-data')['business_usable'] is True
+    assert all(not e['business_usable'] for e in actual if e['business_claim_id'] in ('c-ui', 'c-service'))
     assert choose(c, app, pid, root, sid, ['ui'], ['c-service']).status_code == 200
     confirmed = app.state.store.get(pid)
-    assert list(verified_business_context(confirmed)) == [sid + '/c-service']
+    assert list(verified_business_context(confirmed)) == [sid + '/c-data'], 'historical confirmation cannot resolve contradictory evidence'
     assert confirmed['items'] == [] and confirmed.get('product_context') is None
     assert execution_hash(confirmed) != execution_hash(p)
     other = bundle(); other['bundle_id'] = 'sample-2'
@@ -77,21 +80,23 @@ def test_selection_controls_actual_input_confirmation_and_version_switch(tmp_pat
     assert response.status_code == 200
     sid2 = response.json()['id']
     current = app.state.store.get(pid)
-    assert brief_hash(current) == brief_hash(confirmed), 'import alone must not activate new version'
+    assert brief_hash(current) != brief_hash(confirmed), 'new import activates the new snapshot'
+    assert response.json()['business_active'] is True
+    assert response.json()['business_selection']['confirmed_claim_ids'] == []
+    assert set(verified_business_context(current)) == {sid2+'/c-data', sid2+'/c-other'}
     assert choose(c, app, pid, root, sid2, ['ui']).status_code == 200
     switched = app.state.store.get(pid)
     old = next(s for s in switched['sources'] if s['id'] == sid)
     assert old['business_active'] is False
     assert old['business_selection'] == {'module_ids': ['ui'], 'confirmed_claim_ids': ['c-service']}
     assert selected_excerpts(old) == []
-    assert not verified_business_context(switched), 'old confirmations must not migrate'
+    assert list(verified_business_context(switched)) == [sid2+'/c-data']
     sent = assemble(switched, 'ingest', '核对新版', DEFAULT, tmp_path)[1]
     assert {e['source_id'] for e in sent} == {sid2}
     assert brief_hash(switched) != brief_hash(confirmed)
     assert switched['items'] == []
 
-    # Switching back restores the old version's explicit confirmations without migrating
-    # them into the new version.
+    # Historical confirmation records stay with their source but never override conflicts.
     assert choose(c, app, pid, root, sid, ['ui'], ['c-service']).status_code == 200
     returned = app.state.store.get(pid)
     old = next(s for s in returned['sources'] if s['id'] == sid)
@@ -99,7 +104,7 @@ def test_selection_controls_actual_input_confirmation_and_version_switch(tmp_pat
     assert old['business_active'] is True and new['business_active'] is False
     assert old['business_selection']['confirmed_claim_ids'] == ['c-service']
     assert new['business_selection']['confirmed_claim_ids'] == []
-    assert list(verified_business_context(returned)) == [sid + '/c-service']
+    assert list(verified_business_context(returned)) == [sid + '/c-data']
     assert {e['source_id'] for e in assemble(returned, 'ingest', '', DEFAULT, tmp_path)[1]} == {sid}
 
     def toggle(target):
@@ -112,14 +117,14 @@ def test_selection_controls_actual_input_confirmation_and_version_switch(tmp_pat
     toggle(sid2)
     after_inactive_restore = app.state.store.get(pid)
     assert next(s for s in after_inactive_restore['sources'] if s['id'] == sid2)['business_active'] is False
-    assert list(verified_business_context(after_inactive_restore)) == [sid + '/c-service']
+    assert list(verified_business_context(after_inactive_restore)) == [sid + '/c-data']
 
     toggle(sid)
     toggle(sid)
     after_active_restore = app.state.store.get(pid)
     assert next(s for s in after_active_restore['sources'] if s['id'] == sid)['business_active'] is True
     assert next(s for s in after_active_restore['sources'] if s['id'] == sid2)['business_active'] is False
-    assert list(verified_business_context(after_active_restore)) == [sid + '/c-service']
+    assert list(verified_business_context(after_active_restore)) == [sid + '/c-data']
 
     toggle(sid)
     assert choose(c, app, pid, root, sid2, ['ui']).status_code == 200
@@ -127,7 +132,7 @@ def test_selection_controls_actual_input_confirmation_and_version_switch(tmp_pat
     after_switch_then_restore = app.state.store.get(pid)
     assert next(s for s in after_switch_then_restore['sources'] if s['id'] == sid)['business_active'] is False
     assert next(s for s in after_switch_then_restore['sources'] if s['id'] == sid2)['business_active'] is True
-    assert not verified_business_context(after_switch_then_restore)
+    assert list(verified_business_context(after_switch_then_restore)) == [sid2 + '/c-data']
 
 
 def test_project_scope_and_specialized_source_boundary(tmp_path):

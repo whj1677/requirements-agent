@@ -534,7 +534,7 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
         existing=next((s for s in current['sources'] if s.get('business_context') and s['sha256']==sha),None)
         if existing is not None:return existing
         # Validate and deduplicate before storing the original. A package identity is immutable.
-        with store.edit(pid,expected_revision,'导入业务背景包，尚未选择模块') as (p,db):
+        with store.edit(pid,expected_revision,'导入工程上下文包并启用代码快照') as (p,db):
             existing=next((s for s in p['sources'] if s.get('business_context') and s['sha256']==sha),None)
             if existing is not None:
                 return existing
@@ -546,12 +546,17 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
             if previous:
                 source['version']=max(s.get('version',1) for s in previous)+1
                 source['parent_source_id']=previous[-1]['id']
+                for old in previous:
+                    old['business_active']=False
             p['sources'].append(source)
+            p.setdefault('stage_checks',{}).pop('2',None)
+            p.setdefault('stage_checks',{}).pop('3',None)
+            p['review']=None
         return source
 
     @app.post('/api/projects/{pid}/business-context/{sid}/selection')
     async def select_business_context(pid:str,sid:str,body:BusinessSelection):
-        with store.edit(pid,body.expected_revision,'选择业务模块并记录明确核对的事实') as (p,db):
+        with store.edit(pid,body.expected_revision,'调整工程上下文参考范围') as (p,db):
             source=next((s for s in p['sources'] if s['id']==sid and s.get('business_context')),None)
             require(source is not None,'NOT_FOUND','业务背景包不存在',404)
             require(not source['excluded'],'BUSINESS_CONTEXT_EXCLUDED','请先恢复此业务背景包，再选择模块',409)

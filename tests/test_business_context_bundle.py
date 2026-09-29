@@ -8,7 +8,8 @@ from pathlib import Path
 import pytest
 
 from app.business_context import (build_source, model_context, parse_bundle,
-                                  selected_excerpts, selection_identity, selection_update)
+                                  selected_excerpts, selection_identity, selection_update,
+                                  usable_claims)
 from app.core import Problem
 from app.provider import DEFAULT, assemble
 from app.store import Store
@@ -78,27 +79,34 @@ def test_stable_source_selection_and_project_identity(tmp_path):
     assert (tmp_path / 'sources' / source['id']).read_bytes() == original
     assert source['parse_status'] == 'read'
     assert source['image_mime'] is None
-    assert source['business_active'] is False
+    assert source['business_active'] is True
     assert source['purpose'] == 'business'
     assert len(source['excerpts']) == 4
-    assert selected_excerpts(source) == []
+    assert source['business_selection']['module_ids'] == ['ui', 'service', 'data', 'other']
+    assert {e['business_claim_id'] for e in usable_claims(source)} == {'c-data', 'c-other'}
     project = {'sources': [source]}
-    assert model_context(project) is None
-    assert selection_identity(project) is None
+    assert model_context(project) is not None
+    assert selection_identity(project) is not None
 
     selection = selection_update(source, ['ui'], ['c-data'])
-    assert source['business_selection']['module_ids'] == []
+    assert source['business_selection']['module_ids'] == ['ui', 'service', 'data', 'other']
     source['business_selection'] = selection
     source['business_active'] = True
     excerpts = selected_excerpts(source)
     assert {e['business_claim_id'] for e in excerpts} == {'c-ui', 'c-service', 'c-data'}
     assert all(e['text'] == next(s['text'] for s in source['excerpts'] if s['id'] == e['id']) for e in excerpts)
     assert next(e for e in excerpts if e['business_claim_id'] == 'c-data')['business_confirmed'] is True
+    assert next(e for e in excerpts if e['business_claim_id'] == 'c-data')['business_usable'] is True
+    assert next(e for e in excerpts if e['business_claim_id'] == 'c-ui')['business_usable'] is False
+    assert {e['business_claim_id'] for e in usable_claims(source)} == {'c-data'}
     assert all(e['source_hash'] == source['sha256'] for e in excerpts)
     context = model_context(project)['packages'][0]
     assert {m['id'] for m in context['modules']} == {'ui', 'service', 'data'}
     assert {u['id'] for u in context['unknowns']} == {'u1'}
     assert context['coverage']['limitations'] == ['仅静态核对']
+    assert context['overview'] is None
+    assert context['technical_summary'] is None
+    assert next(c for c in context['claims'] if c['id'] == 'c-data')['usable'] is True
     assert all('text' not in claim and 'locator' not in claim for claim in context['claims'])
     assert 'c-other' not in json.dumps(context)
     assert selection_identity(project)[0]['module_ids'] == ['ui']
@@ -141,6 +149,39 @@ def test_partial_conflict_marks_missing_claim_without_sending_unselected_text():
     assert context['conflicts'][0]['missing_claim_ids'] == ['c-other']
     assert 'description' not in context['conflicts'][0]
     assert 'other 原文' not in json.dumps(context, ensure_ascii=False)
+
+
+def test_claim_authority_tracks_origin_evidence_and_conflict(tmp_path):
+    class LocalStore:
+        folder = tmp_path
+
+    example = bundle()
+    example['conflicts'] = []
+    example['claims'][0]['dimension'] = 'architecture'
+    example['claims'][1]['origin'] = 'document_claim'
+    example['claims'][1]['evidence_ids'] = ['e2']
+    example['claims'][2]['origin'] = 'inference'
+    example['evidence'].append({**example['evidence'][0], 'id': 'e2', 'kind': 'documentation'})
+    source = build_source(LocalStore(), 'business-context.json', raw(example))
+    facts = {e['business_claim_id']: e for e in selected_excerpts(source)}
+    assert facts['c-ui']['business_dimension'] == 'architecture'
+    assert facts['c-ui']['business_usable'] is True
+    assert facts['c-service']['business_usable'] is True
+    assert '文档' in facts['c-service']['business_status']
+    assert facts['c-data']['business_usable'] is False
+    assert '推断' in facts['c-data']['business_status']
+    assert {e['business_claim_id'] for e in usable_claims(source)} == {'c-ui', 'c-service', 'c-other'}
+
+    mismatched = copy.deepcopy(example)
+    mismatched['claims'][1]['evidence_ids'] = ['e1']
+    source['business_context'] = mismatched
+    assert 'c-service' not in {e['business_claim_id'] for e in usable_claims(source)}
+
+    example['conflicts'] = [{'id': 'x1', 'description': '相互矛盾', 'claim_ids': ['c-ui', 'c-service']}]
+    source['business_context'] = example
+    assert {e['business_claim_id'] for e in usable_claims(source)} == {'c-other'}
+    source['business_active'] = False
+    assert usable_claims(source) == []
 
 
 def test_skill_validator_same_contract_and_optional_hash_check(tmp_path):
