@@ -10,11 +10,7 @@ from scripts.build_windows import (copy_browser, required_inputs, validate_distr
 
 def minimum_distribution(folder):
     for name in ('RequirementsAgent.exe', '_internal/python311.dll',
-                 '_internal/app/license_runtime/DeviceLicense.dll',
-                 '_internal/app/license_runtime/DeviceLicense.Bridge.exe',
                  '_internal/web/dist/index.html', '_internal/playwright/driver/node.exe',
-                 '_internal/web/activation/index.html', '_internal/web/activation/app.js',
-                 '_internal/web/activation/style.css',
                  'docs/user-guide.md', 'docs/windows-installation.md',
                  'docs/user-guide.html', 'docs/windows-installation.html',
                  'licenses/Python-LICENSE.txt', 'licenses/inventory.json'):
@@ -27,6 +23,8 @@ def minimum_distribution(folder):
     '.env', '_internal/.env', '_internal/app/licensing.py',
     'data/requirements.sqlite3', 'issuer/tool.exe', 'keys/owner-private-key.json',
     'owner.pfx', 'keys/signing.key',
+    '_internal/app/license_runtime/DeviceLicense.dll', '_internal/web/activation/index.html',
+    '.credentials/customer-key.json',
 ])
 def test_customer_package_rejects_secrets_data_issuer_and_plaintext_source(tmp_path, forbidden):
     minimum_distribution(tmp_path)
@@ -69,10 +67,10 @@ def test_customer_browser_runtime_ignores_external_overrides(tmp_path, monkeypat
 def test_build_inputs_do_not_collect_working_directory_secrets(tmp_path):
     required = ['requirements.lock.txt', 'scripts/desktop.py', 'scripts/build_windows.py',
                 'web/package.json', 'web/package-lock.json', 'web/index.html', 'web/tsconfig.json',
-                'docs/user-guide.md', 'docs/windows-installation.md',
-                'app/license_runtime/DeviceLicense.dll', 'app/license_runtime/DeviceLicense.Bridge.exe',
-                'app/license_runtime/build-manifest.json', 'app/license_runtime/README.md']
+                'docs/user-guide.md', 'docs/windows-installation.md']
     for name in required + ['app/licensing.py', 'app/license_trust.py', 'web/src/main.tsx',
+                            'app/activation.py', 'app/desktop_gateway.py', 'web/src/activation/index.html',
+                            'app/license_runtime/DeviceLicense.dll',
                             '.env', 'data/requirements.sqlite3', 'issuer/private.json']:
         path = tmp_path / name
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -83,9 +81,11 @@ def test_build_inputs_do_not_collect_working_directory_secrets(tmp_path):
     (tmp_path / schema).write_text('{}', 'utf-8')
     (tmp_path / 'packaging').mkdir()
     paths = {path.relative_to(tmp_path).as_posix() for path in required_inputs(tmp_path)}
-    assert 'app/license_trust.py' in paths
+    assert 'app/desktop_gateway.py' in paths
     assert schema in paths
-    assert not paths & {'.env', 'data/requirements.sqlite3', 'issuer/private.json'}
+    assert not paths & {'.env', 'data/requirements.sqlite3', 'issuer/private.json',
+                        'app/license_trust.py', 'app/licensing.py', 'app/activation.py',
+                        'web/src/activation/index.html', 'app/license_runtime/DeviceLicense.dll'}
 
 
 def test_guides_open_offline_and_link_only_to_bundled_documents(tmp_path):

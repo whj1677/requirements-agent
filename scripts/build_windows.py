@@ -1,4 +1,4 @@
-"""Build a self-contained, licensed Windows x64 installer from explicit inputs.
+"""Build a self-contained Windows x64 installer without device activation.
 
 Run with the project Python after installing packaging/requirements-build.txt.
 All generated files go under --output. No daily service, data or .env is read.
@@ -18,9 +18,9 @@ import sys
 from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
-VERSION = '1.2.1'
+VERSION = '1.2.2'
 KIT = 'requirements-agent-codex-kit-v1.1'
-NATIVE_FILES = ('DeviceLicense.dll', 'DeviceLicense.Bridge.exe', 'build-manifest.json', 'README.md')
+LEGACY_MODULES = ('activation', 'licensing', 'license_trust')
 DOCUMENTS = ('user-guide.md', 'windows-installation.md')
 BUILD_VERSION = '6.21.0'
 
@@ -45,13 +45,14 @@ def required_inputs(root):
     files = [root / 'requirements.lock.txt', root / 'scripts/desktop.py',
              root / 'scripts/build_windows.py', root / 'web/package.json',
              root / 'web/package-lock.json', root / 'web/index.html', root / 'web/tsconfig.json']
-    files += sorted(path for path in (root / 'app').glob('*') if path.suffix in {'.py', '.js', '.ps1'})
-    files += [root / 'app/license_runtime' / name for name in NATIVE_FILES]
+    files += sorted(path for path in (root / 'app').glob('*')
+                    if path.suffix in {'.py', '.js', '.ps1'} and path.stem not in LEGACY_MODULES)
     files += [root / 'docs' / name for name in DOCUMENTS]
     files += sorted(path for path in (root / 'packaging').rglob('*')
                     if path.is_file() and path.suffix.lower() in {'.py', '.iss', '.isl', '.txt'}
                     and '__pycache__' not in path.parts)
-    files += sorted(path for path in (root / 'web/src').rglob('*') if path.is_file())
+    files += sorted(path for path in (root / 'web/src').rglob('*')
+                    if path.is_file() and 'activation' not in path.relative_to(root / 'web/src').parts)
     workflow = root / '.github/workflows/windows-distribution.yml'
     if workflow.is_file():
         files.append(workflow)
@@ -159,7 +160,7 @@ def render_customer_guides(root, destination):
         page += 'pre{overflow:auto;background:#f1f4f7;padding:16px;border-radius:6px}code{font-family:Consolas,monospace}'
         page += 'table{width:100%;border-collapse:collapse}th,td{padding:10px 12px;border:1px solid #d7dde5;text-align:left}'
         page += 'th{background:#f1f4f7}li{margin:8px 0}@media(max-width:700px){main{margin:0;padding:20px}}'
-        page += '</style></head><body><main><nav><a href="windows-installation.html">安装与设备授权</a>'
+        page += '</style></head><body><main><nav><a href="windows-installation.html">安装与模型配置</a>'
         page += '<a href="user-guide.html">五步业务使用说明</a></nav>' + str(document) + '</main></body></html>'
         (destination / (name[:-3] + '.html')).write_text(page, 'utf-8')
 
@@ -230,11 +231,7 @@ def collect_notices(root, target, requirements, iscc):
 
 def validate_distribution(target):
     required = ['RequirementsAgent.exe', '_internal/python311.dll',
-                '_internal/app/license_runtime/DeviceLicense.dll',
-                '_internal/app/license_runtime/DeviceLicense.Bridge.exe',
                 '_internal/web/dist/index.html', '_internal/playwright/driver/node.exe',
-                '_internal/web/activation/index.html', '_internal/web/activation/app.js',
-                '_internal/web/activation/style.css',
                 'docs/user-guide.md', 'docs/windows-installation.md',
                 'docs/user-guide.html', 'docs/windows-installation.html',
                 'licenses/Python-LICENSE.txt', 'licenses/inventory.json']
@@ -248,10 +245,22 @@ def validate_distribution(target):
         parts = {part.lower() for part in relative.parts}
         if path.is_symlink() or '.env' in parts or parts & {'issuer', 'data', '.git'}:
             raise RuntimeError('Forbidden customer-package content: ' + relative.as_posix())
+        if parts & {'license_runtime', 'activation', '.credentials'}:
+            raise RuntimeError('Removed activation or customer credentials in package: ' + relative.as_posix())
         if path.name.lower().endswith(('.key', '.pfx', '.p12')) or 'private-key' in path.name.lower():
             raise RuntimeError('Possible private key in package: ' + relative.as_posix())
         if relative.parts[:2] == ('_internal', 'app') and path.suffix == '.py':
             raise RuntimeError('Plaintext application source must not ship: ' + relative.as_posix())
+
+
+def verify_frozen_modules(executable):
+    from PyInstaller.archive.readers import CArchiveReader
+    archive = CArchiveReader(str(executable)).open_embedded_archive('PYZ.pyz')
+    included = set(archive.toc)
+    if not {'app.desktop_gateway', 'app.desktop_runtime', 'app.main', 'app.credentials'} <= included:
+        raise RuntimeError('Required desktop runtime modules missing from frozen executable')
+    if included & {'app.' + name for name in LEGACY_MODULES}:
+        raise RuntimeError('Removed device-license modules still bundled in executable')
 
 
 def verify_native_file_hashes(target, files, report_path):
@@ -333,16 +342,10 @@ def build(args):
         copy_browser(source, stage / 'browsers' / source.name)
     notices = stage / 'licenses'
     collect_notices(root, notices, requirements, iscc)
-    activation = root / 'web/src/activation'
-    for name in ('index.html', 'app.js', 'style.css'):
-        if not (activation / name).is_file():
-            raise RuntimeError('Required activation-page resource missing: ' + name)
-    assets = [(web_dist, 'web/dist'), (activation, 'web/activation'), (stage / 'browsers', 'browsers')]
+    assets = [(web_dist, 'web/dist'), (stage / 'browsers', 'browsers')]
     for path in sorted((root / 'app').iterdir()):
         if path.is_file() and path.suffix in {'.ps1', '.js'}:
             assets.append((path, 'app'))
-    for name in NATIVE_FILES:
-        assets.append((root / 'app/license_runtime' / name, 'app/license_runtime'))
     for folder, extensions in [('examples', {'.json'}), ('schemas', {'.json'}), ('prompts', {'.json', '.md'}),
                                ('references', {'.json', '.docx'})]:
         for path in sorted((root / KIT / folder).iterdir()):
@@ -359,6 +362,8 @@ def build(args):
                '--hidden-import', 'tkinter.messagebox', '--hidden-import', 'playwright.async_api',
                '--hidden-import', 'playwright.sync_api', '--exclude-module', 'pytest',
                '--exclude-module', 'IPython', '--exclude-module', 'matplotlib']
+    for name in LEGACY_MODULES:
+        command += ['--exclude-module', 'app.' + name]
     for source, destination in assets:
         command += ['--add-data', str(source) + ';' + destination]
     command.append(root / 'scripts/desktop.py')
@@ -373,13 +378,16 @@ def build(args):
     shutil.copytree(notices, target / 'licenses')
     render_customer_guides(root, target / 'docs')
     validate_distribution(target)
+    verify_frozen_modules(target / 'RequirementsAgent.exe')
     after = source_snapshot(root)
     if before != after:
         raise RuntimeError('Build inputs changed during packaging; discard this QA output')
     files = {path.relative_to(target).as_posix(): sha256(path)
              for path in sorted(target.rglob('*')) if path.is_file()}
     native_reads = verify_native_file_hashes(target, files, output / 'native-byte-verification.json')
-    manifest = dict(format_version=1, distribution='windows-x64-licensed', version=VERSION,
+    manifest = dict(format_version=1, distribution='windows-x64-direct', version=VERSION,
+                    device_license_required=False,
+                    device_license_modules_included=False,
                     built_at=datetime.now(timezone.utc).isoformat(), **provenance,
                     source_snapshot_sha256=hashlib.sha256(json.dumps(before, sort_keys=True).encode()).hexdigest(),
                     source_files=before, files=files, python=platform.python_version(),

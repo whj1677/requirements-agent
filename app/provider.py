@@ -100,14 +100,6 @@ class Provider:
         return self.key_status(config)
 
     async def request(self, config, messages, evidence=None):
-        # A removed/replaced customer license also blocks the next paid model call.
-        from .core import FROZEN
-        if FROZEN:
-            from .licensing import LicenseManager, LicenseError
-            try:
-                await asyncio.to_thread(LicenseManager().verify_cached)
-            except LicenseError as error:
-                raise Problem(error.code, error.message, 403) from error
         key = self.key(config)
         require(key, 'CONFIG_MISSING', '尚未配置此接收端的 API Key；未发送材料')
         body = dict(model=config['model'], messages=messages, max_tokens=config['max_tokens'], stream=False)

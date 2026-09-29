@@ -1,4 +1,4 @@
-"""Frozen Windows entry. No application/database import before device licensing."""
+"""Frozen Windows entry for the directly usable customer workbench."""
 import sys
 from pathlib import Path
 

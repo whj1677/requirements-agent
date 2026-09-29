@@ -122,7 +122,7 @@ def test_shutdown_never_posts_to_an_unrelated_instance(monkeypatch):
     monkeypatch.setattr(verifier, 'request_json', other_instance)
     with pytest.raises(verifier.VerificationFailure, match='SHUTDOWN_INSTANCE_IDENTITY_MISMATCH'):
         verifier.shutdown_owned(None, 'the-instance-created-by-this-verifier')
-    assert calls == [('/activation/api/instance', 'GET')]
+    assert calls == [('/desktop/api/instance', 'GET')]
 
 
 def test_installed_manifest_cannot_read_files_outside_install_directory(tmp_path):
@@ -130,10 +130,111 @@ def test_installed_manifest_cannot_read_files_outside_install_directory(tmp_path
     install.mkdir()
     outside = tmp_path / 'outside.dat'
     outside.write_bytes(b'not package content')
-    manifest = {'distribution': 'windows-x64-licensed', 'working_tree_dirty': False,
-                'native_file_bytes_verified': True, 'files': {'../outside.dat': verifier.sha256(outside)}}
+    manifest = {'distribution': 'windows-x64-direct', 'working_tree_dirty': False,
+                'native_file_bytes_verified': True, 'native_file_count': 1,
+                'files': {'../outside.dat': verifier.sha256(outside)}}
     (install / 'release-manifest.json').write_text(json.dumps(manifest), 'utf-8')
     with pytest.raises(verifier.VerificationFailure, match='FILE_MANIFEST_ESCAPES_INSTALL'):
+        verifier.verify_installed_files(install)
+
+
+def test_direct_business_checks_exercise_frontend_session_projects_and_legacy_routes(monkeypatch):
+    expected = 'owned-instance'
+    paths = []
+
+    def json_response(path, method='GET', csrf=None, payload=None, origin=verifier.ORIGIN):
+        paths.append(path)
+        values = {
+            '/desktop/api/instance': {'product': 'requirements-agent', 'instance_id': expected,
+                                      'business_ready': True},
+            '/desktop/api/status': {'product': 'requirements-agent', 'instance_id': expected,
+                                    'business_ready': True, 'license_required': False,
+                                    'csrf': 'synthetic-csrf'},
+            '/api/session': {'mode': 'live'}, '/api/projects': [],
+        }
+        return 200, values[path]
+
+    def raw_response(path, method='GET', csrf=None, payload=None, origin=verifier.ORIGIN):
+        paths.append(path)
+        if path == '/':
+            return 200, b'<html></html>', {'Content-Type': 'text/html'}
+        if path == '/activation/':
+            return 302, b'', {'Location': '/'}
+        return 404, b'', {}
+
+    monkeypatch.setattr(verifier, 'request_json', json_response)
+    monkeypatch.setattr(verifier, 'request', raw_response)
+    status, projects = verifier.verify_business_http(expected)
+    assert status['license_required'] is False and projects == []
+    assert {'/', '/api/session', '/api/projects', '/activation/', '/activation/api/status',
+            '/activation/api/instance', '/activation/api/shutdown', '/activation/api/request',
+            '/activation/api/install', '/activation/api/start'} <= set(paths)
+
+
+def test_direct_business_checks_reject_license_gate_or_false_readiness(monkeypatch):
+    def json_response(path, *_args, **_kwargs):
+        if path == '/desktop/api/instance':
+            return 200, {'product': 'requirements-agent', 'instance_id': 'owned', 'business_ready': True}
+        return 200, {'product': 'requirements-agent', 'instance_id': 'owned',
+                     'business_ready': False, 'license_required': True, 'csrf': 'csrf'}
+
+    monkeypatch.setattr(verifier, 'request_json', json_response)
+    with pytest.raises(verifier.VerificationFailure, match='DIRECT_STATUS_NOT_READY'):
+        verifier.verify_business_http('owned')
+
+
+def test_shutdown_security_sends_wrong_origin_and_csrf_without_stopping(monkeypatch):
+    calls = []
+
+    def json_response(path, method='GET', csrf=None, payload=None, origin=verifier.ORIGIN):
+        calls.append((path, method, csrf, origin))
+        return 403, {'code': 'DENIED'}
+
+    monkeypatch.setattr(verifier, 'request_json', json_response)
+    verifier.verify_shutdown_security('valid-csrf')
+    assert calls == [('/desktop/api/shutdown', 'POST', 'valid-csrf', 'http://evil.invalid'),
+                     ('/desktop/api/shutdown', 'POST', 'invalid-csrf', verifier.ORIGIN)]
+
+
+def test_desktop_request_carries_origin_csrf_and_project_payload(monkeypatch):
+    captured = []
+
+    class Response:
+        status = 200
+        headers = {'Content-Type': 'application/json'}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            pass
+
+        def read(self, _limit):
+            return b'{}'
+
+    class Opener:
+        def open(self, request, timeout):
+            captured.append((request, timeout))
+            return Response()
+
+    monkeypatch.setattr(verifier.urllib.request, 'build_opener', lambda *_args: Opener())
+    verifier.request_json('/api/projects', 'POST', 'synthetic-csrf', {'name': 'synthetic'})
+    request, timeout = captured[0]
+    assert timeout == 3
+    assert request.get_method() == 'POST'
+    assert request.get_header('Origin') == verifier.ORIGIN
+    assert request.get_header('X-desktop-csrf') == 'synthetic-csrf'
+    assert json.loads(request.data) == {'name': 'synthetic'}
+
+
+def test_manifest_rejects_old_distribution(tmp_path):
+    install = tmp_path / 'install'
+    install.mkdir()
+    (install / 'release-manifest.json').write_text(json.dumps({
+        'distribution': 'windows-x64-licensed', 'working_tree_dirty': False,
+        'native_file_bytes_verified': True, 'native_file_count': 1, 'files': {'app.exe': 'x'},
+    }), 'utf-8')
+    with pytest.raises(verifier.VerificationFailure, match='WRONG_DISTRIBUTION'):
         verifier.verify_installed_files(install)
 
 

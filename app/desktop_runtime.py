@@ -1,4 +1,4 @@
-"""Windows customer entry: one browser workbench and an activation-only gateway."""
+"""Windows customer entry: a self-contained workbench without device activation."""
 import argparse
 import ctypes
 import hashlib
@@ -71,7 +71,7 @@ def identity():
 def runtime_at_port():
     try:
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-        with opener.open(URL + 'activation/api/instance', timeout=2) as response:
+        with opener.open(URL + 'desktop/api/instance', timeout=2) as response:
             return json.load(response)
     except Exception:
         return {}
@@ -94,8 +94,7 @@ def kernel_api():
 
 
 def server():
-    # An unlicensed process serves ONLY the activation UI; no app.main import.
-    from .activation import ActivationGateway
+    from .desktop_gateway import DesktopGateway
     from .core import ROOT
     import uvicorn
     kernel = kernel_api()
@@ -116,12 +115,11 @@ def server():
         sys.stdout = sys.stderr = log
         os.environ['RA_ACCESS_TOKEN'] = 'off'
         os.environ['PLAYWRIGHT_BROWSERS_PATH'] = str(ROOT / 'browsers')
-        asset_dir = ROOT / ('web/activation' if getattr(sys, 'frozen', False) else 'web/src/activation')
-        gateway = ActivationGateway(active_tasks=active_tasks, asset_dir=asset_dir, instance_id=identity())
+        gateway = DesktopGateway(active_tasks=active_tasks, instance_id=identity())
         instance = uvicorn.Server(uvicorn.Config(gateway, host='127.0.0.1', port=PORT,
                                                 access_log=False, log_config=None))
         gateway.shutdown = lambda: setattr(instance, 'should_exit', True)
-        print('客户激活入口：' + URL + 'activation/', flush=True)
+        print('需求工作台：' + URL, flush=True)
         instance.run(sockets=[listener])
     finally:
         listener.close()
@@ -144,7 +142,7 @@ def launcher():
             status = runtime_at_port()
             if status.get('instance_id') != instance_id:
                 raise RuntimeError('8765 已被另一工作台或其他程序占用。请先正常退出原工作台；不会改用其他端口或结束未知进程。')
-            webbrowser.open(URL + 'activation/')
+            webbrowser.open(URL)
             return 0
         command = [sys.executable, '--serve'] if getattr(sys, 'frozen', False) else [sys.executable, str(Path(__file__).parents[1] / 'scripts/desktop.py'), '--serve']
         child = subprocess.Popen(command, creationflags=subprocess.CREATE_NO_WINDOW,
@@ -152,15 +150,15 @@ def launcher():
         deadline = time.monotonic() + 40
         while time.monotonic() < deadline:
             if child.poll() is not None:
-                raise RuntimeError('激活入口启动失败，请查看用户目录 logs/server.log。')
+                raise RuntimeError('工作台启动失败，请查看用户目录 logs/server.log。')
             if runtime_at_port().get('instance_id') == instance_id:
-                webbrowser.open(URL + 'activation/')
+                webbrowser.open(URL)
                 return 0
             time.sleep(0.3)
         # This is our own startup child, never an unrelated process at the port.
         child.terminate()
         child.wait(timeout=10)
-        raise RuntimeError('激活入口启动超时，请查看用户目录 logs/server.log。')
+        raise RuntimeError('工作台启动超时，请查看用户目录 logs/server.log。')
     finally:
         if acquired:
             kernel.ReleaseMutex(mutex)
@@ -169,8 +167,6 @@ def launcher():
 
 def parser_worker(extension):
     restore_pipes()
-    from .licensing import LicenseManager
-    LicenseManager().verify_cached()
     from .sources import parse_bytes, MAX_BYTES
     from .core import Problem
     payload = sys.stdin.buffer.read(MAX_BYTES + 1)
@@ -188,9 +184,7 @@ def parser_worker(extension):
 
 
 def smoke_test():
-    """Explicit licensed offline diagnostic, on this customer's selected user profile."""
-    from .licensing import LicenseManager
-    LicenseManager().verify_cached()
+    """Explicit offline diagnostic, on this customer's selected user profile."""
     from .core import ROOT
     os.environ['PLAYWRIGHT_BROWSERS_PATH'] = str(ROOT / 'browsers')
     os.environ['RA_ACCESS_TOKEN'] = 'off'
@@ -241,12 +235,8 @@ def main(argv=None):
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument('--serve', action='store_true')
     modes.add_argument('--parse-worker', metavar='EXT')
-    modes.add_argument('--check-license', action='store_true')
-    modes.add_argument('--make-request', metavar='NAME')
-    modes.add_argument('--install-license', metavar='FILE')
     modes.add_argument('--smoke-test', action='store_true')
     modes.add_argument('--check-idle', action='store_true')
-    parser.add_argument('--replace-license', action='store_true')
     parser.add_argument('--output')
     args = parser.parse_args(argv)
     if args.check_idle:
@@ -256,21 +246,13 @@ def main(argv=None):
             return 0 if idle else 2
         except Exception:
             return 2
-    from .licensing import LicenseManager, LicenseError
     try:
         if args.parse_worker:
             return parser_worker(args.parse_worker)
         if args.serve:
             server()
             return 0
-        if args.make_request:
-            report(LicenseManager().create_request(args.make_request), args.output)
-        elif args.install_license:
-            report(LicenseManager().install_license(args.install_license, replace=args.replace_license), args.output)
-        elif args.check_license:
-            payload = LicenseManager().verify_cached()
-            report({'status': 'LICENSE_VALID', 'licenseId': payload['licenseId'], 'product': payload['product']}, args.output)
-        elif args.smoke_test:
+        if args.smoke_test:
             result = smoke_test()
             report(result, args.output)
             return 0 if all(result['checks'].values()) else 1
@@ -278,10 +260,9 @@ def main(argv=None):
             return launcher()
         return 0
     except Exception as error:
-        code = error.code if isinstance(error, LicenseError) else 'DESKTOP_FAILED'
+        code = 'DESKTOP_FAILED'
         message = getattr(error, 'message', str(error))
         report({'status': 'REJECTED', 'code': code, 'message': message}, args.output)
-        if not any((args.serve, args.parse_worker, args.make_request, args.install_license,
-                    args.check_license, args.smoke_test, args.output)):
+        if not any((args.serve, args.parse_worker, args.smoke_test, args.output)):
             ctypes.windll.user32.MessageBoxW(None, message, '需求 Agent 无法启动', 0x10)
         return 1

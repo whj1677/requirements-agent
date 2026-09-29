@@ -1,24 +1,32 @@
 # Windows 客户安装包构建
 
-客户版固定为 Windows 10 / 11 x64，包含 Python、解析依赖、前端、Playwright Node 驱动和 Chromium headless shell。客户不安装开发工具，首次使用须导入软件拥有者签发的设备许可证，并自行配置模型 API Key。安装步骤见 [Windows 安装与设备授权](windows-installation.md)。
+从 1.2.2 起，客户安装包取消设备许可证和激活校验，直接打开固定 8765 工作台。包含 Python、解析依赖、前端、Playwright 驱动与 Chromium；模型 API Key 由客户自行配置。安装步骤见 [安装与模型配置](windows-installation.md)。
 
-仓库保持公开。设备授权限制本项目交付的客户安装版；公开源码本身不受这份运行时授权门约束。客户安装包不携带签发私钥、已签发许可证、模型凭据或已有项目数据。
+## 本轮任务状态卡（2026-09-29）
 
-## 推荐构建入口：干净 Windows CI
+- 阶段：设备授权移除、构建与安装验收。
+- 目标：交付无需设备许可证、包含最新已修复工作台的自包含 Windows 试用安装器。
+- 输入：当前 main 源码、锁定依赖、已有 Windows 构建与安装验证流程。
+- 交付物：1.2.2 安装器、SHA-256、清单、实际验证记录和随包指南。
+- 验收：干净构建；新用户不带许可证直接进入工作台；打包后的解析与内置浏览器可运行；升级和卸载保留用户数据；不携带用户材料、凭据或授权运行组件。
+- 边界：保留模型 API Key、本机访问保护、材料外发确认；不增加业务功能，不重新执行付费模型评测，不创建公开 Release。
+- 停止条件：上述构建和有限安装验收完成并交付，未覆盖的第二台物理电脑与企业环境另列实际限制。
 
-仓库提供 `.github/workflows/windows-distribution.yml`，在 GitHub 托管的 `windows-latest` 环境构建。流程仅支持手动 `workflow_dispatch`，不会因提交自动运行，也不会自动创建 Release。
+## 构建入口：干净 Windows CI
 
-1. 将实现、测试、构建脚本、固定公钥模块与文档一并提交。不要提交 `.env`、用户数据、授权申请、客户许可证或签发私钥。
-2. 在 GitHub 仓库的 **Actions → Windows customer distribution → Run workflow** 选择已审核分支并启动。任务实际检出的提交作为该包版本事实源。
-3. 等待构建和未授权安装验证结果；成功后下载 `requirements-agent-windows-<提交SHA>` 工件。该工件只包含安装器、文件哈希清单、构建结果、原生字节检查和安装验证报告。
-4. 另一个 `requirements-agent-windows-build-logs-<运行编号>-<尝试编号>` 工件保存白名单内的依赖安装、浏览器下载、Inno 校验、边界测试和构建日志。失败时也尽量保留这些日志。
-5. 核对安装器 SHA-256、`source_commit`、`working_tree_dirty=false` 和 `native_file_bytes_verified=true`。构建成功的状态仍为 `BUILT_NOT_ACCEPTED`，须完成下文安装版验收，才能决定对客户交付。
+`.github/workflows/windows-distribution.yml` 使用 GitHub 托管 Windows 环境，手动触发，不因提交自动运行、不自动创建 Release。源码仓库继续公开；包不包含 .env、客户资料、模型凭据、许可证和签发工具。
 
-流程只需要仓库读取权限与 GitHub Actions 自带的工件上传能力，无需配置模型 Secret、授权私钥或签发凭据。不要将拥有者的 DPAPI 私钥搬到 CI。正式签发仍在拥有者自己的环境完成。
+1. 将相互依赖的实现、测试、构建脚本及文档提交。
+2. 从 Actions 的 **Windows customer distribution** 选择已审核分支手动运行，实际检出提交作为版本事实源。
+3. 构建前执行桌面运行和打包边界测试；构建后进行实际安装、EXE 离线 smoke、直接启动、原位重装及卸载验证。
+4. 下载 `requirements-agent-windows-<提交SHA>` 工件，核对安装器 SHA-256、`source_commit`、`working_tree_dirty=false`、`native_file_bytes_verified=true`、`device_license_required=false` 和发行标识 `windows-x64-direct`。
+5. 构建清单的 `BUILT_NOT_ACCEPTED` 仅说明构建完成；实际安装结论以 `installation-verification.json` 为准。
 
-CI 在构建后实际静默安装到新的临时目录，禁用快捷方式，逐文件核对安装内容。客户 EXE 使用独立 `LOCALAPPDATA` 且 PATH 仅含 Windows 系统目录；验证未授权命令拒绝、8765 网页激活入口可访问、业务接口被拦截且不创建业务数据库，再通过 Origin 和 CSRF 保护的网页接口正常退出。最后真实卸载，核对程序与注册项已移除，同时保留独立用户目录和授权目录中的测试哨兵文件。哨兵不是有效许可证，流程不签发许可证、不发送模型请求。
+验证命令：`python scripts/verify_windows_install.py --installer <安装器> --output <新目录>`。它在新用户目录、仅含 Windows 系统目录的 PATH 下运行安装后的 EXE，不依赖主机 Python/Node/浏览器缓存。先执行内置 DOCX/XLSX/PPTX/图片读取与 Chromium smoke，再启动业务 API 创建合成项目，退出、原位重装并读取同一项目，最后卸载并核对数据文件不变。旧许可证哨兵仅验证保留，不具备授权作用。全程模型请求为零。
 
-这部分由 `scripts/verify_windows_install.py --installer <安装器> --output <新输出目录>` 执行。脚本发现相同 AppId 的已有安装、已有输出目录或已占用的 8765 端口时拒绝开始；超时清理只处理本次创建并核实映像和创建时间的进程。只上传 `installation-verification.json` 与简要执行日志，`private/` 中的临时用户目录及安装器原始日志不上传。`UNLICENSED_INSTALLATION_VERIFIED` 仅代表这部分实际安装验证，仍不代表合法授权后的业务验证或最终客户验收。
+同 AppId 已安装、输出目录已存在或 8765 已占用时验证器拒绝开始。清理只处理本次创建并核对映像及创建时间的进程；CI 只上传脱敏结果与允许的构建日志，`private/` 不上传。`DIRECT_INSTALLATION_VERIFIED` 是这些实际安装检查的结论，不代表客户完整业务与真实模型语义验收。
+
+旧 `app/activation.py`、`app/licensing.py`、`app/license_trust.py`、原生授权组件与激活页面仅留作源码历史维护，均不被新入口调用或装入新包。构建时显式排除旧模块；升级时只清除程序目录中的旧组件，不动用户目录。
 
 ## 固定输入与构建工具
 
@@ -40,7 +48,7 @@ Inno 下载地址为其 [官方 GitHub 发布](https://github.com/jrsoftware/iss
 9c73c3bae7ed48d44112a0f48e66742c00090bdb5bef71d9d3c056c66e97b732
 ```
 
-构建产物保留上游许可证和组件元数据，客户包包括离线 HTML 使用说明。当前应用与安装器未做商业代码签名；设备许可证的 RSA 签名用于授权校验，不等同于 Windows 可执行文件的发布者签名。
+构建产物保留上游许可证和组件元数据，客户包包括离线 HTML 使用说明。当前应用与安装器未做商业代码签名。第三方组件的开源许可证继续随包保留，与已取消的设备授权无关。
 
 ## 本机构建命令
 
@@ -51,7 +59,7 @@ python -m pip install -r requirements.lock.txt -r packaging/requirements-build.t
 npm.cmd --prefix web ci
 $env:PLAYWRIGHT_BROWSERS_PATH = 'C:\approved-build\browsers'
 python -m playwright install --only-shell chromium
-python scripts/build_windows.py --output C:\approved-build\release-1.2.1 `
+python scripts/build_windows.py --output C:\approved-build\release-1.2.2 `
   --iscc 'C:\approved-build\InnoSetup-6.7.3\ISCC.exe' `
   --browser-cache C:\approved-build\browsers
 ```
@@ -64,15 +72,12 @@ python scripts/build_windows.py --output C:\approved-build\release-1.2.1 `
 
 2026-09-26 本机 QA 观察到同一 `Python-LICENSE.txt`、`python-docx` 默认模板和构建日志，通过 Python 与 Windows .NET 读取时长度、头部和 SHA-256 不同。主管实际运行该次安装版时，默认 DOCX 模板解析失败。这里只记录已观察到的差异，不据此判断保护产品或具体根因；该次本机 QA 包不能交付。干净 CI 必须独立构建并通过字节检查，不能复用该次本机安装包。
 
-## 安装版必须另行验收
+## 安装版验收边界
 
-CI 构建与离线边界测试不替代客户安装版验收。主管至少核对：
+- 新用户直接启动；缺失或损坏旧许可证不影响使用。
+- 在相同 Windows 用户下升级、卸载和重装保留项目、用户配置和旧许可证文件；未保存输入和活动任务受到退出保护。
+- 从实际 EXE 核对独立解析进程、内置 Chromium、固定 8765 与前端资源；不借用开发环境。
+- 清单逐文件哈希、Windows 原生字节检查与干净源码提交一致，不将未跟踪源码混入发布证据。
+- 客户自己的 API Key、接收端绑定与材料发送确认继续有效。
 
-- 在隔离 Windows 用户目录安装、升级、卸载和重装；数据、用户配置和授权保持在程序目录之外。
-- 无许可证时仅开放网页激活入口，业务启动与诊断入口拒绝运行，未初始化业务数据库。
-- 拥有者在 CI 之外审核并签发测试设备许可证；正确导入可使用，伪造、错产品和不匹配设备的授权被拒绝。测试授权不能附到客户安装包。
-- 从实际安装 EXE 核对内置浏览器、独立材料解析进程、五步工作台及固定 8765 入口；不依赖构建机 Python、Node 或浏览器缓存。普通格式解析不依赖 Office；企业保护材料须另外验证本机获准的 Office 只读后备路径。
-- 对安装后文件复核发布清单；确认没有安装器、驱动或其它原生文件读取差异。
-- 界面正常退出、活动任务保护、重复打开，以及安装期间禁止覆盖运行中的程序。
-
-Office 只读后备功能仍依赖客户自己安装并获准使用的 Microsoft Office。模型业务测试需要客户自己的授权与凭据；无模型测试不能写成真实模型语义验收通过。
+Office 只读后备仍依赖客户获准使用的 Microsoft Office 与企业策略。第二台物理电脑、客户受保护材料及真实模型 MRD/PRD 质量需分别记录，不能从安装成功推断。

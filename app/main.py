@@ -211,11 +211,6 @@ def runtime_fingerprint():
 
 
 def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
-    license_manager = None
-    if FROZEN:
-        from .licensing import LicenseManager
-        license_manager = LicenseManager()
-        license_manager.verify_cached()  # Before Store initialization or recovery of paid tasks.
     store = Store(folder)
     provider = provider or Provider(env_path=env_path, credential_dir=store.folder / '.credentials')
     for slot in ('model','vision'):
@@ -250,7 +245,7 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
             return await asyncio.wait_for(asyncio.shield(job),180)
         except asyncio.TimeoutError:
             raise Problem('EXPORT_TIMEOUT','导出等待超时，后台仍可能在处理；其他功能可继续使用，请稍后核对导出记录再重试',503)
-    # Session token and customer device licensing are independent gates.
+    # Local session protection is independent of model credentials and material consent.
     if access_token is None and os.environ.get('RA_ACCESS_TOKEN')=='off':
         token=None
     else:
@@ -285,12 +280,6 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
 
     @app.middleware('http')
     async def local_security(request, call_next):
-        if license_manager is not None:
-            from .licensing import LicenseError
-            try:
-                await asyncio.to_thread(license_manager.verify_cached)
-            except LicenseError as error:
-                return JSONResponse({'code':error.code,'message':error.message},status_code=403)
         host = request.headers.get('host','')
         parsed_host = urlsplit('http://' + host).hostname
         if parsed_host not in ('127.0.0.1','localhost','testserver'):

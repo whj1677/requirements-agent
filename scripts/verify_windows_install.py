@@ -1,4 +1,4 @@
-"""Verify a fresh Windows customer installation without issuing any license.
+"""Verify a fresh Windows customer installation and in-place upgrade offline.
 
 Only the selected installer and its verified process descendants are managed.
 An existing product registration or occupied 8765 port blocks the entire run.
@@ -255,12 +255,15 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def request(path, method='GET', csrf=None):
-    headers = {'Origin': ORIGIN}
+def request(path, method='GET', csrf=None, payload=None, origin=ORIGIN):
+    headers = {'Origin': origin} if origin is not None else {}
     if csrf is not None:
-        headers['X-Activation-CSRF'] = csrf
+        headers['X-Desktop-CSRF'] = csrf
+    if payload is not None:
+        headers['Content-Type'] = 'application/json'
     req = urllib.request.Request(ORIGIN + path, method=method,
-                                 data=b'' if method == 'POST' else None, headers=headers)
+                                 data=json.dumps(payload).encode('utf-8') if payload is not None else
+                                 (b'' if method == 'POST' else None), headers=headers)
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
     try:
         response = opener.open(req, timeout=3)
@@ -272,13 +275,13 @@ def request(path, method='GET', csrf=None):
         return response.status, body, response.headers
 
 
-def request_json(path, method='GET', csrf=None):
-    status, body, _headers = request(path, method, csrf)
+def request_json(path, method='GET', csrf=None, payload=None, origin=ORIGIN):
+    status, body, _headers = request(path, method, csrf, payload, origin)
     try:
         value = json.loads(body)
     except (ValueError, UnicodeError) as error:
-        raise VerificationFailure('INVALID_ACTIVATION_RESPONSE') from error
-    require(isinstance(value, dict), 'INVALID_ACTIVATION_RESPONSE')
+        raise VerificationFailure('INVALID_DESKTOP_RESPONSE') from error
+    require(isinstance(value, (dict, list)), 'INVALID_DESKTOP_RESPONSE')
     return status, value
 
 
@@ -289,23 +292,23 @@ def instance_identity(executable, home):
 def wait_for_instance(process, expected, timeout=45):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        require(process.process.poll() is None, 'ACTIVATION_PROCESS_EXITED')
+        require(process.process.poll() is None, 'DESKTOP_PROCESS_EXITED')
         try:
-            status, value = request_json('/activation/api/instance')
+            status, value = request_json('/desktop/api/instance')
             require(status == 200 and value.get('instance_id') == expected,
-                    'ACTIVATION_INSTANCE_IDENTITY_MISMATCH')
+                    'DESKTOP_INSTANCE_IDENTITY_MISMATCH')
             return value
         except (urllib.error.URLError, TimeoutError, ConnectionError):
             time.sleep(0.2)
-    raise VerificationFailure('ACTIVATION_STARTUP_TIMEOUT')
+    raise VerificationFailure('DESKTOP_STARTUP_TIMEOUT')
 
 
 def shutdown_owned(process, expected):
-    status, value = request_json('/activation/api/instance')
+    status, value = request_json('/desktop/api/instance')
     require(status == 200 and value.get('instance_id') == expected, 'SHUTDOWN_INSTANCE_IDENTITY_MISMATCH')
-    status, value = request_json('/activation/api/status')
+    status, value = request_json('/desktop/api/status')
     require(status == 200 and isinstance(value.get('csrf'), str), 'SHUTDOWN_CSRF_UNAVAILABLE')
-    status, value = request_json('/activation/api/shutdown', 'POST', value['csrf'])
+    status, value = request_json('/desktop/api/shutdown', 'POST', value['csrf'])
     require(status == 200 and value.get('status') == 'STOPPING', 'GRACEFUL_SHUTDOWN_REJECTED')
     require(process.wait(20) == 0, 'GRACEFUL_SHUTDOWN_EXIT_FAILED')
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
@@ -319,9 +322,10 @@ def shutdown_owned(process, expected):
 
 def verify_installed_files(install):
     manifest = json.loads((install / 'release-manifest.json').read_text('utf-8'))
-    require(manifest.get('distribution') == 'windows-x64-licensed', 'WRONG_DISTRIBUTION')
+    require(manifest.get('distribution') == 'windows-x64-direct', 'WRONG_DISTRIBUTION')
     require(manifest.get('working_tree_dirty') is False, 'DIRTY_BUILD_NOT_ALLOWED')
     require(manifest.get('native_file_bytes_verified') is True, 'NATIVE_BYTE_CHECK_MISSING')
+    require(manifest.get('native_file_count', 0) > 0, 'NATIVE_BYTE_CHECK_EMPTY')
     files = manifest.get('files')
     require(isinstance(files, dict) and files, 'FILE_MANIFEST_EMPTY')
     for relative, expected in files.items():
@@ -338,11 +342,50 @@ def owned_registration(install):
                 for row in present), 'INSTALL_REGISTRATION_NOT_OWNED')
 
 
+def verify_business_http(expected):
+    status, instance = request_json('/desktop/api/instance')
+    require(status == 200 and instance.get('product') == 'requirements-agent' and
+            instance.get('instance_id') == expected and instance.get('business_ready') is True,
+            'DIRECT_INSTANCE_NOT_READY')
+    status, desktop = request_json('/desktop/api/status')
+    require(status == 200 and desktop.get('product') == 'requirements-agent' and
+            desktop.get('instance_id') == expected and desktop.get('business_ready') is True and
+            desktop.get('license_required') is False and isinstance(desktop.get('csrf'), str) and
+            bool(desktop['csrf']), 'DIRECT_STATUS_NOT_READY')
+    status, body, headers = request('/')
+    require(status == 200 and 'text/html' in headers.get('Content-Type', '') and body,
+            'FRONTEND_UNAVAILABLE')
+    status, session = request_json('/api/session')
+    require(status == 200 and session.get('mode') == 'live', 'SESSION_UNAVAILABLE')
+    status, projects = request_json('/api/projects')
+    require(status == 200 and isinstance(projects, list), 'PROJECT_LIST_UNAVAILABLE')
+    status, _body, _headers = request('/activation/')
+    require(status in (301, 302, 303, 307, 308), 'OLD_ACTIVATION_NOT_REDIRECTED')
+    for path in ('/activation/api/status', '/activation/api/instance', '/activation/api/shutdown'):
+        require(request(path)[0] == 404, 'OLD_LICENSE_ENDPOINT_STILL_PRESENT')
+    for path in ('/activation/api/request', '/activation/api/install', '/activation/api/start'):
+        require(request(path, 'POST')[0] == 404, 'OLD_LICENSE_ENDPOINT_STILL_PRESENT')
+    return desktop, projects
+
+
+def verify_shutdown_security(csrf):
+    status, _ = request_json('/desktop/api/shutdown', 'POST', csrf, origin='http://evil.invalid')
+    require(status == 403, 'SHUTDOWN_ORIGIN_NOT_ENFORCED')
+    status, _ = request_json('/desktop/api/shutdown', 'POST', 'invalid-csrf')
+    require(status == 403, 'SHUTDOWN_CSRF_NOT_ENFORCED')
+
+
+def install_command(installer, install, log):
+    return [str(installer), '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART',
+            '/CURRENTUSER', '/NOICONS', '/TASKS=!desktopicon', '/DIR=' + str(install),
+            '/LOG=' + str(log)]
+
+
 def verify(installer, output):
     installer, output = prepare_paths(installer, output)
     report = {'format_version': 1, 'status': 'INSTALLATION_VERIFICATION_RUNNING',
               'installer_sha256': sha256(installer), 'checks': {}, 'model_calls': 0,
-              'valid_license_created': False, 'authorized_business_validation': 'NOT_RUN'}
+              'business_validation': {'synthetic_offline': 'RUNNING', 'real_model': 'NOT_RUN'}}
     private, install = output / 'private', output / 'installed-app'
     private.mkdir()
     environment, home = customer_environment(private)
@@ -351,9 +394,8 @@ def verify(installer, output):
     expected_instance = None
     uninstalled = False
     try:
-        setup = OwnedProcess([str(installer), '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART',
-                              '/CURRENTUSER', '/NOICONS', '/TASKS=!desktopicon', '/DIR=' + str(install),
-                              '/LOG=' + str(private / 'setup.log')], environment, private, install)
+        setup = OwnedProcess(install_command(installer, install, private / 'setup.log'),
+                             environment, private, install)
         processes.append(setup)
         require(setup.wait(240) == 0, 'INSTALLER_EXIT_FAILED')
         executable = install / 'RequirementsAgent.exe'
@@ -364,46 +406,67 @@ def verify(installer, output):
                       installed_exe_sha256=sha256(executable), installed_file_count=len(manifest['files']))
         report['checks']['silent_install_and_file_hashes'] = True
 
-        result_file = private / 'license-status.json'
-        check = OwnedProcess([str(executable), '--check-license', '--output', str(result_file)],
+        result_file = private / 'offline-smoke.json'
+        check = OwnedProcess([str(executable), '--smoke-test', '--output', str(result_file)],
                              environment, private, install)
         processes.append(check)
-        require(check.wait(30) != 0, 'UNLICENSED_CLI_WAS_ACCEPTED')
+        require(check.wait(120) == 0, 'OFFLINE_SMOKE_EXIT_FAILED')
         value = json.loads(result_file.read_text('utf-8'))
-        require(value.get('status') == 'REJECTED' and value.get('code') == 'LICENSE_MISSING',
-                'UNLICENSED_CLI_WRONG_RESULT')
-        require(not (home / 'data').exists(), 'UNLICENSED_CLI_CREATED_DATA')
-        report['checks']['unlicensed_cli_rejected_without_data'] = True
+        expected_checks = {'docx_subprocess', 'xlsx_subprocess', 'pptx_subprocess',
+                           'image_subprocess', 'bundled_chromium', 'session', 'frontend', 'projects'}
+        require(value.get('status') == 'OFFLINE_SMOKE_VERIFIED' and value.get('model_calls') == 0 and
+                isinstance(value.get('checks'), dict) and
+                all(value['checks'].get(name) is True for name in expected_checks),
+                'OFFLINE_SMOKE_WRONG_RESULT')
+        report['checks']['packaged_offline_smoke'] = True
 
         expected_instance = instance_identity(executable, home)
         service = OwnedProcess([str(executable), '--serve'], environment, private, install)
         processes.append(service)
         instance = wait_for_instance(service, expected_instance)
-        require(instance.get('product') == 'requirements-agent' and instance.get('business_ready') is False,
-                'UNLICENSED_INSTANCE_WRONG_STATE')
-        status, body, headers = request('/activation/')
-        require(status == 200 and 'text/html' in headers.get('Content-Type', '') and
-                b'activation-flow' in body, 'ACTIVATION_PAGE_UNAVAILABLE')
-        for path in ('/activation/assets/app.js', '/activation/assets/style.css'):
-            require(request(path)[0] == 200, 'ACTIVATION_ASSET_UNAVAILABLE')
-        status, value = request_json('/activation/api/status')
-        require(status == 200 and value.get('licensed') is False and value.get('code') == 'LICENSE_MISSING'
-                and value.get('business_ready') is False, 'ACTIVATION_STATUS_WRONG_STATE')
-        status, denied = request_json('/api/projects')
-        require(status == 403 and denied.get('code') == 'LICENSE_REQUIRED', 'BUSINESS_ROUTE_NOT_BLOCKED')
-        status, denied = request_json('/activation/api/start', 'POST', value['csrf'])
-        require(status == 403 and denied.get('code') == 'LICENSE_MISSING', 'BUSINESS_START_NOT_BLOCKED')
-        require(not (home / 'data').exists(), 'ACTIVATION_CREATED_BUSINESS_DATA')
-        report['checks']['activation_only_http_with_system_path'] = True
+        require(instance.get('product') == 'requirements-agent' and instance.get('business_ready') is True,
+                'DIRECT_INSTANCE_NOT_READY')
+        desktop, projects = verify_business_http(expected_instance)
+        require(not projects, 'FRESH_PROFILE_HAS_PROJECTS')
+        verify_shutdown_security(desktop['csrf'])
+        report['checks']['direct_business_http_and_shutdown_security'] = True
+        project_name = '离线安装验收合成项目'
+        status, project = request_json('/api/projects', 'POST', payload={'name': project_name})
+        require(status == 200 and isinstance(project, dict) and isinstance(project.get('id'), str),
+                'SYNTHETIC_PROJECT_CREATE_FAILED')
+        project_id = project['id']
+        require(any(row.get('id') == project_id for row in request_json('/api/projects')[1]),
+                'SYNTHETIC_PROJECT_NOT_LISTED')
         shutdown_owned(service, expected_instance)
         report['checks']['origin_csrf_shutdown_and_port_release'] = True
 
-        # Neither marker is a signed license or a business database.
+        # The legacy marker is inert; the synthetic project is real persisted business data.
         markers = [home / 'profile-preserve.sentinel', home / 'license/ci-preserve.sentinel']
         sentinel = b'INSTALLER_PRESERVATION_TEST_ONLY_NOT_A_LICENSE\n'
         for marker in markers:
             marker.parent.mkdir(parents=True, exist_ok=True)
             marker.write_bytes(sentinel)
+        owned_registration(install)
+        upgrade = OwnedProcess(install_command(installer, install, private / 'upgrade.log'),
+                               environment, private, install)
+        processes.append(upgrade)
+        require(upgrade.wait(240) == 0, 'UPGRADE_INSTALLER_EXIT_FAILED')
+        owned_registration(install)
+        verify_installed_files(install)
+        service = OwnedProcess([str(executable), '--serve'], environment, private, install)
+        processes.append(service)
+        wait_for_instance(service, expected_instance)
+        _desktop, projects = verify_business_http(expected_instance)
+        require(any(row.get('id') == project_id and row.get('name') == project_name for row in projects),
+                'UPGRADE_LOST_SYNTHETIC_PROJECT')
+        status, loaded = request_json('/api/projects/' + project_id)
+        require(status == 200 and loaded.get('id') == project_id and loaded.get('name') == project_name,
+                'UPGRADE_PROJECT_UNREADABLE')
+        require(all(marker.read_bytes() == sentinel for marker in markers), 'UPGRADE_DELETED_PROFILE_MARKER')
+        report['checks']['in_place_upgrade_preserves_synthetic_project'] = True
+        shutdown_owned(service, expected_instance)
+        data_files = {p.relative_to(home): sha256(p) for p in (home / 'data').rglob('*') if p.is_file()}
+        require(data_files, 'SYNTHETIC_PROJECT_DATA_MISSING')
         owned_registration(install)
         uninstall = OwnedProcess([str(install / 'unins000.exe'), '/VERYSILENT', '/SUPPRESSMSGBOXES',
                                   '/NORESTART', '/LOG=' + str(private / 'uninstall.log')],
@@ -416,9 +479,11 @@ def verify(installer, output):
         require(not executable.exists() and not registrations(), 'UNINSTALL_INCOMPLETE')
         uninstalled = True
         require(all(marker.read_bytes() == sentinel for marker in markers), 'UNINSTALL_DELETED_PROFILE_MARKER')
-        require(not (home / 'data').exists(), 'UNINSTALL_CREATED_BUSINESS_DATA')
-        report['checks']['uninstall_preserves_profile_and_license_markers'] = True
-        report['status'] = 'UNLICENSED_INSTALLATION_VERIFIED'
+        require(all((home / relative).is_file() and sha256(home / relative) == digest
+                    for relative, digest in data_files.items()), 'UNINSTALL_CHANGED_BUSINESS_DATA')
+        report['checks']['uninstall_preserves_business_data_and_legacy_marker'] = True
+        report['business_validation']['synthetic_offline'] = 'VERIFIED'
+        report['status'] = 'DIRECT_INSTALLATION_VERIFIED'
     except Exception as error:
         report['status'] = 'INSTALLATION_VERIFICATION_FAILED'
         report['failure_code'] = str(error) if isinstance(error, VerificationFailure) else type(error).__name__
@@ -467,7 +532,7 @@ def main():
         print(json.dumps({'status': 'INSTALLATION_VERIFICATION_NOT_STARTED', 'failure_code': code}))
         return 2
     print(json.dumps(report, ensure_ascii=False))
-    return 0 if report['status'] == 'UNLICENSED_INSTALLATION_VERIFIED' else 1
+    return 0 if report['status'] == 'DIRECT_INSTALLATION_VERIFIED' else 1
 
 
 if __name__ == '__main__':

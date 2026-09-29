@@ -109,11 +109,11 @@ jobs:
           if (-not (Test-Path -LiteralPath $compiler)) { throw 'Inno Setup compiler was not installed' }
           "RA_ISCC=$compiler" >> $env:GITHUB_ENV
 
-      - name: Execute offline license and packaging boundary checks
+      - name: Execute offline desktop and packaging boundary checks
         run: |
           $ErrorActionPreference = 'Stop'
           $junit = Join-Path $env:RA_BUILD_LOGS 'boundary-tests.xml'
-          python -m pytest tests/test_licensing.py tests/test_desktop_distribution.py tests/test_windows_packaging.py tests/test_windows_install_verifier.py -q `
+          python -m pytest tests/test_desktop_distribution.py tests/test_windows_packaging.py tests/test_windows_install_verifier.py -q `
             "--junitxml=$junit" 2>&1 |
             Tee-Object -FilePath (Join-Path $env:RA_BUILD_LOGS 'boundary-tests.log')
           if ($LASTEXITCODE -ne 0) { throw 'Offline distribution boundary checks failed' }
@@ -133,17 +133,17 @@ jobs:
           }
           "Built commit: $($result.source_commit)" >> $env:GITHUB_STEP_SUMMARY
           "Installer SHA-256: $($result.installer_sha256)" >> $env:GITHUB_STEP_SUMMARY
-          'Status: BUILT_NOT_ACCEPTED. Installation, owner-issued activation and customer-runtime acceptance remain separate.' >> $env:GITHUB_STEP_SUMMARY
+          'Status: BUILT_NOT_ACCEPTED. Direct startup and customer-runtime installation checks follow.' >> $env:GITHUB_STEP_SUMMARY
 
-      - name: Verify a real unlicensed installation with an isolated user profile
+      - name: Verify direct startup, bundled dependencies, upgrade and uninstall
         run: |
           $ErrorActionPreference = 'Stop'
-          $installer = Join-Path $env:RA_BUILD_OUTPUT 'installer/RequirementsAgent-1.2.1-windows-x64-setup.exe'
+          $installer = Join-Path $env:RA_BUILD_OUTPUT 'installer/RequirementsAgent-1.2.2-windows-x64-setup.exe'
           $verification = Join-Path $env:RA_BUILD_BASE 'installation-verification'
           python scripts/verify_windows_install.py --installer $installer --output $verification 2>&1 |
             Tee-Object -FilePath (Join-Path $env:RA_BUILD_LOGS 'installation-verification.log')
-          if ($LASTEXITCODE -ne 0) { throw 'Real installation or unlicensed runtime verification failed' }
-          'Unlicensed installation: VERIFIED. Signed customer authorization and licensed business validation remain separate.' >> $env:GITHUB_STEP_SUMMARY
+          if ($LASTEXITCODE -ne 0) { throw 'Real installation or direct runtime verification failed' }
+          'Direct installation: VERIFIED. Real-model semantic evaluation remains separate.' >> $env:GITHUB_STEP_SUMMARY
 
       - name: Upload installer and release manifests
         if: success()
@@ -155,7 +155,7 @@ jobs:
           if-no-files-found: error
           include-hidden-files: false
           path: |
-            ${{ env.RA_BUILD_OUTPUT }}/installer/RequirementsAgent-1.2.1-windows-x64-setup.exe
+            ${{ env.RA_BUILD_OUTPUT }}/installer/RequirementsAgent-1.2.2-windows-x64-setup.exe
             ${{ env.RA_BUILD_OUTPUT }}/application/RequirementsAgent/release-manifest.json
             ${{ env.RA_BUILD_OUTPUT }}/build-result.json
             ${{ env.RA_BUILD_OUTPUT }}/native-byte-verification.json
