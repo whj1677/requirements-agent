@@ -126,7 +126,7 @@ export function Workspace({ id, active, models, onProjectsChanged, onProjectSnap
       if(current&&result?.id===id&&Array.isArray(result.items)&&result.revision>=current.revision){const confirmed=mergeProjectWrite(current,result) as Project;projectRef.current=confirmed;setP(confirmed);}
       else if(current&&result?.id&&typeof result.parse_status==='string'){const confirmed={...current,sources:current.sources.some(s=>s.id===result.id)?current.sources.map(s=>s.id===result.id?result:s):[...current.sources,result]};projectRef.current=confirmed;setP(confirmed);}
       await refresh().catch(e=>{onRefreshFail(e);activityNotice('修改已保存，但最新页面尚未取得。请重试刷新，不要重复提交。',true);});return result;}
-    catch(e){if(e instanceof ApiError&&e.status===409){await refresh().catch(onRefreshFail);const latest=proof&&projectRef.current&&editValue(projectRef.current,proof);if(proof&&latest!==undefined)throw new DraftConflictError(proof.before,latest,proof.mine);}throw e;}finally{finish();}
+    catch(e){if(e instanceof ApiError&&e.status===409&&e.code==='STALE_REVISION'){await refresh().catch(onRefreshFail);const latest=proof&&projectRef.current&&editValue(projectRef.current,proof);if(proof&&latest!==undefined)throw new DraftConflictError(proof.before,latest,proof.mine);}throw e;}finally{finish();}
   }
   async function planAction(action: BusinessAction, optionId?: string, target?: Obj, text = '', retryInput?: Partial<ActionInput>) {
     const current=projectRef.current;
