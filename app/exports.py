@@ -288,6 +288,10 @@ def handoff_files(baseline, changes):
         'prototype.html': prototype(p['ui']['spec']) if p['ui'] else '<!doctype html><meta charset="utf-8"><p>本基线未包含 UI 方案</p>',
         'traceability.json': dumps(traces)}
     from .requirements import exchange, requirement_ref
+    from .delivery_scope import formal_scope, SCOPE_SCHEMA
+    files['delivery_scope.json'] = dumps(formal_scope(baseline))
+    files['delivery_scope.schema.json'] = dumps(SCOPE_SCHEMA)
+    files['README.md'] += '\n\n正式机器范围见 delivery_scope.json（requirements-delivery-scope-1），按 entities 的完整身份/版本/内容哈希读取，包含 constraints；旧 requirements-exchange-1 的 requirements 数组保持历史兼容，不等于正式范围。此附加契约尚未验证外部消费者。'
     payload=exchange(p,baseline_id)
     payload['change_records']=[r for r in changes if any(
         i['id']==r['requirement_id'] and r['version']<=i.get('content_version',1) for i in p['items'])]
@@ -310,6 +314,6 @@ def handoff_files(baseline, changes):
         trace['test_execution_status']='not_run'
     files['traceability.json']=dumps(traces)
     files = {k:v.encode('utf-8') for k,v in files.items()}
-    manifest = dict(schema_version='1.1', baseline_id=baseline_id, baseline_hash=digest(baseline['hashes']), confirmation_id=baseline['confirmation_id'], generator_version='1.1', prompt_version='1.1', created=now(), artifacts={k:dict(sha256=hashlib.sha256(v).hexdigest(), role=k) for k,v in files.items()})
+    manifest = dict(schema_version='1.2', delivery_scope_version='requirements-delivery-scope-1', baseline_id=baseline_id, baseline_hash=digest(baseline['hashes']), confirmation_id=baseline['confirmation_id'], generator_version='1.1', prompt_version='1.1', created=now(), artifacts={k:dict(sha256=hashlib.sha256(v).hexdigest(), role=k) for k,v in files.items()})
     files['manifest.json'] = dumps(manifest).encode()
     return files, manifest
