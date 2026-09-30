@@ -228,13 +228,28 @@ def plan_contract(p, kind=None):
         'example 仅示范引用结构；can_generate=false 时不可生成，不把 null 或空结构当作章节建议。')
 
 
+def plan_schema(p,kind):
+    """One document type's wire keys; never advertise another type's chapters."""
+    schema=copy.deepcopy(PLAN_SCHEMA_V4)
+    contract=plan_contract(p,kind)
+    keys=list(contract['section_keys'])
+    if contract['discussion_item_ids']:
+        keys.append('discussion')
+    schema['properties']['sections']['items']['properties']['section_key']={'enum':keys}
+    return schema
+
+
 def repair_instruction(error,p,kind=None):
     if kind is not None:
         contract=plan_contract(p,kind)
         return ('重新输出完整 v4 文档计划，只修结构、出处与可追溯解释。保留所有有效引用，'
                 '逐项对照 context_ref_ids、normative_item_ids、discussion_item_ids、business_claim_ref_ids；'
                 'explanations 每段至少一条有效依据；有出处且无冲突的源码/配置观察可说明快照现状，无需逐条人工确认；候选、推断、未知和冲突不能写成确定事实，'
-                '不能在解释中新增规则、数值或改变规范原文。PRD可解释有来源的跨条目关系，程序按依据归章；工程快照不决定新功能技术选型。MRD按 required_analysis_sections 分别补优先级和试点验证分析，前者引用已核对priority，后者引用已选验收或已核对value/intent；避免重复目标与范围，缺数字保留未知。空章节省略；未决问题返回澄清阶段。'
+                'section_key 只能从本次 document_type 对应的 section_keys 选择；discussion 仅在含有效 discussion_refs 时可用；不丢弃非法章节中的有效正文和依据，不删除业务内容来过关。'
+                '不能在解释中新增规则、数值或改变规范原文。工程快照不决定新功能技术选型。'+
+                ('MRD按 required_analysis_sections 分别补优先级和试点验证分析，前者引用已核对priority，后者引用已选验收或已核对value/intent；避免重复目标与范围，缺数字保留未知。'
+                 if kind=='mrd' else 'PRD不输出MRD专用priority、validation、risks章节；有来源的相关正文保留原意和全部有效依据，使用当前合法章节键，程序按依据归章。')+
+                '空章节省略；未决问题返回澄清阶段。'
                 '\n实际错误：'+error.message+'\n唯一文档计划契约：'+dumps(contract))
     common=('重新输出完整 v2 章节引用对象，只修结构或引用；不重选方向、不补答、不改规则或采纳状态。业务原文由程序回填。'
             '本轮检查全部章节，逐项对照 context_ref_ids、normative_item_ids、discussion_item_ids 三类当前白名单；'

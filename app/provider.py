@@ -9,7 +9,7 @@ import httpx
 from .core import KIT, Problem, brief_hash, digest, dumps, now, read_json, require
 from .contracts import SCHEMA, WIRE, profile
 from .config import ProjectEnvironment, usable_key
-from .prd import PLAN_SCHEMA, PLAN_SCHEMA_V4, plan_contract, context as document_context
+from .prd import PLAN_SCHEMA, PLAN_SCHEMA_V4, plan_contract, plan_schema, context as document_context
 from . import business_context
 from . import ingest
 from .understanding import contract as understanding_contract, answer_target, answer_targets
@@ -258,7 +258,7 @@ def assemble(p, stage, user_message, config, folder, kind='prd', generation_targ
     if generation_target:
         header['generation_target']=generation_target
     if stage == 'prd':
-        header.update(document_type=kind, content_profile=profile(kind,p.get('reference_mode')=='builtin'),plan_contract=plan_contract(p,kind))
+        header.update(document_type=kind, schema=plan_schema(p,kind), content_profile=profile(kind,p.get('reference_mode')=='builtin'),plan_contract=plan_contract(p,kind))
     background=business_context.model_context(p)
     if background:
         header['business_context_policy']=(
