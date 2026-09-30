@@ -6,6 +6,7 @@ from .core import brief_hash
 from .requirements import delivery_items
 
 PRESENTATION_VERSION = 'document-reading-4'
+_EMPTY_BEHAVIOR = {'未提及异常分支'}
 
 _INTERNAL_SECTIONS = {
     '历史分析提示（非当前事实）',
@@ -84,7 +85,7 @@ def reading_structure(content, items, source_snapshot=(), *, show_requirement_be
                     from .product_flow import BEHAVIOR
                     for key, label in BEHAVIOR.items():
                         value = item.get('behavior', {}).get(key)
-                        if value:
+                        if value and value.strip().rstrip('。') not in _EMPTY_BEHAVIOR:
                             nodes.append(heading(node_id+'-'+key, label, level+2, node_id))
                             nodes.append(dict(kind='paragraph', text=value, block_kind='behavior'))
         section['reading_nodes'] = nodes
@@ -201,7 +202,9 @@ def reader_document(artifact):
                 text = '\n'.join(f'{r}｜{items[r]["title"]} · v{items[r].get("content_version",1)}\n{items[r]["statement"]}' if r in items else r+'：历史条款原文未保存，无法还原。' for r in refs)
                 if item and item['kind']=='requirement' and not v4_mrd:
                     from .product_flow import BEHAVIOR
-                    text += ''.join('\n'+label+'：'+item['behavior'][key] for key,label in BEHAVIOR.items() if item.get('behavior',{}).get(key))
+                    text += ''.join('\n'+label+'：'+item['behavior'][key] for key,label in BEHAVIOR.items()
+                                    if item.get('behavior',{}).get(key)
+                                    and item['behavior'][key].strip().rstrip('。') not in _EMPTY_BEHAVIOR)
             elif block['kind']=='explanation':
                 # The compiler validated these exact snapshot references. The
                 # reader shows product prose; claim IDs remain in the artifact.

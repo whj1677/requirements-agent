@@ -212,42 +212,53 @@ class OwnedProcess:
         root_image, root_stamp = process_identity(self.handle)
         require(root_image == self.executable and root_stamp == self.created,
                 'CLEANUP_ROOT_IDENTITY_CHANGED')
-        unverified = False
+        diagnostics = []
         natural_exit = []
         for pid in descendant_order(self.process.pid, process_parents()):
             handle = kernel.OpenProcess(0x1000 | 0x0001 | 0x00100000, False, pid)
             if not handle:
-                if ctypes.get_last_error() not in (87, 1168):
-                    unverified = True
+                error = ctypes.get_last_error()
+                if error not in (87, 1168):
+                    diagnostics.append(dict(phase='open_descendant', pid=pid, win32_error=error))
                 continue  # A process that already exited needs no termination.
             try:
                 try:
                     image, created = process_identity(handle)
                 except VerificationFailure:
-                    if kernel.WaitForSingleObject(handle, 0) != 0:
-                        unverified = True
+                    wait = kernel.WaitForSingleObject(handle, 0)
+                    if wait != 0:
+                        diagnostics.append(dict(phase='identify_descendant', pid=pid, wait_result=wait))
                     continue
                 allowed = image == self.executable or any(image.is_relative_to(root) for root in self.roots)
                 if created < self.created or not allowed:
                     # Windows may attach a system console host. Never kill it;
                     # allow it to exit naturally after its owned root closes.
-                    natural_exit.append(handle)
+                    natural_exit.append((pid, handle))
                     handle = None
                     continue
-                if not kernel.TerminateProcess(handle, 1) and kernel.WaitForSingleObject(handle, 0) != 0:
-                    unverified = True
+                if not kernel.TerminateProcess(handle, 1):
+                    error = ctypes.get_last_error()
+                    wait = kernel.WaitForSingleObject(handle, 0)
+                    if wait != 0:
+                        diagnostics.append(dict(phase='terminate_descendant', pid=pid,
+                                                win32_error=error, wait_result=wait))
             finally:
                 if handle:
                     kernel.CloseHandle(handle)
         self.process.terminate()  # Popen retains the exact created process handle.
         self.process.wait(timeout=10)
-        for handle in natural_exit:
+        for pid, handle in natural_exit:
             try:
-                if kernel.WaitForSingleObject(handle, 3000) != 0:
-                    unverified = True
+                wait = kernel.WaitForSingleObject(handle, 3000)
+                if wait != 0:
+                    diagnostics.append(dict(phase='wait_unowned_descendant', pid=pid, wait_result=wait))
             finally:
                 kernel.CloseHandle(handle)
-        require(not unverified, 'CLEANUP_DESCENDANT_IDENTITY_UNVERIFIED')
+        if diagnostics:
+            error = VerificationFailure('CLEANUP_DESCENDANT_IDENTITY_UNVERIFIED')
+            error.cleanup_diagnostics = diagnostics
+            error.add_note(json.dumps({'cleanup_diagnostics': diagnostics}))
+            raise error
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -501,6 +512,8 @@ def verify(installer, output):
                     owned.terminate_owned()
                 except Exception as error:
                     cleanup_errors.append(str(error) if isinstance(error, VerificationFailure) else type(error).__name__)
+                    if getattr(error, 'cleanup_diagnostics', None):
+                        report.setdefault('cleanup_diagnostics', []).extend(error.cleanup_diagnostics)
         if not uninstalled and (install / 'unins000.exe').is_file():
             try:
                 owned_registration(install)

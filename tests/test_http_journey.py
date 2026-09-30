@@ -81,7 +81,15 @@ def test_real_http_adapter_to_confirmation_and_export(tmp_path):
             p=c.get(root).json()
             for i in p['items']:
                 current=c.get(root).json()
-                assert c.post(root+'/items/'+i['id'],json={'expected_revision':current['revision'],'selection_status':'selected'}).status_code==200
+                if i['kind']=='requirement':
+                    # Explicit synthetic human check, separate from adoption.
+                    reviewed=c.post(root+'/items/'+i['id']+'/behavior',json={
+                        'expected_revision':current['revision'],'values':i.get('behavior',{}),
+                        'change_type':i.get('change_type','unspecified'),'review_confirmed':True})
+                    assert reviewed.status_code==200,reviewed.text
+                    current=c.get(root).json()
+                selected=c.post(root+'/items/'+i['id'],json={'expected_revision':current['revision'],'selection_status':'selected'})
+                assert selected.status_code==200,selected.text
             from tests.product_flow_helpers import http_check
             http_check(c,root,through=3)
             p=c.get(root).json()

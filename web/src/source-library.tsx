@@ -3,6 +3,7 @@ import { downloadFile, sourceStatusNames } from './api';
 import { useDialog } from './shell';
 import { Icon } from './ui-icons';
 import { BusinessContextView } from './business-context';
+import { excelColumnLetters, excelPreview } from './excel-preview';
 
 type Obj = Record<string, any>;
 export const sourcePurposes: Record<string, string> = { goal: '目标与诉求', current: '现状资料', reference: '设计参考', template: '文档模板', business: '工程上下文' };
@@ -22,6 +23,26 @@ function sourceIdentity(source: Obj, siblings: Obj[]): string {
 function sourceDigest(source: Obj): string {
   const first = source.excerpts?.find((entry: Obj) => typeof entry.text === 'string' && entry.text.trim())?.text;
   return first ? first.replace(/\s+/g, ' ').slice(0, 92) : '';
+}
+
+function readingNotice(source: Obj): string {
+  // Older Office records keep their original extraction evidence in storage.
+  return String(source.failure_reason || '').replace(
+    '已提取 0 张图片，待视觉分析', '未提取到内嵌图片，未进入视觉分析');
+}
+
+function ExcelPreview({ excerpts, visibleExcerpts, focusExcerpt }: { excerpts: Obj[]; visibleExcerpts: Obj[]; focusExcerpt?: string }) {
+  const preview = excelPreview(excerpts, visibleExcerpts.map(ex => String(ex.id || '')));
+  if (!preview.sheets.length) return <div className="excel-preview-fallback"><p>未能可靠取得可用的工作表坐标，以下按文字摘录显示。</p>{preview.fallback.map((ex, index) => <article className="material-excerpt" id={ex.id ? 'excerpt-' + ex.id : undefined} key={ex.id || index}><small>{ex.locator || '位置未提供'}</small><pre>{ex.text}</pre></article>)}</div>;
+  return <div className="excel-preview-workbook"><p className="excel-preview-disclosure">按已提取的工作表与单元格坐标整理；未提取的空白、格式与原生工作表外观不作推定。</p>
+    {preview.sheets.map(sheet => {
+      const cellMap = new Map(sheet.cells.map(cell => [`${cell.row}:${cell.column}`, cell]));
+      return <section className="excel-preview-sheet" key={sheet.name} aria-label={`工作表 ${sheet.name}`}><h3>工作表：{sheet.name}</h3><div className="excel-preview-table-scroll" tabIndex={0} role="region" aria-label={`工作表 ${sheet.name} 的表格，可左右滚动`}><table><thead><tr><th scope="col" aria-label="行号">#</th>{Array.from({ length: sheet.columnEnd - sheet.columnStart + 1 }, (_, offset) => <th scope="col" key={offset}>{excelColumnLetters(sheet.columnStart + offset)}</th>)}</tr></thead><tbody>
+        {Array.from({ length: sheet.rowEnd - sheet.rowStart + 1 }, (_, rowOffset) => { const row = sheet.rowStart + rowOffset; return <tr key={row}><th scope="row">{row}</th>{Array.from({ length: sheet.columnEnd - sheet.columnStart + 1 }, (_, columnOffset) => { const column = sheet.columnStart + columnOffset; const cell = cellMap.get(`${row}:${column}`); const value = cell?.text; const focused = !!focusExcerpt && cell?.excerptIds.includes(focusExcerpt); return <td key={column} id={focused ? 'excerpt-' + focusExcerpt : undefined} className={focused ? 'excel-cell-highlight' : undefined} aria-label={value === undefined ? `第 ${row} 行第 ${column} 列，未提取` : undefined}>{value}</td>; })}</tr>; })}
+      </tbody></table></div></section>;
+    })}
+    {!!preview.fallback.length && <section className="excel-preview-fallback"><h3>位置未能用于表格的摘录</h3><p>以下内容保留为文字摘录，未推定其原生位置。</p>{preview.fallback.map((ex, index) => <article className="material-excerpt" id={ex.id ? 'excerpt-' + ex.id : undefined} key={ex.id || index}><small>{ex.locator || '位置未提供'}</small><pre>{ex.text}</pre></article>)}</section>}
+  </div>;
 }
 
 export function IntakeMaterialGroups({ sources, onOpen }: { sources: Obj[]; onOpen?: (sourceId?: string) => void }) {
@@ -60,7 +81,7 @@ function SourcePreview({ source, p, root, focusExcerpt, onClose }: { source: Obj
   useEffect(() => {
     if (view !== 'text' || !focusExcerpt) return;
     // Scope the lookup to this reader: another mounted project can contain the same source.
-    const target = Array.from(reader.current?.querySelectorAll<HTMLElement>('.material-excerpt') || []).find(el => el.id === 'excerpt-' + focusExcerpt);
+    const target = reader.current?.querySelector<HTMLElement>('#excerpt-' + CSS.escape(focusExcerpt));
     target?.scrollIntoView({ block: 'center' });
   }, [focusExcerpt, source.id, limit, view]);
   function changeView(next: 'text' | 'images') { setView(next); reader.current?.scrollTo({ top: 0 }); }
@@ -87,14 +108,14 @@ function SourcePreview({ source, p, root, focusExcerpt, onClose }: { source: Obj
     {error && <p className="error preview-download-error" role="alert">{error}</p>}
     <div className="preview-reading-area" ref={reader} tabIndex={0} role="region" aria-label={view === 'text' ? '已读取内容' : '图片预览'}>
       <div className="preview-notes">
-        {source.failure_reason && <p className="notice">{source.failure_reason}</p>}
+        {source.failure_reason && <p className="notice">{readingNotice(source)}</p>}
         {source.purpose === 'reference' && <p className="notice">设计参考用于理解界面与交互，不表示其中规则已纳入本期。</p>}
       </div>
       {view === 'text' ? <>
         <p className="preview-reading-hint">以下为提取内容，保留原文文字；原始排版及未提取对象请下载附件查看。</p>
-        <div className="preview-paper">
+        <div className={/\.xlsx?$/i.test(source.title) ? 'preview-paper preview-paper-excel' : 'preview-paper'}>
           {!source.excerpts.length && <div className="preview-empty"><Icon name="document" /><h3>暂时没有可预览的正文</h3><p>请核对附件的读取状态。上传成功不表示内容已读取。</p></div>}
-          {source.excerpts.slice(0, limit).map((ex: Obj) => <article key={ex.id} id={'excerpt-' + ex.id} className={focusExcerpt === ex.id ? 'material-excerpt source-highlight' : 'material-excerpt'}><pre>{ex.text}</pre></article>)}
+          {/\.xlsx?$/i.test(source.title) ? <ExcelPreview excerpts={source.excerpts} visibleExcerpts={source.excerpts.slice(0, limit)} focusExcerpt={focusExcerpt} /> : source.excerpts.slice(0, limit).map((ex: Obj) => <article key={ex.id} id={'excerpt-' + ex.id} className={focusExcerpt === ex.id ? 'material-excerpt source-highlight' : 'material-excerpt'}><pre>{ex.text}</pre></article>)}
           {source.excerpts.length > limit && <button className="preview-more" onClick={() => setLimit(n => n + 50)}>继续显示内容</button>}
         </div>
       </> : source.image_mime ? <div className="preview-image-card"><MaterialImage source={source} root={root} /></div> : <section className="preview-gallery"><h3>文档内图片 · {children.length}</h3><p className="preview-reading-hint">图片按原文位置排列，可单独查看原图尺寸。</p>{children.map((child: Obj, index: number) => <article className="preview-image-card" key={child.id}><header><span className="preview-image-number">{String(index + 1).padStart(2, '0')}</span><div><h4>{child.container_locator || '文档内图片'}</h4><small>{sourceStatusNames[child.parse_status] || '状态待核对'}</small></div></header><MaterialImage source={child} root={root} /></article>)}</section>}
@@ -124,7 +145,7 @@ export function SourceLibrary({ p, root, busy, act, mutate, refresh, focusRefs =
         <p className="material-summary">{sourceIdentity(s, parents)}{sourceIdentity(s, parents) ? ' · ' : ''}{s.purpose === 'business' ? `${s.business_context?.project?.name || '工程上下文包'} · ${s.business_context?.modules?.length || 0} 个模块 · ${s.excluded || s.business_active === false ? '未启用' : `参考 ${s.business_selection?.module_ids?.length || 0} 个模块`}` : s.image_mime ? '图片可预览，文字与交互含义须经分析核对。' : `${s.excerpts.length} 个已提取片段${s.embedded_image_ids?.length ? ` · ${s.embedded_image_ids.length} 张内嵌图片` : ''}`}</p>
         {sourceDigest(s) && <p className="material-digest">{sourceDigest(s)}</p>}
         {s.origin === 'intake' && s.superseded_by && <p className="material-summary">历史诉求，只读保留，不再纳入当前材料</p>}
-        {s.failure_reason && <p className="notice">{s.failure_reason}</p>}
+        {s.failure_reason && <p className="notice">{readingNotice(s)}</p>}
         <div className="toolbar"><button type="button" className="primary" aria-label={'查看内容：' + s.title} onClick={() => setSelected(s.id)}>{s.purpose === 'business' ? '查看工程上下文' : '查看内容'}</button>{!(s.origin === 'intake' && s.superseded_by) && <button disabled={busy} onClick={() => act(() => mutate('/sources/' + s.id + '/exclude', {}))}>{s.excluded ? '恢复使用' : '排除材料'}</button>}</div>
         {s.origin === 'intake' && s.superseded_by ? <small>后续诉求已替代此版本；原文保留供追溯。</small> : s.purpose === 'business' ? <small>工程上下文使用专门导入与范围调整流程 · {s.id}</small> : <details><summary>分类与读取操作</summary><label>资料分类<select aria-label={'资料分类：' + s.title} disabled={busy} value={s.purpose} onChange={e => { const purpose = e.target.value; act(() => mutate('/sources/' + s.id + '/purpose', { purpose })); }}>{Object.entries(sourcePurposes).filter(([key]) => key !== 'business').map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></label><button disabled={busy} onClick={() => act(() => mutate('/sources/' + s.id + '/retry', {}))}>重新读取（保留原件）</button><small>{s.id}</small></details>}
       </article>)}</div>

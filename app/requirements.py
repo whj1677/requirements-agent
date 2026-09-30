@@ -8,6 +8,21 @@ CONTENT_FIELDS = ('kind','title','statement','applies_to','epistemic_status','so
 RELATIONS = ('parent_of','refines','replaces','depends_on','implements','verifies')
 
 
+def behavior_fingerprint(item):
+    return digest({key:item.get(key) for key in
+                   ('kind','statement','change_type','behavior','source_refs')})
+
+
+def behavior_review_current(item):
+    return (not item.get('behavior_review_required') or
+            item.get('behavior_review',{}).get('content_hash') == behavior_fingerprint(item))
+
+
+def require_behavior_review(item):
+    require(behavior_review_current(item), 'BEHAVIOR_REVIEW_REQUIRED',
+            '请先在需求详情核对模型展开的行为说明及来源；无依据的流程、时点或默认规则不能直接采纳。', 409)
+
+
 def delivery_items(p):
     selected=[i for i in p['items'] if i['selection_status']=='selected' and i['applies_to']=='to_be']
     scope=p.get('product_context',{}).get('scope_ids')

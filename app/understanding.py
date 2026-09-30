@@ -102,6 +102,39 @@ def pure_preservation_quote(quote):
     return bool(clauses) and all(preservation.search(part) and not explicit_change.search(part) for part in clauses)
 
 
+def normalize_classification_labels(value, excerpts):
+    """Correct only a redundant new label contradicted by its own valid evidence.
+
+    Statements, evidence states/quotes, scope and approval stay exactly as emitted.
+    Preservation conflicts and unverifiable citations still reach the strict gate.
+    The raw provider output remains in call evidence.
+    """
+    result = copy.deepcopy(value)
+    changes = []
+    if not isinstance(result, dict) or not isinstance(result.get('proposals'), list):
+        return result, changes
+    actual = {(e.get('source_id'), e.get('id')): e.get('text', '') for e in excerpts}
+    for item in result['proposals']:
+        if not isinstance(item, dict) or item.get('kind') != 'requirement' or item.get('change_type') != 'new' or item.get('applies_to') != 'to_be':
+            continue
+        support = item.get('scope_evidence')
+        if not isinstance(support, list) or not support or not all(isinstance(e, dict) for e in support):
+            continue
+        if {e.get('state') for e in support} != {'current', 'change'}:
+            continue
+        verified = True
+        for evidence in support:
+            ref, quote = evidence.get('source_ref'), evidence.get('quote')
+            text = actual.get((ref.get('source_id'), ref.get('excerpt_id')), '') if isinstance(ref, dict) else ''
+            if not isinstance(quote, str) or not quote.strip() or quote not in text or (evidence['state'] == 'change' and pure_preservation_quote(quote)):
+                verified = False
+                break
+        if verified:
+            item['change_type'] = 'modified'
+            changes.append(dict(temp_id=item.get('temp_id'), original='new', derived='modified'))
+    return result, changes
+
+
 def validate(value,p,excerpts):
     if value['stage'] not in ('ingest','clarify','change'):return
     actual={(e['source_id'],e['id']):e['text'] for e in excerpts}

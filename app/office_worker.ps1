@@ -92,7 +92,8 @@ try {
                     } finally { $output.Dispose(); $bitmap.Dispose(); $image.Dispose(); $stream.Dispose() }
                 } catch { $limits.Add("$location 本机 Office 未能导出图片（HRESULT=$($_.Exception.HResult)），未进入视觉分析") }
             }
-            $limits.Add("正文和表格已提取；已提取 $($images.Count) 张图片，待视觉分析；$($document.Shapes.Count) 个浮动对象、页眉页脚、批注和修订未单独提取")
+            if ($images.Count -gt 0) { $limits.Add("正文和表格已提取；已提取 $($images.Count) 张图片，待视觉分析；$($document.Shapes.Count) 个浮动对象、页眉页脚、批注和修订未单独提取") }
+            else { $limits.Add("正文和表格已提取；未提取到内嵌图片，未进入视觉分析；$($document.Shapes.Count) 个浮动对象、页眉页脚、批注和修订未单独提取") }
             $document.Close(0); $document=$null
         }
         'Excel' {

@@ -27,7 +27,7 @@ from .understanding import record_answer, accept_answer_update
 from .preview import prototype
 from .exports import document_files, handoff, zip_files
 from .document_reader import reader_document, export_readiness, filename
-from .product_flow import status as flow_status, checkpoint, INTAKE, SCOPE, BEHAVIOR, review_document, document_review_current
+from .product_flow import status as flow_status, current_stage, checkpoint, INTAKE, SCOPE, BEHAVIOR, review_document, document_review_current
 from .requirements import exchange, requirement_ref, delivery_items
 from .budgets import MODEL_OUTPUT_LIMIT
 from . import business_context
@@ -135,6 +135,7 @@ class ContextEdit(Revision):
 class BehaviorEdit(Revision):
     values: dict[str,str]
     change_type: Literal['new','modified','preserved','existing','unspecified']
+    review_confirmed: bool = False
 
 class StageCheck(Revision):
     expected_hash: str
@@ -335,16 +336,21 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
         return {'csrf':sessions.get(request.cookies.get('ra_session',''),''), 'mode':'live', 'version':'1.1',
                 'backend': app.state.runtime}
 
+    def project_summary(p, updated_at=None):
+        if updated_at is None:
+            with store.connect() as db:
+                row = db.execute('SELECT MAX(created) FROM revisions WHERE project_id=?', (p['id'],)).fetchone()
+            updated_at = row[0] if row and row[0] else p['created']
+        return dict(id=p['id'], name=p['name'], revision=p['revision'], created=p['created'],
+                    updated_at=updated_at, flow_current_title=current_stage(p)['title'])
+
     @app.get('/api/projects')
     async def projects():
         with store.connect() as db:
             updated = dict(db.execute('SELECT project_id,MAX(created) FROM revisions GROUP BY project_id'))
         result = []
         for p in store.list():
-            step = next((s for s in flow_status(p) if not s['retired'] and not s['complete']), None)
-            result.append(dict({k:p[k] for k in ('id','name','revision','created')},
-                               updated_at=updated.get(p['id'], p['created']),
-                               flow_current_title=step['title'] if step else '已确认与交接'))
+            result.append(project_summary(p, updated.get(p['id'], p['created'])))
         return result
 
     @app.post('/api/projects')
@@ -354,14 +360,22 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
     @app.get('/api/projects/{pid}')
     async def project(pid:str):
         p=store.get(pid)
+        summary = project_summary(p)
         try:
             issues=gate(p)
         except Problem as e:
             issues=[e.message]
         # Reader/source progress are response projections; keep canonical review hashes intact.
         result=copy.deepcopy(p)
-        result.update(hashes=hashes(p), confirmation_issues=issues,
+        result.update(summary, hashes=hashes(p), confirmation_issues=issues,
                       baselines=store.records(pid,'baseline'), exports=store.records(pid,'export'))
+        from .requirements import behavior_review_current
+        # Keep response-only UI state outside canonical items: clients may use
+        # those items to verify document hashes or round-trip an exchange.
+        result['behavior_review_statuses']={item['id']:
+            ('legacy' if not item.get('behavior_review_required') else
+             'reviewed' if behavior_review_current(item) else 'required')
+            for item in result['items'] if item['kind']=='requirement'}
         for source in result['sources']:
             if source.get('embedded_image_ids'):
                 children=[s for s in result['sources'] if s.get('container_source_id')==source['id']]
@@ -470,6 +484,11 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
             require(item is not None,'NOT_FOUND','需求不存在',404)
             item.setdefault('behavior',{}).update(body.values)
             item['change_type']=body.change_type
+            from .requirements import behavior_fingerprint, behavior_review_current
+            if body.review_confirmed and (not item.get('behavior_review') or not behavior_review_current(item)):
+                item['behavior_review']=dict(content_hash=behavior_fingerprint(item),
+                    actor='authenticated_local_user',reviewed_at=now(),
+                    meaning='人工核对模型行为展开，不是程序证明原文蕴含或正式业务批准')
         return p
 
     @app.post('/api/projects/{pid}/sketch-review')
@@ -728,6 +747,12 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
         with store.edit(pid,body.expected_revision,'人工编辑或采纳条目') as (p,db):
             i=next((x for x in p['items'] if x['id']==iid),None)
             require(i is not None,'NOT_FOUND','条目不存在',404)
+            if body.selection_status=='selected':
+                from .requirements import require_behavior_review
+                prospective=copy.deepcopy(i)
+                if body.statement:prospective['statement']=body.statement
+                if body.change_type is not None:prospective['change_type']=body.change_type
+                require_behavior_review(prospective)
             if body.title is not None:i['title']=body.title
             if body.change_type is not None:i['change_type']=body.change_type
             if body.statement:
@@ -743,6 +768,8 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
                 for key in ('title','statement','applies_to','epistemic_status','source_refs','related_refs'):
                     target[key]=copy.deepcopy(i[key])
                 for key in ('behavior','change_type','scope_evidence','classification_reason'):
+                    if key in i:target[key]=copy.deepcopy(i[key])
+                for key in ('behavior_review_required','behavior_review'):
                     if key in i:target[key]=copy.deepcopy(i[key])
                 target['selection_status']='selected'
                 i['selection_status']='deferred'
@@ -784,6 +811,8 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
             require(ids <= set(items),'REFERENCE_INVALID','条目引用不存在')
             excerpts={(s['id'],ex['id']) for s in p['sources'] for ex in s['excerpts']}
             for iid in ids:
+                from .requirements import require_behavior_review
+                require_behavior_review(items[iid])
                 require(items[iid].get('source_refs') and all((r['source_id'],r['excerpt_id']) in excerpts for r in items[iid]['source_refs']) and items[iid].get('epistemic_status'),
                         'REFERENCE_INVALID','条目缺少来源或假设状态，不可批量采纳')
                 require(not items[iid].get('target_item_id'), 'REFERENCE_INVALID', '修订条目需单独核对原条目')

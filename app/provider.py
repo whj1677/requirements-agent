@@ -244,6 +244,14 @@ def assemble(p, stage, user_message, config, folder, kind='prd', generation_targ
     if stage=='ingest':header['context_contract']='整理后必须输出 product_context_proposal 的全部字段，供用户核对，未知值填空字符串；不自动采纳或批准。已有条目仅因信息实质变化才提出修订，不重复建同义候选。'
     if stage=='ingest':header['ingest_contract']=ingest.contract()
     if stage in ('ingest','clarify','change'):header['understanding_contract']=understanding_contract()
+    if stage in ('ingest','clarify','change'):
+        header['business_evidence_policy']=(
+            'statement、behavior各字段与acceptance都需由引用原文支持。behavior不是自由补全方案的位置。'
+            '不把合理工程推断写成已确定业务：材料只给审计字段和留存时长时，不能自行规定创建、完成、失败分别写事件或更新单条记录；'
+            '只有实际来源明确这些时机和粒度时才作为规则。仅为工程实现细节的未决留空，不扩大业务成文阻塞；影响可观察结果的真实缺口才提问。'
+            '已有组件、对象存储、接口是快照现状，不自动证明本次新功能已选定复用方案。'
+            'questions.options优先使用空数组和开放式提问；材料未给既有策略时不能提供“按现有策略默认执行”。'
+            '不要虚构180天等数值供用户默认选择；确有需比较的备选明确称为建议，不声称有业务事实依据。')
     header['question_note_policy']='问题的 deferred_note 是用户暂未决定时保存的调查备注，不是正式回答，不能据此解除阻塞或自动采纳规则。'
     if stage=='clarify':
         header['current_answer_binding_policy']='stage_focus.answer_binding_tasks 是全量待办清单，不扩大本轮授权范围。先根据本轮 user_message 中的任务指定对象和用户明确要求限定范围，仅处理范围内的回答与目标，范围外保持原状；无明确局部范围时，按当前澄清任务处理。本轮范围内的回答绑定以当前清单和 questions 的已保存回答为准。历史消息和旧文档仍用于核对业务事实，持续有效的业务范围与保持约束必须保留；仅与当前契约或本轮明确指令冲突的历史操作指令（例如旧的“规则不填 answer_refs”）不再适用。范围内每个尚无 reusable_candidate_ids 的绑定任务需由本轮同 kind revise 候选覆盖：target_item_id 对应该目标，answer_refs 必须包含该 question_id，source_refs 引用实际送入的回答来源。同一目标的多个范围内回答合并到一个候选的 answer_refs。规则原文已正确或原条目 selected 均不等于该回答已应用；保留完整业务原文，生成待人工核对的绑定候选，不自动采纳。仅有相同目标、同一回答版本并已记录 answer_refs 的待采纳候选才可复用。'

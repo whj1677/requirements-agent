@@ -120,6 +120,9 @@ def missing(p, step):
                    if q.get('understanding_status') in ('pending','candidate_ready') and q.get('blocking')
                    and set(q.get('related_refs',[])) & clause_ids]
         for req in reqs:
+            from .requirements import behavior_review_current
+            if not behavior_review_current(req):
+                issues.append(req['id']+' 的模型行为说明仍待核对；请检查无来源的时点、流程与默认规则。')
             absent=[label for key,label in BEHAVIOR.items() if not str(req.get('behavior',{}).get(key,'')).strip()]
             if absent:issues.append(req['id']+' 尚缺：'+'、'.join(absent)+'；确实不适用的维度应说明原因。')
             if not any(i['kind']=='acceptance' and i['selection_status']=='selected' and
@@ -169,6 +172,20 @@ def status(p):
         # Do not invent a sketch approval or renumber historical stage-check keys.
         if step in ACTIVE_STEPS:prior_valid=valid
     return result
+
+
+def current_stage(p):
+    """Return the authoritative business stage, independent of the viewed UI tab."""
+    states = status(p)
+    # Saving intake confirms only that the user's raw input was stored. Until
+    # analysis has produced a substantive result, keep the business stage at 1.
+    analyzed = (any(m.get('role') == 'assistant' and m.get('stage') == 'ingest'
+                    for m in p.get('messages', [])) or bool(p.get('items')) or bool(p.get('questions')))
+    if states[5]['complete']:
+        return states[5]
+    if not analyzed:
+        return states[0]
+    return next((s for s in states if not s['retired'] and not s['complete']), states[5])
 
 
 def checkpoint(p, step, expected_hash):

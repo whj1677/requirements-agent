@@ -162,7 +162,8 @@ def test_project_summary_has_recorded_update_time_and_actual_stage(client_case):
     intake(client, root, '合成目标')
     row = next(x for x in client.get('/api/projects').json() if x['id'] == p['id'])
     assert row['updated_at'] >= row['created']
-    assert row['flow_current_title'] == '核对现状、价值与改动范围'
+    # Saving intake is still stage 1 until analysis actually produces results.
+    assert row['flow_current_title'] == '提供现状与诉求'
 
 
 def test_basic_model_save_preserves_masked_proxy_without_echoing_it(client_case):

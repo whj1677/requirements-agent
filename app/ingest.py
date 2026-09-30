@@ -101,6 +101,10 @@ def business_anchor(value, excerpts=()):
     """Lock valid business fields; missing/invalid fields may still be repaired."""
     if not isinstance(value, dict):
         return {}
+    # Lock the evidence-derived label rather than a contradictory redundant label;
+    # all business text, quotes and evidence states remain protected.
+    from .understanding import normalize_classification_labels
+    value, _ = normalize_classification_labels(value, excerpts)
     spec = schema()
     locked = {}
     pairs = {(e['source_id'], e['id']) for e in excerpts}

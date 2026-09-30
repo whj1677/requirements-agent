@@ -27,13 +27,31 @@ def artifact(result, project, version):
                 assembly_version='prd-plan-'+version)
 
 
+def compile_fixture_plan(proposal, project, kind):
+    """Supply explicit synthetic analysis when exercising unrelated v4 rules."""
+    proposal=copy.deepcopy(proposal)
+    if proposal['plan_version']=='4' and kind=='mrd':
+        contract=plan_contract(project,kind)
+        for key in contract['required_analysis_sections']:
+            if any(s['section_key']==key for s in proposal['sections']):
+                continue
+            refs=dict(context_refs=['priority'] if key=='priority' else [],
+                      normative_refs=[contract['validation_acceptance_ids'][0]] if key=='validation' else [],
+                      business_claim_refs=[])
+            proposal['sections'].append(dict(section_key=key,context_refs=[],normative_refs=[],
+                discussion_refs=[],explanations=[dict(text=(
+                    '合成决策分析：先核对试点业务价值；尚无量化收益数据。' if key=='priority' else
+                    '合成试点判据：依据验收条款观察操作结果，不新增成功率阈值。'),evidence_refs=refs)]))
+    return compile_plan(proposal,project,kind)
+
+
 def test_v4_reuses_fully_cited_context_without_duplicate_reader_line(tmp_path):
     project = checked_project(tmp_path)
     key, value = next(iter(verified_context(project).items()))
     explanation = dict(text='本期场景依据：'+value,
                        evidence_refs=dict(context_refs=[key], normative_refs=[],
                                           business_claim_refs=[]))
-    result = compile_plan(plan('4', context=[key], explanation=explanation), project, 'mrd')
+    result = compile_fixture_plan(plan('4', context=[key], explanation=explanation), project, 'mrd')
     readable = reader_document(artifact(result, project, '4'))
     assert sum(block.get('text', '').count(value)
                for section in readable['sections'] for block in section['blocks']) == 1
@@ -48,7 +66,7 @@ def test_v4_mrd_omits_behavior_fields_prd_and_v3_retain_them(tmp_path):
     requirement['behavior'] = {key:'合成行为-'+key for key in BEHAVIOR}
     for version, kind, expected in (('4', 'mrd', False), ('4', 'prd', True),
                                     ('3', 'mrd', True), ('2', 'mrd', True)):
-        result = compile_plan(plan(version), project, kind)
+        result = compile_fixture_plan(plan(version), project, kind)
         raw = artifact(result, project, version)
         rendered = dumps(reader_document(raw))
         assert requirement['statement'] in rendered
@@ -60,9 +78,9 @@ def test_v4_mrd_omits_behavior_fields_prd_and_v3_retain_them(tmp_path):
 def test_v4_mrd_keeps_all_normative_originals_once_in_final_product_annex(tmp_path):
     project=checked_project(tmp_path)
     contract=plan_contract(project,'mrd')
-    assert contract['section_keys']==['background','users','goal','scope']
+    assert contract['section_keys']==['background','users','goal','scope','priority','validation','risks']
     proposal=plan('4', normative=('REQ-0001','RULE-0001','AC-0001'))
-    result=compile_plan(proposal,project,'mrd')['result']
+    result=compile_fixture_plan(proposal,project,'mrd')['result']
     annex=[section for section in result['sections'] if section['title']==MRD_NORMATIVE_APPENDIX_TITLE]
     assert len(annex)==1
     assert all(block['kind'] not in ('requirement','rule','acceptance')
@@ -87,7 +105,7 @@ def test_v4_context_in_later_explanation_does_not_leave_empty_chapter(tmp_path):
     later = plan('4', explanation=explanation)['sections'][0]
     later['section_key'] = 'scope'
     proposed['sections'].append(later)
-    result = compile_plan(proposed, project, 'mrd')
+    result = compile_fixture_plan(proposed, project, 'mrd')
     assert all(section['blocks'] for section in result['result']['sections'])
     readable = reader_document(artifact(result, project, '4'))
     assert sum(block.get('text', '').count(value) for section in readable['sections'] for block in section['blocks']) == 1
@@ -111,11 +129,12 @@ def test_v4_places_unplanned_context_in_product_sections_without_process_heading
         'preserve_scope':'本期范围与边界','out_of_scope':'本期范围与边界',
     }
     for kind in ('mrd','prd'):
-        result=compile_plan(plan('4'),project,kind)
+        result=compile_fixture_plan(plan('4'),project,kind)
         readable=reader_document(artifact(result,project,'4'))
         assert all(section['title']!='补列的已核对事实与规范条款'
                    for section in readable['sections'])
         for key,title in expected.items():
+            if kind=='mrd' and key=='priority':title='优先级与决策依据'
             actual=[section['title'] for section in readable['sections']
                     for block in section['blocks'] if project['product_context'][key] in block.get('text','')]
             assert title in actual, (kind,key,actual)

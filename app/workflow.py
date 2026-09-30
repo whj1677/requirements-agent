@@ -10,7 +10,7 @@ from .prd import compile_plan, repair_instruction
 from .requirements import TRACKED, namespace, requirement_ref, delivery_items
 from .product_flow import execution_issues
 from . import ingest
-from .understanding import question_ids, save_questions, annotate_candidates
+from .understanding import question_ids, save_questions, annotate_candidates, normalize_classification_labels
 from .budgets import stage_config, output_ceiling, check_context, policy_summary
 
 PREFIX = {'requirement':'REQ','rule':'RULE','acceptance':'AC','ui_decision':'UID','goal':'GOAL','actor':'ROLE'}
@@ -47,7 +47,9 @@ def apply_response(p, response):
         # A proposed revision is a separate candidate, never an overwrite.
         identity=dict(content_version=1,source_namespace=namespace(p)) if item['kind'] in TRACKED else {}
         row=dict(id=item['temp_id'], **{k:v for k,v in item.items() if k != 'temp_id'}, **identity, selection_status='candidate', revision=p['revision']+1)
-        if row['kind']=='requirement':row.setdefault('change_type','unspecified')
+        if row['kind']=='requirement':
+            row.setdefault('change_type','unspecified')
+            row['behavior_review_required']=True
         p['items'].append(row)
     save_questions(p,r['questions'])
     known={x['id'] for x in p['items']}|{q['id'] for q in p['questions']}
@@ -180,6 +182,10 @@ class Workflow:
                         value=compile_plan(value,p,run['document_type'],omitted,include_sketch=False)
                     if run['stage']=='ingest':
                         ingest.validate(value, excerpts)
+                        value, classifications = normalize_classification_labels(value, excerpts)
+                        if classifications:
+                            events.append(dict(time=now(), phase='按已引用的现状与改动证据统一变化分类；业务原文与来源保持不变', call=calls))
+                            self.store.update_run(pid,rid,classification_corrections=classifications,events=events)
                         if repair_anchor is not None:
                             ingest.preserve(repair_anchor, value, excerpts)
                     validate_response(value, run['stage'], p, excerpts, run['document_type'])
