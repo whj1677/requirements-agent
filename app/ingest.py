@@ -210,11 +210,16 @@ def response_anchor(value, excerpts, stage, project=None):
                 from .understanding import answer_target
                 # Preserve actual bindings, not invalid references that validation
                 # already rejects. This only builds the anchor; never edits output.
+                binding_row=row
+                target=next((i for i in project['items'] if i['id']==row.get('target_item_id') and not i.get('target_item_id')),None)
+                if row.get('action')=='revise' and target is not None:
+                    locked[(name,row['temp_id'],'kind')]=target['kind']
+                    binding_row=dict(row,kind=target['kind'])
                 refs = row.get('answer_refs', [])
                 questions = {q['id']: q for q in project['questions'] if q['status'] == 'answered'}
                 locked[(name, row['temp_id'], 'answer_refs')] = [
                     ref for ref in refs if isinstance(ref, str) and ref in questions
-                    and answer_target(project, questions[ref], row) is not None
+                    and answer_target(project, questions[ref], binding_row) is not None
                 ] if isinstance(refs, list) else []
     findings=value.get('findings')
     if isinstance(findings,list):
@@ -414,6 +419,11 @@ def preserve_response(anchor, value, excerpts, stage, original=None, project=Non
         normalized=reference_repair_anchor(original,value,excerpts,stage,project)
         renamed=temporary_id_repair(normalized,value,stage)
         anchor=response_anchor(renamed if renamed is not None else normalized,excerpts,stage,project)
+    if project is not None:
+        for row in value.get('proposals',[]):
+            target=next((i for i in project['items'] if i['id']==row.get('target_item_id')),None)
+            require(row.get('action')!='revise' or target is None or row.get('kind')==target['kind'],
+                    'SEMANTIC_BLOCKED','格式修复不得改变原目标的条款类型')
     current=response_anchor(value,excerpts,stage,project)
     changed=[list(path) for path,original in anchor.items() if current.get(path)!=original]
     require(not changed,'SEMANTIC_BLOCKED',

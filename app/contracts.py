@@ -128,6 +128,10 @@ def validate_response(value, stage, project, excerpts, document_type='prd'):
         require((proposal['action'] == 'add' and proposal['target_item_id'] is None) or
                 (proposal['action'] == 'revise' and proposal['target_item_id'] in item_ids),
                 'REFERENCE_INVALID', '修订目标必须存在；新增不能覆盖旧条目')
+        if proposal['action']=='revise':
+            target=next(i for i in project['items'] if i['id']==proposal['target_item_id'])
+            require(proposal['kind']==target['kind'],'REFERENCE_INVALID',
+                    proposal['temp_id']+' 修订目标 '+target['id']+' 实际 kind='+target['kind']+'；必须保持同 kind，不得改变目标、原文或新增替代修订')
     from .understanding import validate as validate_understanding
     validate_understanding(value,project,excerpts)
     if stage == 'ui':

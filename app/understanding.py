@@ -5,12 +5,14 @@ import re
 from .core import require, now, digest
 from .requirements import TRACKED
 
+ANSWER_TARGET_KINDS = (*TRACKED, "constraint")
+
 
 def contract():
     return dict(version='understanding-2',
         classification='功能需求需分别表达现状/current、变化/change、保持/preserve；scope_evidence逐条引用本次真实片段的原文quote及source_ref。current+change=modified，只有change=new，只有preserve=preserved，只有current=existing；没有充分依据则unspecified。一个功能的权限、分页、排序等保持性约束可写在该功能的behavior或关联rule中供PM核对，不要把每个字段维度机械拆成独立requirement；单条requirement的scope_evidence不得混写change与preserve状态，也不得把保持内容说成新增。引用原句同时含变化和保持时保留原文，change_type只对应本条statement的变化身份。classification_reason说明判定依据及未知。applies_to=as_is仅用于existing。原条目变化用revise/target_item_id，不新建同义编号。',
         questions='一个问题只问一个可独立回答的决定。复合问题必须列出decision_points（完整Question对象，各自独立temp_id/topic_key/关联需求/阻塞属性），程序展开为独立回答。拆分已有未答问题使用target_question_id；原问题保留为分组记录，不能拆掉已有回答。已答问题若问题文字或风险条件发生变化，不能假定原答案仍适用；材料已回答的事项不要再次提问，编号错字记findings。',
-        answer_binding='answer_refs只用于基于已保存回答修订该问题直接关联的原requirement/rule/acceptance：action=revise、target_item_id为该问题related_refs中的原条目ID，kind必须与目标一致，不能指向另一修订候选。使用本轮真实回答片段的source_refs说明依据；新增acceptance等action=add候选不得填写answer_refs，其回答依据放source_refs并用related_refs关联原需求。保留原条目编号与内容，回答不会自动采纳候选；所有直接关联条目的修订明确采纳后才闭环。',
+        answer_binding='answer_refs只用于基于已保存回答修订该问题直接关联的原requirement/rule/acceptance/constraint：action=revise、target_item_id为该问题related_refs中的原条目ID，kind必须与目标一致，不能指向另一修订候选。使用本轮真实回答片段的source_refs说明依据；新增acceptance等action=add候选不得填写answer_refs，其回答依据放source_refs并用related_refs关联原需求。保留原条目编号与内容，回答不会自动采纳候选；所有直接关联条目的修订明确采纳后才闭环。',
         question_shape='普通单问题省略decision_points或写空数组[]；不能写仅含一个子项的数组。只有确有两项及以上独立决定时才用decision_points分组，每个子项都要是完整Question。',
         question_self_check='输出前检查每个可回答问题只包含一个决定、至多一个问号。'
             '例如“在哪里编辑？只读用户如何展示？”是两个决定，必须从首轮就分别写成两个完整questions项，'
@@ -34,7 +36,7 @@ def contract():
 
 def answer_targets(p,q):
     """Only the directly bound original clauses can discharge this decision."""
-    return [i for i in p['items'] if i['kind'] in TRACKED and not i.get('target_item_id')
+    return [i for i in p['items'] if i['kind'] in ANSWER_TARGET_KINDS and not i.get('target_item_id')
             and i['id'] in q.get('related_refs',[])]
 
 
@@ -156,10 +158,12 @@ def validate(value,p,excerpts):
             q=next((q for q in p['questions'] if q['id']==qid),None)
             identity=i['temp_id']+' ('+i['kind']+'/'+i['action']+', target_item_id='+str(i['target_item_id'])+')'
             allowed='、'.join(q.get('related_refs',[])) if q else '无（问题不存在）'
-            advice='；answer_refs仅用于该问题related_refs中原requirement/rule/acceptance的同kind revise候选；新增条目使用真实回答片段的source_refs，不能以新增条目代替原条款修订'
+            advice='；answer_refs仅用于该问题related_refs中原requirement/rule/acceptance/constraint的同kind revise候选；新增条目使用真实回答片段的source_refs，不能以新增条目代替原条款修订'
             advice+='；已存在的间接关联条款仍保留 action=revise 和原 target_item_id，删除不适用的 answer_refs，保留真实回答 source_refs 作为依据；不要把修订改成新增。'
             require(q is not None and q['status']=='answered','REFERENCE_INVALID',
                     identity+' 的 answer_refs='+qid+' 没有已保存回答；允许目标='+allowed+advice)
+            expected_kind=next((t['kind'] for t in answer_targets(p,q) if t['id']==i.get('target_item_id')),None)
+            advice+='；该目标实际 kind='+str(expected_kind)+'，必须保持原目标类型，不能把约束改成规则'
             require(answer_target(p,q,i) is not None,
                     'REFERENCE_INVALID',identity+' 的 answer_refs='+qid+' 目标不在该问题关联范围；允许目标='+allowed+advice)
     item_ids={i['id'] for i in p['items'] if i['kind'] in TRACKED}|{i['temp_id'] for i in value['proposals'] if i['kind'] in TRACKED}
@@ -218,6 +222,7 @@ def record_answer(q):
         q.setdefault('answer_history',[]).append({k:copy.deepcopy(q.get(k)) for k in ('answer','answered_at','answer_source_refs')})
     q['understanding_status']='pending'
     q['applied_item_ids']=[]
+    q['answer_applications']={}
     q['applied_requirement_ids']=[]
     q['answer_effect']='回答已保存，关联条款仍待核对更新'
 
@@ -254,3 +259,57 @@ def accept_answer_update(p,candidate):
         q.update(understanding_status='candidate_ready' if remaining else 'applied',
             answer_effect=('部分修订已采纳，仍需核对：'+'、'.join(sorted(remaining))) if remaining
             else '已明确采纳基于此回答的关联条款修订；不代表正式确认')
+
+
+def application_hash(item):
+    """Exact reviewed clause content, excluding transient selection/version metadata."""
+    from .requirements import CONTENT_FIELDS
+    return digest({key:item.get(key) for key in CONTENT_FIELDS})
+
+
+def applied_targets(p,q):
+    targets={i['id']:i for i in answer_targets(p,q)}
+    applied=set(q.get('applied_item_ids',q.get('applied_requirement_ids',[]))) & set(targets)
+    records=q.get('answer_applications',{})
+    return {iid for iid in applied if iid not in records or
+            (records[iid]['answer_hash']==digest(q.get('answer')) and
+             records[iid]['clause_hash']==application_hash(targets[iid]))}
+
+
+def invalidate_answer_applications(p, before=None):
+    for q in p['questions']:
+        if q.get('status')!='answered':continue
+        current=applied_targets(p,q)
+        previous=next((old for old in (before or {}).get('questions',[]) if old['id']==q['id']),None)
+        if previous:
+            old_targets={i['id']:i for i in answer_targets(before,previous)}
+            current={iid for iid in current if iid in q.get('answer_applications',{}) or iid not in old_targets or
+                     application_hash(old_targets[iid])==application_hash(next(i for i in answer_targets(p,q) if i['id']==iid))}
+        remaining={i['id'] for i in answer_targets(p,q)}-current
+        if (current!=set(q.get('applied_item_ids',q.get('applied_requirement_ids',[]))) or
+                q.get('understanding_status')=='applied' and remaining):
+            q['applied_item_ids']=sorted(current)
+            q['applied_requirement_ids']=[i['id'] for i in answer_targets(p,q)
+                                           if i['kind']=='requirement' and i['id'] in current]
+            q.update(understanding_status='pending',answer_effect='已核对条款或回答发生变化，请重新核对回答是否落实；不会自动批准。')
+
+
+def confirm_manual_answer(p,q,answer_hash,clause_hashes,review_confirmed):
+    from .requirements import require_behavior_review
+    require(review_confirmed,'REVIEW_REQUIRED','请先逐项核对回答与当前条款，不会自动批准',409)
+    require(q.get('status')=='answered' and not q.get('superseded_by') and not q.get('out_of_scope_reason'),
+            'ANSWER_REQUIRED','只能核对本期已保存的具体回答',409)
+    require(answer_hash==digest(q.get('answer')),'STALE_ANSWER','回答已变化，请重新查看后核对',409)
+    targets=answer_targets(p,q)
+    require(targets and set(clause_hashes)=={i['id'] for i in targets},
+            'REFERENCE_INVALID','必须逐项核对该问题直接关联的全部原条款，不可换目标或遗漏')
+    for item in targets:
+        require(item['selection_status']=='selected','REVIEW_REQUIRED','请先编辑、核对并采纳 '+item['id'],409)
+        require(clause_hashes[item['id']]==application_hash(item),'STALE_REVISION','条款已变化，请重新查看核对',409)
+        require_behavior_review(item)
+    q['answer_applications']={item['id']:dict(answer_hash=answer_hash,clause_hash=clause_hashes[item['id']],
+        method='manual_review',actor='authenticated_local_user',reviewed_at=now(),
+        answer_source_refs=copy.deepcopy(q.get('answer_source_refs',[]))) for item in targets}
+    q['applied_item_ids']=sorted(clause_hashes)
+    q['applied_requirement_ids']=sorted(i['id'] for i in targets if i['kind']=='requirement')
+    q.update(understanding_status='applied',answer_effect='人工核对当前已采纳条款承载此回答；非正式业务批准。')

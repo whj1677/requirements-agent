@@ -23,7 +23,7 @@ from .workflow import Workflow, confirm
 from .actions import Actions
 from .sources import MAX_BYTES, SOURCE_EXTENSIONS, save_source, webpage
 from .material_images import append_source
-from .understanding import record_answer, accept_answer_update
+from .understanding import record_answer, accept_answer_update, confirm_manual_answer, answer_targets, application_hash
 from .preview import prototype
 from .exports import document_files, handoff, zip_files
 from .document_reader import reader_document, export_readiness, filename
@@ -110,6 +110,11 @@ class Answer(Revision):
 
 class Answers(Revision):
     answers: dict[str,str]
+
+class ManualAnswerReview(Revision):
+    answer_hash: str
+    clause_hashes: dict[str,str]
+    review_confirmed: bool = False
 
 class Intake(Revision):
     text: str = Field(default='',max_length=12000)
@@ -762,7 +767,6 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
                     i['source_refs']=i.get('source_refs',[])+[dict(source_id=s['id'],excerpt_id=ex['id']) for ex in s['excerpts']]
                 i['statement']=body.statement
             if i.get('target_item_id') and body.selection_status=='selected':
-                accept_answer_update(p,i)
                 target=next(x for x in p['items'] if x['id']==i['target_item_id'])
                 # Preserve stable business identity for a selected revision.
                 for key in ('title','statement','applies_to','epistemic_status','source_refs','related_refs'):
@@ -772,6 +776,10 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
                 for key in ('behavior_review_required','behavior_review'):
                     if key in i:target[key]=copy.deepcopy(i[key])
                 target['selection_status']='selected'
+                accept_answer_update(p,i)
+                for q in p['questions']:
+                    if q['id'] in i.get('answer_refs',[]):
+                        q.setdefault('answer_applications',{})[target['id']]=dict(answer_hash=digest(q.get('answer')),clause_hash=application_hash(target),method='candidate_adoption',actor='authenticated_local_user',reviewed_at=now())
                 i['selection_status']='deferred'
                 for linked in p['items']+p['questions']:
                     linked['related_refs']=[target['id'] if ref==i['id'] else ref for ref in linked['related_refs']]
@@ -833,6 +841,22 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
             q['affected_requirements']=[requirement_ref(p,i) for i in p['items'] if i['kind']=='requirement' and
                 (i['id'] in q.get('related_refs',[]) or set(i.get('related_refs',[])) & set(q.get('related_refs',[])))]
             q['answer_effect']='待核对关联需求；回答不自动改写原条款或采纳状态'
+        return p
+
+    @app.get('/api/projects/{pid}/questions/{qid}/application-review')
+    async def answer_application_review(pid:str,qid:str):
+        p=store.get(pid)
+        q=next((q for q in p['questions'] if q['id']==qid),None)
+        require(q is not None,'NOT_FOUND','问题不存在',404)
+        return dict(expected_revision=p['revision'],question_id=qid,answer=q.get('answer'),
+                    answer_hash=digest(q.get('answer')),targets=[dict(item=i,clause_hash=application_hash(i)) for i in answer_targets(p,q)])
+
+    @app.post('/api/projects/{pid}/questions/{qid}/application-review')
+    async def apply_manual_answer(pid:str,qid:str,body:ManualAnswerReview):
+        with store.edit(pid,body.expected_revision,'人工核对已保存回答在当前条款中的落实') as (p,db):
+            q=next((q for q in p['questions'] if q['id']==qid),None)
+            require(q is not None,'NOT_FOUND','问题不存在',404)
+            confirm_manual_answer(p,q,body.answer_hash,body.clause_hashes,body.review_confirmed)
         return p
 
     @app.get('/api/models')

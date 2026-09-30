@@ -302,7 +302,7 @@ def assemble(p, stage, user_message, config, folder, kind='prd', generation_targ
             'answer_binding_tasks 是全量待办，不是本轮必须全部处理的授权。先按本轮用户与任务指定对象限定范围，仅逐项核对范围内任务，范围外保持；无明确局部范围时，按当前澄清任务处理。每项以 question_id 和 target_item_id 明确标识。reusable_candidate_ids 非空才表示同一回答版本已有可复用的待采纳修订；范围内没有可复用候选时必须提出绑定候选，不因原规则 selected 或历史修订原文相同而跳过。'
             '同一 target_item_id 可合并多个范围内 question_id 到同一候选 answer_refs，逐项覆盖本轮范围内的待绑定回答；不得输出空 answer_refs 后宣称回答已承载。原文已正确时完整保留，不为产生修订而虚构业务变化。其它无关同义候选不重复建立。'
             '已明确行为须同时提出 acceptance 候选，用 related_refs 指向原需求并引用支持预期结果的来源；把前提、操作、可观察结果写清，不编造时限、数量、权限或异常规则。'
-            'answer_refs 是回答应用跟踪字段：仅在 action=revise、target_item_id 位于 answer_revision_targets 对应 item_ids 且与原条目同 kind 时填写，可修订直接关联的 requirement/rule/acceptance。'
+            'answer_refs 是回答应用跟踪字段：仅在 action=revise、target_item_id 位于 answer_revision_targets 对应 item_ids 且与原条目同 kind 时填写，可修订直接关联的 requirement/rule/acceptance/constraint。'
             '新增条目不填写 answer_refs；所有修订通过 source_refs 引用实际回答片段（见问题的 answer_source_refs 及本轮 excerpts），通过 related_refs 保留真实业务关联。'
             '核对已回答问题的每个 related_refs：其中 rule 仍写待决定或旧口径时，也需为该 rule 提出 revise 候选，用回答来源补齐规则原文。只修订 requirement 的 behavior 不能解除关联规则中的冲突；不得一面说已定、一面保留未决规范。'
             '同一功能的字段/默认值/筛选组合优先在该需求 behavior 及关联 rule/acceptance 表达，不机械拆成缺少上下文的独立功能。'
