@@ -2,7 +2,7 @@
 import re
 from .core import require
 
-VERSION = 'semantic-quality-2'
+VERSION = 'semantic-quality-3'
 POLICY = (
     '先核对输入自身是否一致，来源引用正确和人工回答有出处不证明其含义无矛盾。'
     '对计数单位、边界包含、量词、时点与条件构造具体反例；区分Unicode码点和扩展字素簇，'
@@ -26,15 +26,19 @@ ONE_EMOJI = re.compile(r'(?:emoji|表情(?:符号)?)[^。；;\n]{0,35}?(?:按|�
 def counting_witness(text):
     if not CODEPOINT.search(text or ''): return None
     for sentence in re.split(r'[。；;\n]', text):
-        match=ONE_EMOJI.search(sentence)
-        if not match: continue
-        # Explicitly qualified single-codepoint emoji is consistent. Do not
-        # erase an earlier contradictory assertion because another sentence is clear.
-        prefix=sentence[max(0,match.start()-12):match.start()]
-        if re.search(r'单码点|单个码点|single.codepoint|基本',prefix,re.I): continue
-        if re.search(r'不(?:是|应|能|再)?[^，,]{0,6}$',prefix): continue
-        if re.search(r'(?:仅指|仅限)[^，,]{0,12}(?:单码点|single.codepoint)',sentence,re.I): continue
-        if re.search(r'(?:emoji|表情(?:符号)?)[^。；]{0,8}(?:不按|不计为|并非)',sentence,re.I): continue
+        matches=[]
+        for match in ONE_EMOJI.finditer(sentence):
+            # Qualifiers/negation must govern this occurrence of the counting
+            # predicate. An unrelated later emoji colour cannot waive it.
+            prefix=re.split(r'[，,]|且|但是|但|并且',sentence[:match.start()])[-1][-12:]
+            assertion=match.group()
+            suffix=re.split(r'[，,]',sentence[match.end():])[0]
+            if re.search(r'单码点|单个码点|single.codepoint|基本',prefix,re.I):continue
+            if re.search(r'不(?:是|应|能|再)?[^，,]{0,6}$',prefix):continue
+            if re.search(r'(?:仅指|仅限)[^，,]{0,12}(?:单码点|single.codepoint)',assertion+suffix,re.I):continue
+            if re.search(r'不按|不计为|并非|不能|不应|不得',assertion):continue
+            matches.append(match)
+        if not matches:continue
         limit=re.search(r'(?:最多|上限|不超过|max(?:imum)?)[^\d]{0,10}(\d+)',text,re.I)
         n=int(limit.group(1)) if limit else 100
         if not 1<=n<=1000000: n=100
@@ -56,15 +60,28 @@ def current_counting_checks(p):
         if q.get('status')!='answered' or q.get('superseded_by') or q.get('out_of_scope_reason'):continue
         witness=counting_witness(q.get('answer') or '')
         if witness:checks.append(dict(check_id='COUNT:'+q['id']+':answer',object_id=q['id'],dimension='text_length_counting_unit',location=q['id']+'.answer',related_refs=[q['id']],source_refs=q.get('answer_source_refs',[]),**witness))
+        choice=counting_choice(q.get('answer') or '')
+        if not choice or not re.search(r'计数|口径|长度|码点|字素簇|count|length',q.get('question',''),re.I):continue
+        for item in p.get('items',[]):
+            if item['id'] not in q.get('related_refs',[]) or item.get('selection_status')!='selected' or item.get('applies_to')!='to_be':continue
+            fields=[('statement',item.get('statement',''))]+[(f'behavior.{k}',v) for k,v in (item.get('behavior') or {}).items() if isinstance(v,str)]
+            for field,text in fields:
+                actual=counting_choice(text)
+                if not actual or actual==choice:continue
+                checks.append(dict(check_id=f"COUNT:{item['id']}:{field}:answer-{q['id']}",object_id=item['id'],
+                    dimension='text_length_counting_unit',location=item['id']+'.'+field,related_refs=[item['id'],q['id']],
+                    source_refs=q.get('answer_source_refs',[]),label='条款与人工计数选择不一致',
+                    counterexample=dict(answer_unit=choice,item_unit=actual),
+                    decision='核对人工回答与条款的Unicode码点/扩展字素簇口径；不能自动替换已选择的单位。'))
     return checks
 
 def contract():
     return dict(version=VERSION,policy=POLICY,
         review_axes=['输入内部一致性与反例','当前决定与历史未知','运行角色与需求确认角色',
                      '既有事实/新增决定/模型建议','全部规范、行为字段、摘要与解释段条件量词'],
-        finding_binding='semantic_checks每项check_id唯一绑定object_id、location、dimension；尚存冲突的review必须在对应blocker.message和required_decisions同时原样写check_id，给反例与PM选择。不能用同一对象的其他blocker、其他计数字段或其他问题抵消。ingest/clarify/change中同一条可回答问题必须联合绑定冲突对象、source_id/excerpt_id与计数决定；不能用两条问题分别命中，也不能以码点颜色等其它维度过关。复用同对象同维度开放问题。',
+        finding_binding='semantic_checks每项check_id唯一绑定object_id、location、dimension；尚存冲突的review必须在对应blocker.message和required_decisions同时原样写check_id，给反例与PM选择。不能用同一对象的其他blocker、其他计数字段或其他问题抵消。ingest/clarify/change中同一条可回答问题必须联合绑定冲突对象、source_id/excerpt_id与计数决定；不能用两条问题分别命中，也不能以码点颜色等其它维度过关。明确回答与修订或当前条款必须选择相同计数单位，否定某一单位或仍待确认不等于已决定。复用同对象同维度开放问题。',
         document_finding_binding='semantic_document_checks是正文引用语义风险，按check_id定位实际解释原句及引用，逐项在finding.message原样写ID。每一个声称的检查ID、文档/章节/块位置和该位置的原句都必须真实，另一文档没有对应错误时不能连带报告。条件弱化/事实归属/义务外扩写纠错finding，不创造业务required_decisions；既有实现例外必须有同能力、同对象和同场景的肯定证据，否认/不确定/仅支持其它能力不能解除风险。',
-        scope='只识别可定位的语义问题，不以字数、来源数量或模板完整作为通过标准；启发式不是通用语义证明。')
+        scope='只识别可定位的语义问题，不以字数、来源数量或模板完整作为通过标准；启发式不是通用语义证明。正式确认前最低覆盖全部本期已选需求、规则和验收条目；不完整审查保留缺口，不能解除gate。')
 
 
 def source_pairs(refs):
@@ -82,12 +99,39 @@ def counting_question(q):
           re.search(r'还是|或|which|versus|\bvs\b',text,re.I))))
 
 
+def counting_choice(text):
+    """One affirmative finite unit choice; examples and undecided prose do not decide."""
+    if counting_witness(text):return None
+    choices=set()
+    unresolved=False
+    segments=re.split(r'([。；;，,\n？?])',text or '')
+    for index in range(0,len(segments),2):
+        clause=segments[index]
+        terminator=segments[index+1] if index+1<len(segments) else ''
+        if terminator in ('？','?') or re.search(r'尚未|未决定|未确定|待确认|待决定|不确定|暂不|还是|undecided',clause,re.I):
+            if UNIT.search(clause) or re.search(r'计数|口径|长度|何种|count|length',clause,re.I):unresolved=True
+            continue
+        affirmatives=set()
+        for part in re.split(r'并且|且|但是|但',clause):
+            if not (re.search(r'计数|分别计|逐.*计|计入|count|最多|上限|不超过|maximum',part,re.I) or
+                    re.search(r'(?:按|采用|选择|以).*(?:码点|字素簇|code\s*points?|grapheme)',part,re.I)):continue
+            for unit in UNIT.finditer(part):
+                prefix=part[:unit.end()]
+                if re.search(r'不按|不采用|不选择|不使用|并非|不是|而非|不得|不能|不应',prefix):continue
+                affirmatives.add('codepoints' if CODEPOINT.fullmatch(unit.group()) else 'graphemes')
+        if affirmatives:
+            choices.update(affirmatives)
+            unresolved=False
+    return next(iter(choices)) if len(choices)==1 and not unresolved else None
+
+
 def counting_decision(text):
-    if counting_witness(text):return False
-    for clause in re.split(r'[。；;，,\n]',text or ''):
-        if not UNIT.search(clause) or re.search(r'尚未|未决定|未确定|待确认|待决定|不确定|暂不|还是|[？?]|undecided',clause,re.I):continue
-        if re.search(r'计数|分别计|逐.*计|计入|count|最多|上限|不超过|maximum',clause,re.I) or re.search(r'(?:按|采用|选择|以).*(?:码点|字素簇|code\s*points?|grapheme)',clause,re.I):return True
-    return False
+    return counting_choice(text) is not None
+
+
+def item_counting_choices(item):
+    texts=[item.get('statement','')]+[v for v in (item.get('behavior') or {}).values() if isinstance(v,str)]
+    return {choice for text in texts if (choice:=counting_choice(text))}
 
 
 def validate_analysis(value,p,excerpts):
@@ -108,18 +152,24 @@ def validate_analysis(value,p,excerpts):
         # every cited counting conflict, without inventing questions for them.
         return pairs & input_conflicts or pairs
     ambiguous=[i for i in value['proposals'] if counting_witness(i.get('statement','')) or any(counting_witness(v) for v in (i.get('behavior') or {}).values() if isinstance(v,str))]
+    answers={q['id']:counting_choice(q.get('answer') or '') for q in p.get('questions',[])
+             if q.get('status')=='answered' and not q.get('superseded_by') and not q.get('out_of_scope_reason')}
+    require(all(not answers.get(ref) or not item_counting_choices(i) or item_counting_choices(i)=={answers[ref]}
+                for i in value['proposals'] for ref in i.get('answer_refs',[])),
+            'SEMANTIC_BLOCKED','候选计数口径与其引用的人工回答不一致；保留人工选择，不代换计数单位。')
     # A sourced, unambiguous PM answer permits a proposed correction; it does not
     # forgive a contradictory proposal and never adopts the correction itself.
     def resolved(excerpt):
         pair=(excerpt['source_id'],excerpt['id'])
         for q in p.get('questions',[]):
             answer=q.get('answer') or ''
-            if q.get('status')!='answered' or q.get('superseded_by') or q.get('out_of_scope_reason') or not counting_decision(answer):continue
+            choice=counting_choice(answer)
+            if q.get('status')!='answered' or q.get('superseded_by') or q.get('out_of_scope_reason') or not choice:continue
             targets=[items[r] for r in q.get('related_refs',[]) if r in items]
             refs=q.get('source_refs',[])+[r for i in targets for r in i.get('source_refs',[])]
             if pair not in {(r.get('source_id'),r.get('excerpt_id')) for r in refs}:continue
-            corrections=[i for i in value['proposals'] if i.get('action')=='revise' and i.get('target_item_id') in q.get('related_refs',[]) and q['id'] in i.get('answer_refs',[]) and counting_decision(i.get('statement',''))]
-            current=[i for i in targets if i.get('selection_status')=='selected' and counting_decision(i.get('statement',''))]
+            corrections=[i for i in value['proposals'] if i.get('action')=='revise' and i.get('target_item_id') in q.get('related_refs',[]) and q['id'] in i.get('answer_refs',[]) and item_counting_choices(i)=={choice}]
+            current=[i for i in targets if i.get('selection_status')=='selected' and item_counting_choices(i)=={choice}]
             if corrections or current:return True
         return False
     raw=[e for e in excerpts if counting_witness(e.get('text','')) and not resolved(e)]
@@ -162,6 +212,7 @@ def clauses(text):
 
 NEGATIVE = re.compile(r'不应|不得|不能|并非|不是|不算|不代表|不保证|未必|尚未|未支持|未实现|未覆盖|没有证据|无证据|不确定|待验证|待核对')
 IMPLEMENTED = re.compile(r'(?:已|已经)(?:支持|实现|覆盖)')
+UNCERTAIN_IMPLEMENTATION = re.compile(r'可能|或许|似乎|尚待|待确认|未确认|未证实|未经验证|无法(?:证明|证实|确认)|据说|据称')
 CAPABILITIES = ('审计','登录','推送','导出','批量','查询','编辑','保存')
 SUBJECTS = ('备注','姓名','联系人','电价','时段','站点','任务','附件','文件')
 SCENARIOS = ('成功','失败','超时','未知')
@@ -169,8 +220,10 @@ SCENARIOS = ('成功','失败','超时','未知')
 
 def positive_match(pattern,clause):
     for match in re.finditer(pattern,clause):
-        # A negation must govern this claim, not an unrelated later predicate.
-        if not NEGATIVE.search(clause[:match.end()]):return True
+        # A coordinated earlier predicate does not negate the current one.
+        # Keep negation inside the predicate (e.g. 部分成功不算整批成功).
+        scope=re.split(r'[，,]|并且|且|但是|但|同时',clause[:match.end()])[-1]
+        if not NEGATIVE.search(scope):return True
     return False
 
 
@@ -185,13 +238,14 @@ def implementation_supported(claim,scenario_evidence,existing_evidence):
     if not capabilities or not subjects:return False
     matching=[]
     for sentence in re.split(r'[。；;\n]',existing_evidence):
-        parts=clauses(sentence)
+        parts=[predicate.strip() for clause in clauses(sentence)
+               for predicate in re.split(r'并且|且|但是|但|同时',clause) if predicate.strip()]
         relevant=[part for part in parts if capabilities.issubset({w for w in CAPABILITIES if w in part}) and
                   subjects.issubset({w for w in SUBJECTS if w in part})]
         for part in relevant:
             if NEGATIVE.search(part) and (not scenarios or not any(w in part for w in SCENARIOS) or any(w in part for w in scenarios)):
                 return False
-        positive=[part for part in relevant if positive_match(IMPLEMENTED,part) and
+        positive=[part for part in relevant if positive_match(IMPLEMENTED,part) and not UNCERTAIN_IMPLEMENTATION.search(part) and
                   (not change or re.search(r'变更|修改|更新',part))]
         if not positive:continue
         # An explicit restriction/denial in the same implementation statement
@@ -200,7 +254,20 @@ def implementation_supported(claim,scenario_evidence,existing_evidence):
         if any(NEGATIVE.search(part) and any(w in part for w in scenarios) and
                (not any(w in part for w in SUBJECTS) or any(w in part for w in subjects)) for part in parts):continue
         special=scenarios-{'成功'}
-        if all(any(w in part and (part in positive or positive_match(IMPLEMENTED,part)) for part in parts) for w in special):matching.append(sentence)
+        def continuation(part):
+            # A subject/capability-free continuation can describe the preceding
+            # implementation. A different named capability cannot lend its scene.
+            return (not any(w in part for w in CAPABILITIES+SUBJECTS) and
+                    positive_match(IMPLEMENTED,part) and not UNCERTAIN_IMPLEMENTATION.search(part))
+        for implementation in positive:
+            position=parts.index(implementation)
+            continuation_parts=[]
+            for part in parts[position+1:]:
+                if any(w in part for w in CAPABILITIES+SUBJECTS):break
+                if continuation(part):continuation_parts.append(part)
+            if all(any(w in part for part in [implementation]+continuation_parts) for w in special):
+                matching.append(sentence)
+                break
     return bool(matching)
 
 
@@ -208,8 +275,14 @@ def explanation_issues(text,evidence,existing_evidence,scenario_evidence=None):
     issues=[]
     for sentence in re.split(r'[。；;\n]',text):
         parts=clauses(sentence)
+        failure_pattern=r'(?:失败场景(?:下)?|失败时|失败后)[^。；;\n]{0,50}?原(?:记录|数据).{0,4}不变'
+        def explicit_failure(match):
+            prefix=sentence[:match.start()]
+            return (re.search(r'(?<![不未非])明确\s*$',prefix) and
+                    not re.search(r'无法明确\s*$',prefix) and positive_match(r'明确\s*$',prefix))
         conditional=('明确失败' in evidence and '未知' in evidence and any(
-            '明确失败' not in part and positive_match(r'(?:失败场景|失败时|失败后).*原(?:记录|数据).{0,4}不变',part) for part in parts))
+            not explicit_failure(match) and positive_match(re.escape(match.group()),sentence)
+            for match in re.finditer(failure_pattern,sentence)))
         weaker=(re.search(r'(?:所有|全部)[^。；]{0,16}成功',evidence) and any(
             positive_match(r'(?:任一|任意一个|部分).{0,16}成功.{0,16}整批成功',part) for part in parts))
         obligation=any(positive_match(r'(?:需|须|必须|应当?).{0,14}(?:培训|说明).{0,12}(?:提示|告知)',part) and
@@ -228,24 +301,27 @@ def validate_explanation(text,evidence,existing_evidence,at,*,scenario_evidence=
 def current_document_checks(p):
     # Evaluate actual stored explanation text against the very citations it claims.
     # Do not apply unrelated global rules to another function or rewrite history.
-    from .prd import verified_context, verified_business_context
-    context=verified_context(p);business=verified_business_context(p)
-    items={i['id']:i for i in p.get('items',[]) if i.get('selection_status')=='selected'}
-    scope=[r for r in (p.get('product_context') or {}).get('scope_ids',[]) if r in items]
     checks=[]
     for kind,artifact in p.get('documents',{}).items():
+        # A later edit cannot change the meaning of citations in an already
+        # frozen document. Missing historical snapshots do not prove support.
+        context=artifact.get('product_context_snapshot',{})
+        business=artifact.get('business_fact_snapshot',{})
+        items={i['id']:i for i in artifact.get('item_snapshot',[]) if i.get('selection_status')=='selected'}
+        scope=[r for r in context.get('scope_ids',[]) if r in items]
+        visible=readable_document_blocks(artifact)
         for section in artifact.get('content',{}).get('sections',[]):
             for index,block in enumerate(section.get('blocks',[])):
+                location=f"{artifact['id']}.{section['section_id']}.blocks[{index}]"
                 basis=block.get('evidence_refs')
-                if block.get('kind')!='explanation' or not basis:continue
+                if block.get('kind')!='explanation' or not basis or location not in visible:continue
                 refs=[r for r in basis.get('normative_refs',[]) if r in items]
                 keys=[r for r in basis.get('context_refs',[]) if r in context]
                 claims=[r for r in basis.get('business_claim_refs',[]) if r in business]
                 evidence='\n'.join([context[r] for r in keys]+[items[r]['statement'] for r in refs]+[business[r]['text'] for r in claims])
                 existing='\n'.join([context[r] for r in keys if r=='current_state']+[business[r]['text'] for r in claims])
                 scenario='\n'.join([context[r] for r in keys if r!='current_state']+[items[r]['statement'] for r in refs])
-                for issue in explanation_issues(block.get('text') or '',evidence,existing,scenario):
-                    location=f"{artifact['id']}.{section['section_id']}.blocks[{index}]"
+                for issue in explanation_issues(visible[location],evidence,existing,scenario):
                     checks.append(dict(check_id='DOC:'+location+':'+issue['dimension'],object_id=artifact['id'],document_type=kind,document_version=artifact.get('document_version'),location=location,related_refs=refs or scope,**issue))
     return checks
 
@@ -261,18 +337,21 @@ DOCUMENT_DIMENSIONS = {
 }
 
 
+def readable_document_blocks(artifact):
+    from .document_reader import reader_document
+    reader=reader_document(artifact, include_locations=True)
+    return {block['source_location']:block.get('text') or ''
+            for section in reader['sections'] for block in section['blocks']}
+
+
 def validate_document_findings(findings,p,checks):
     """Validate every claimed witness, including extras after coverage is met."""
     ids={c['check_id'] for c in checks}
     blocks={};by_kind={}
     for kind,artifact in p.get('documents',{}).items():
-        texts=[]
-        for section in artifact.get('content',{}).get('sections',[]):
-            for index,block in enumerate(section.get('blocks',[])):
-                location=f"{artifact['id']}.{section['section_id']}.blocks[{index}]"
-                blocks[location]=block.get('text') or ''
-                texts.append(blocks[location])
-        by_kind[kind]=texts
+        visible=readable_document_blocks(artifact)
+        blocks.update(visible)
+        by_kind[kind]=list(visible.values())
     for finding in findings:
         message=finding['message']
         claimed=DOCUMENT_CHECK.findall(message)
@@ -292,6 +371,9 @@ def validate_document_findings(findings,p,checks):
             if error:
                 dimensions={dimension for dimension,pattern in DOCUMENT_DIMENSIONS.items() if pattern.search(clause)} or inherited
                 kinds={kind.lower() for kind in re.findall(r'(?<![A-Za-z])(PRD|MRD)(?![A-Za-z])',clause,re.I)}
+                require(all(kind in by_kind for kind in kinds),'SEMANTIC_BLOCKED','复核声称错误的文档不存在：'+str(sorted(kinds)))
+                require(not (kinds or locations) or not re.search(r'同样错误|同样问题|相同错误',clause) or dimensions,
+                        'SEMANTIC_BLOCKED','同样错误断言缺少本条finding的冲突维度与真实位置证据；不能借另一条finding推断。')
                 for location in locations:
                     require(all(any(c['location']==location and c['dimension']==dimension for c in checks) for dimension in dimensions),
                         'SEMANTIC_BLOCKED','指定段落不存在所声称的语义错误：'+location)

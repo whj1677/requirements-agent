@@ -293,9 +293,9 @@ def gate(p):
         if result.get('required_decisions'):
             issues.append('语义审查仍有必要决定待产品处理：'+'；'.join(result['required_decisions']))
         reviewed=set(result.get('reviewed_refs',[]))
-        uncovered=[i['id'] for i in delivery_items(p) if i['kind']=='requirement' and i['id'] not in reviewed]
+        uncovered=[i['id'] for i in delivery_items(p) if i['kind'] in ('requirement','rule','acceptance') and i['id'] not in reviewed]
         if uncovered or not result.get('perspectives'):
-            issues.append('语义审查覆盖不足：'+('未审查需求 '+ '、'.join(uncovered) if uncovered else '缺少审查视角'))
+            issues.append('语义审查覆盖不足：'+('未审查规范条目 '+ '、'.join(uncovered) if uncovered else '缺少审查视角'))
     if not any(i['selection_status'] == 'selected' and i['applies_to']=='to_be' and i['kind'] == 'requirement' for i in p['items']):
         issues.append('本期没有已选需求')
     if not any(i['selection_status'] == 'selected' and i['applies_to']=='to_be' and i['kind'] == 'acceptance' for i in p['items']):

@@ -33,7 +33,8 @@ def test_review_required_decision_and_missing_coverage_block_confirmation(tmp_pa
                                    scope_ids=[i['id'] for i in p['items']],idempotency_key='core-review-negative'))
     with store.edit(p['id'],p['revision'],'合成普通说明',bump=False) as (draft,_):
         review=draft['review']['response']
-        review['result'].update(reviewed_refs=['REQ-0001'],perspectives=[dict(role='测试',considerations=['已核对'])],required_decisions=[])
+        # The positive control simulates review of every selected normative clause.
+        review['result'].update(reviewed_refs=['REQ-0001','RULE-0001','AC-0001'],perspectives=[dict(role='测试',considerations=['已核对'])],required_decisions=[])
         review['findings']=[dict(type='gap',severity='warning',message='普通说明',related_refs=['REQ-0001'],source_refs=[],suggested_resolution='核对措辞')]
         review['limitations']=['非关键排版说明']
     assert gate(store.get(p['id']))==[]

@@ -183,7 +183,7 @@ def review_documents(p):
     from .document_reader import reader_document
     result={}
     for kind,artifact in p['documents'].items():
-        reader=reader_document(artifact)
+        reader=reader_document(artifact, include_locations=True)
         result[kind]=dict(id=artifact['id'],document_version=artifact.get('document_version'),
             draft_revision=artifact.get('draft_revision'),
             current=artifact.get('brief_hash')==brief_hash(p) and kind not in p.get('stale_document_kinds',[]),
@@ -366,13 +366,15 @@ def assemble(p, stage, user_message, config, folder, kind='prd', generation_targ
             notice='产品上下文核对与独立条目采纳是分别记录的操作；同文内容可已在上下文核对，但尚未作为独立条目采纳。未采纳身份本身不能推翻已核对字段，也不能将该候选升级为规范。')
         context['review_scope']=dict(
             normative_item_ids=[i['id'] for i in delivery_items(p)],
+            required_reviewed_refs=[i['id'] for i in delivery_items(p) if i['kind'] in ('requirement','rule','acceptance')],
             documents=[dict(kind=kind,id=doc['id']) for kind,doc in p['documents'].items()],
             instruction='逐份核对 documents 实际正文中的规范、讨论叙述、限制和当前决定，并交叉比较 MRD/PRD。'
             '当前条目、回答应用状态、scope 和本轮来源是事实依据；历史模型摘要与判断不是事实来源。'
             'selection_status=candidate/deferred 的旧提议不是当前规范；它与已采纳的新决定不同，本身不构成当前文档矛盾。'
             '条目的 source_refs 是累积溯源，人工编辑会追加新的人工修订来源并保留旧来源；必须核对当前条文、最新已保存回答及后续修订，而不是要求删除旧来源或历史快照来制造一致。'
             '若旧规则仍出现在本期规范条款、实际文档正文或未应用的本期回答中，仍须报告实际冲突；不能用历史身份掩盖当前错误。'
-            'findings 的 related_refs/reviewed_refs 仅使用现有条目或问题 ID，文档 ID 与章节标题写在 message 中定位。'
+            'findings 的 related_refs/reviewed_refs 仅使用现有条目或问题 ID；ready 前 reviewed_refs 必须覆盖 required_reviewed_refs 的需求、规则和验收。'
+            '文档位置使用 blocks 中的 source_location 原样写入 message，不将过滤后的数组下标当作原文位置；引句必须在该位置的冻结正文中真实存在。'
             '重点查已知被说成未知、已应用修订被说成待采纳、无来源的保持承诺；发现实际矛盾应 needs_changes。'
             'required_decisions 只列真正需要产品决定的业务未知，文案纠错写 findings/suggested_resolution。')
     if stage=='prd':

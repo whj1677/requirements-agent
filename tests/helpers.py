@@ -23,6 +23,7 @@ def prepared(store):
         response=copy.deepcopy(EXAMPLES['review'])
         response['result']['assessment']='ready_for_human_review'
         response['result']['required_decisions']=[]
+        response['result']['reviewed_refs']=[i['id'] for i in p['items'] if i['selection_status']=='selected' and i['applies_to']=='to_be' and i['kind'] in ('requirement','rule','acceptance')]
         response['findings']=[]
         p['review']=dict(target_hash=review_target(p),response=response,created=now())
     return store.get(p['id'])

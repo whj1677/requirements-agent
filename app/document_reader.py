@@ -103,9 +103,13 @@ def filename(artifact):
     return f'{name or "未命名需求"}_{artifact["content"]["document_type"].upper()}_v{artifact.get("document_version",artifact["draft_revision"])}_{artifact["id"]}'
 
 
-def reader_document(artifact):
+def reader_document(artifact, *, include_locations=False):
     """Return product content only; retain canonical audit evidence in the project."""
     content = copy.deepcopy(artifact['content'])
+    if include_locations:
+        for section in content.get('sections',[]):
+            for index,block in enumerate(section.get('blocks',[])):
+                block['source_location']=f"{artifact['id']}.{section['section_id']}.blocks[{index}]"
     v4_mrd = (artifact.get('assembly_version') == 'prd-plan-4'
               and content['document_type'] == 'mrd')
     original_sections = list(content.get('sections', []))
@@ -152,7 +156,9 @@ def reader_document(artifact):
                         or item.get('applies_to') != 'to_be'):
                     continue
                 line = item.get('title', '') + '\n' + item.get('statement', '')
-                business.setdefault(kind, []).append(dict(kind='narrative', ref_ids=[], text=line))
+                promoted=dict(kind='narrative', ref_ids=[], text=line)
+                if include_locations:promoted['source_location']=block['source_location']
+                business.setdefault(kind, []).append(promoted)
             for kind, product_blocks in business.items():
                 product_title = _PRODUCT_SECTION_TITLES[kind]
                 product_section = next((candidate for candidate in original_sections
@@ -188,7 +194,9 @@ def reader_document(artifact):
                 seen_questions.add(q['id'])
                 state='本期范围外，仍未决定' if q.get('out_of_scope_reason') else '本期未决'
                 text='待决事项：'+q['question']+'\n影响：'+(q.get('why') or '尚未明确')+'\n状态：'+state
-                blocks.append(dict(kind='open_question',ref_ids=[],text=text))
+                visible=dict(kind='open_question',ref_ids=[],text=text)
+                if include_locations:visible['source_location']=block['source_location']
+                blocks.append(visible)
             if blocks:
                 sections.append(dict(section, title='未决产品事项', blocks=blocks))
             continue
