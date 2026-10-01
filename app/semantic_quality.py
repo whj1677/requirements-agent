@@ -2,7 +2,7 @@
 import re
 from .core import require
 
-VERSION = 'semantic-quality-1'
+VERSION = 'semantic-quality-2'
 POLICY = (
     '先核对输入自身是否一致，来源引用正确和人工回答有出处不证明其含义无矛盾。'
     '对计数单位、边界包含、量词、时点与条件构造具体反例；区分Unicode码点和扩展字素簇，'
@@ -62,35 +62,75 @@ def contract():
     return dict(version=VERSION,policy=POLICY,
         review_axes=['输入内部一致性与反例','当前决定与历史未知','运行角色与需求确认角色',
                      '既有事实/新增决定/模型建议','全部规范、行为字段、摘要与解释段条件量词'],
-        finding_binding='semantic_checks每项check_id唯一绑定object_id、location、dimension；尚存冲突的review必须在对应blocker.message和required_decisions同时原样写check_id，给反例与PM选择。不能用同一对象的其他blocker、其他计数字段或其他问题抵消。ingest/clarify的问题source_refs和related_refs必须关联实际冲突来源/候选，复用同对象同维度开放问题，不建立无关问题来过关。',
-        document_finding_binding='semantic_document_checks是正文引用语义风险，按check_id定位实际解释原句及引用，逐项在finding.message原样写ID。条件弱化/事实归属/义务外扩写纠错finding，不创造业务required_decisions；有明确依据的例外需说明证据。不得用另一文档、段落或维度的finding抵消。',
+        finding_binding='semantic_checks每项check_id唯一绑定object_id、location、dimension；尚存冲突的review必须在对应blocker.message和required_decisions同时原样写check_id，给反例与PM选择。不能用同一对象的其他blocker、其他计数字段或其他问题抵消。ingest/clarify/change中同一条可回答问题必须联合绑定冲突对象、source_id/excerpt_id与计数决定；不能用两条问题分别命中，也不能以码点颜色等其它维度过关。复用同对象同维度开放问题。',
+        document_finding_binding='semantic_document_checks是正文引用语义风险，按check_id定位实际解释原句及引用，逐项在finding.message原样写ID。每一个声称的检查ID、文档/章节/块位置和该位置的原句都必须真实，另一文档没有对应错误时不能连带报告。条件弱化/事实归属/义务外扩写纠错finding，不创造业务required_decisions；既有实现例外必须有同能力、同对象和同场景的肯定证据，否认/不确定/仅支持其它能力不能解除风险。',
         scope='只识别可定位的语义问题，不以字数、来源数量或模板完整作为通过标准；启发式不是通用语义证明。')
+
+
+def source_pairs(refs):
+    return {(r.get('source_id'),r.get('excerpt_id')) for r in refs}
+
+
+def counting_question(q):
+    text=q.get('question','')
+    # The actual decision must concern counting. A rationale mentioning length
+    # cannot turn a colour/font question into a counting decision.
+    return bool(q.get('blocking') and UNIT.search(text) and
+        not re.search(r'颜色|字体|colou?r|font',text,re.I) and
+        (re.search(r'计数|计量|口径|长度|怎么算|如何计|count|length',text,re.I) or
+         (CODEPOINT.search(text) and re.search(r'字素簇|grapheme',text,re.I) and
+          re.search(r'还是|或|which|versus|\bvs\b',text,re.I))))
+
+
+def counting_decision(text):
+    if counting_witness(text):return False
+    for clause in re.split(r'[。；;，,\n]',text or ''):
+        if not UNIT.search(clause) or re.search(r'尚未|未决定|未确定|待确认|待决定|不确定|暂不|还是|[？?]|undecided',clause,re.I):continue
+        if re.search(r'计数|分别计|逐.*计|计入|count|最多|上限|不超过|maximum',clause,re.I) or re.search(r'(?:按|采用|选择|以).*(?:码点|字素簇|code\s*points?|grapheme)',clause,re.I):return True
+    return False
+
 
 def validate_analysis(value,p,excerpts):
     if value['stage'] not in ('ingest','clarify','change'):return
+    from .understanding import leaves
+    items={i['id']:i for i in p.get('items',[])}
     pending=[q for q in p.get('questions',[]) if q.get('blocking') and q.get('status')!='answered' and not q.get('superseded_by') and not q.get('out_of_scope_reason')]
-    questions=value['questions']+pending
-    def counting_question(q):return q.get('blocking') and UNIT.search(q.get('question','')+' '+q.get('why',''))
-    def question_for_object(i):return any(counting_question(q) and set(q.get('related_refs',[])) & {i['temp_id'],i.get('target_item_id')} for q in questions)
-    def question_for_source(e):return any(counting_question(q) and (e['source_id'],e['id']) in {(r.get('source_id'),r.get('excerpt_id')) for r in q.get('source_refs',[])} for q in questions)
+    questions=leaves(value['questions'])+pending
+    def bound(objects,pair):
+        return any(counting_question(q) and objects & set(q.get('related_refs',[])) and
+                   pair in source_pairs(q.get('source_refs',[])) for q in questions)
+    def proposal_pairs(i):
+        return source_pairs(i.get('source_refs',[]) or items.get(i.get('target_item_id'),{}).get('source_refs',[]))
+    input_conflicts={(e['source_id'],e['id']) for e in excerpts if counting_witness(e.get('text',''))}
+    def conflict_pairs(i):
+        pairs=proposal_pairs(i)
+        # Other citations may support unrelated parts of this proposal. Require
+        # every cited counting conflict, without inventing questions for them.
+        return pairs & input_conflicts or pairs
     ambiguous=[i for i in value['proposals'] if counting_witness(i.get('statement','')) or any(counting_witness(v) for v in (i.get('behavior') or {}).values() if isinstance(v,str))]
     # A sourced, unambiguous PM answer permits a proposed correction; it does not
     # forgive a contradictory proposal and never adopts the correction itself.
     def resolved(excerpt):
         pair=(excerpt['source_id'],excerpt['id'])
-        items={i['id']:i for i in p.get('items',[])}
         for q in p.get('questions',[]):
             answer=q.get('answer') or ''
-            if q.get('status')!='answered' or q.get('superseded_by') or q.get('out_of_scope_reason') or not UNIT.search(answer) or counting_witness(answer):continue
+            if q.get('status')!='answered' or q.get('superseded_by') or q.get('out_of_scope_reason') or not counting_decision(answer):continue
             targets=[items[r] for r in q.get('related_refs',[]) if r in items]
             refs=q.get('source_refs',[])+[r for i in targets for r in i.get('source_refs',[])]
             if pair not in {(r.get('source_id'),r.get('excerpt_id')) for r in refs}:continue
-            corrections=[i for i in value['proposals'] if i.get('action')=='revise' and i.get('target_item_id') in q.get('related_refs',[]) and q['id'] in i.get('answer_refs',[]) and not counting_witness(i.get('statement',''))]
-            current=[i for i in targets if i.get('selection_status')=='selected' and UNIT.search(i.get('statement','')) and not counting_witness(i.get('statement',''))]
+            corrections=[i for i in value['proposals'] if i.get('action')=='revise' and i.get('target_item_id') in q.get('related_refs',[]) and q['id'] in i.get('answer_refs',[]) and counting_decision(i.get('statement',''))]
+            current=[i for i in targets if i.get('selection_status')=='selected' and counting_decision(i.get('statement',''))]
             if corrections or current:return True
         return False
     raw=[e for e in excerpts if counting_witness(e.get('text','')) and not resolved(e)]
-    require(all(question_for_object(i) for i in ambiguous) and all(question_for_source(e) for e in raw),'SEMANTIC_BLOCKED',
+    def source_bound(e):
+        pair=(e['source_id'],e['id'])
+        owners={ref for i in ambiguous if pair in proposal_pairs(i) for ref in (i['temp_id'],i.get('target_item_id')) if ref}
+        if not owners:
+            owners={ref for i in value['proposals'] if pair in proposal_pairs(i) for ref in (i['temp_id'],i.get('target_item_id')) if ref}
+            owners.update(i['id'] for i in items.values() if pair in source_pairs(i.get('source_refs',[])))
+        return bound(owners,pair)
+    require(all(conflict_pairs(i) and all(bound({i['temp_id'],i.get('target_item_id')},pair) for pair in conflict_pairs(i)) for i in ambiguous) and all(source_bound(e) for e in raw),'SEMANTIC_BLOCKED',
         '输入或候选的计数口径互相矛盾：码点与每个emoji恒为一码点不能同时覆盖复合emoji。请提出阻塞澄清和具体反例，不替PM选口径。')
 
 def validate_review(value,p):
@@ -101,28 +141,88 @@ def validate_review(value,p):
             any(f['severity']=='blocker' and set(c['related_refs'])&set(f['related_refs']) and c['check_id'] in f['message'] and UNIT.search(f['message']+' '+f['suggested_resolution']) for f in value['findings']) for c in checks)),
         'SEMANTIC_BLOCKED','当前条款/人工回答存在可复现的计数冲突，不能ready；须定位blocker并列PM计数决定。'+str([c['location'] for c in checks]))
     document_checks=current_document_checks(p)
+    validate_document_findings(value['findings'],p,document_checks)
     require(not document_checks or (result['assessment']=='needs_changes' and
         all(any(c['check_id'] in f['message'] and (not c['related_refs'] or set(c['related_refs']) & set(f['related_refs'])) for f in value['findings']) for c in document_checks)),
         'SEMANTIC_BLOCKED','实际文档解释存在条件、量词或事实身份风险，须逐项定位finding；文案纠错不增加PM待决定：'+str([c['check_id'] for c in document_checks]))
 
-def explanation_issues(text,evidence,existing_evidence):
+def clauses(text):
+    """Keep quoted diagnostic prose together; punctuation bounds other claims."""
+    parts=[];start=0;quote=None
+    for index,char in enumerate(text):
+        if quote:
+            if char==quote:quote=None
+        elif char in ('“','「','"'):
+            quote={'“':'”','「':'」','"':'"'}[char]
+        elif char in '。；;，,\n':
+            parts.append(text[start:index]);start=index+1
+    parts.append(text[start:])
+    return [part.strip() for part in parts if part.strip()]
+
+
+NEGATIVE = re.compile(r'不应|不得|不能|并非|不是|不算|不代表|不保证|未必|尚未|未支持|未实现|未覆盖|没有证据|无证据|不确定|待验证|待核对')
+IMPLEMENTED = re.compile(r'(?:已|已经)(?:支持|实现|覆盖)')
+CAPABILITIES = ('审计','登录','推送','导出','批量','查询','编辑','保存')
+SUBJECTS = ('备注','姓名','联系人','电价','时段','站点','任务','附件','文件')
+SCENARIOS = ('成功','失败','超时','未知')
+
+
+def positive_match(pattern,clause):
+    for match in re.finditer(pattern,clause):
+        # A negation must govern this claim, not an unrelated later predicate.
+        if not NEGATIVE.search(clause[:match.end()]):return True
+    return False
+
+
+def implementation_supported(claim,scenario_evidence,existing_evidence):
+    """Conservative finite capability/subject/scenario signatures, not NLI."""
+    def signature(words):
+        direct={word for word in words if word in claim}
+        return direct or {word for word in words if word in scenario_evidence}
+    capabilities=signature(CAPABILITIES);subjects=signature(SUBJECTS)
+    scenarios=signature(SCENARIOS)
+    change=bool(re.search(r'变更|修改|更新',claim+' '+scenario_evidence))
+    if not capabilities or not subjects:return False
+    matching=[]
+    for sentence in re.split(r'[。；;\n]',existing_evidence):
+        parts=clauses(sentence)
+        relevant=[part for part in parts if capabilities.issubset({w for w in CAPABILITIES if w in part}) and
+                  subjects.issubset({w for w in SUBJECTS if w in part})]
+        for part in relevant:
+            if NEGATIVE.search(part) and (not scenarios or not any(w in part for w in SCENARIOS) or any(w in part for w in scenarios)):
+                return False
+        positive=[part for part in relevant if positive_match(IMPLEMENTED,part) and
+                  (not change or re.search(r'变更|修改|更新',part))]
+        if not positive:continue
+        # An explicit restriction/denial in the same implementation statement
+        # applies to its elliptical continuation as well as its named subject.
+        if any(re.search(r'仅限|仅在|只在',part) and any(w not in part for w in scenarios) for part in parts):continue
+        if any(NEGATIVE.search(part) and any(w in part for w in scenarios) and
+               (not any(w in part for w in SUBJECTS) or any(w in part for w in subjects)) for part in parts):continue
+        special=scenarios-{'成功'}
+        if all(any(w in part and (part in positive or positive_match(IMPLEMENTED,part)) for part in parts) for w in special):matching.append(sentence)
+    return bool(matching)
+
+
+def explanation_issues(text,evidence,existing_evidence,scenario_evidence=None):
     issues=[]
     for sentence in re.split(r'[。；;\n]',text):
-        if re.search(r'不应|不得|不能|并非|反例|例如',sentence):continue
-        conditional=('明确失败' in evidence and '未知' in evidence and
-            re.search(r'(?:失败场景|失败时|失败后)',sentence) and '明确失败' not in sentence and
-            re.search(r'原(?:记录|数据).{0,4}不变',sentence))
-        weaker=(re.search(r'(?:所有|全部)[^。；]{0,16}成功',evidence) and
-            re.search(r'(?:任一|任意一个|部分)[^。；]{0,16}成功',sentence) and '整批成功' in sentence)
-        obligation=re.search(r'(?:需|须|必须|应当?)[^。；]{0,14}(?:培训|说明)[^。；]{0,12}(?:提示|告知)',sentence) and not re.search(r'建议|可考虑',sentence) and not re.search(r'(?:需|须|必须|应当?)[^。；]{0,14}(?:培训|说明)',evidence)
-        assertion=re.search(r'(?:现有|当前|原有)[^。；]{0,30}(?:已|已经)(?:支持|实现|覆盖)',sentence) and not re.search(r'部署后|验收时|上线后|不代表',sentence)
-        unsupported=assertion and not re.search(r'(?:已|已经)(?:支持|实现|覆盖)',existing_evidence)
+        parts=clauses(sentence)
+        conditional=('明确失败' in evidence and '未知' in evidence and any(
+            '明确失败' not in part and positive_match(r'(?:失败场景|失败时|失败后).*原(?:记录|数据).{0,4}不变',part) for part in parts))
+        weaker=(re.search(r'(?:所有|全部)[^。；]{0,16}成功',evidence) and any(
+            positive_match(r'(?:任一|任意一个|部分).{0,16}成功.{0,16}整批成功',part) for part in parts))
+        obligation=any(positive_match(r'(?:需|须|必须|应当?).{0,14}(?:培训|说明).{0,12}(?:提示|告知)',part) and
+            not re.search(r'建议|可考虑',part) for part in parts) and not re.search(r'(?:需|须|必须|应当?)[^。；]{0,14}(?:培训|说明)',evidence)
+        unsupported=any(positive_match(IMPLEMENTED,part) and
+            not re.search(r'部署后|验收时|上线后',part) and
+            not implementation_supported(part,evidence if scenario_evidence is None else scenario_evidence,existing_evidence) for part in parts)
         for dimension,present in [('failure_condition',conditional),('success_quantifier',weaker),('suggestion_obligation',obligation),('existing_implementation',unsupported)]:
             if present:issues.append(dict(dimension=dimension,quote=sentence.strip()))
     return issues
 
-def validate_explanation(text,evidence,existing_evidence,at):
-    require(not explanation_issues(text,evidence,existing_evidence),'SEMANTIC_BLOCKED',at+
+def validate_explanation(text,evidence,existing_evidence,at,*,scenario_evidence=None):
+    require(not explanation_issues(text,evidence,existing_evidence,scenario_evidence),'SEMANTIC_BLOCKED',at+
         ' 解释超出引用语义：核对明确失败/未知结果、全部/部分、建议/义务与既有实现证据；不能删规范或代定规则来过关。')
 
 def current_document_checks(p):
@@ -143,7 +243,60 @@ def current_document_checks(p):
                 claims=[r for r in basis.get('business_claim_refs',[]) if r in business]
                 evidence='\n'.join([context[r] for r in keys]+[items[r]['statement'] for r in refs]+[business[r]['text'] for r in claims])
                 existing='\n'.join([context[r] for r in keys if r=='current_state']+[business[r]['text'] for r in claims])
-                for issue in explanation_issues(block.get('text') or '',evidence,existing):
+                scenario='\n'.join([context[r] for r in keys if r!='current_state']+[items[r]['statement'] for r in refs])
+                for issue in explanation_issues(block.get('text') or '',evidence,existing,scenario):
                     location=f"{artifact['id']}.{section['section_id']}.blocks[{index}]"
                     checks.append(dict(check_id='DOC:'+location+':'+issue['dimension'],object_id=artifact['id'],document_type=kind,document_version=artifact.get('document_version'),location=location,related_refs=refs or scope,**issue))
     return checks
+
+
+DOCUMENT_LOCATION = re.compile(r'[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.blocks\[\d+\]')
+DOCUMENT_CHECK = re.compile(r'DOC:[A-Za-z0-9_.-]+(?:\.blocks\[\d+\])?:[A-Za-z0-9_]+')
+DOCUMENT_ERROR = re.compile(r'误写|有误|错误|泛化|弱化|超出|断言|风险')
+DOCUMENT_DIMENSIONS = {
+    'failure_condition':re.compile(r'明确失败|失败场景|失败条件|失败时|失败后'),
+    'success_quantifier':re.compile(r'整批成功|全部成功|部分成功|成功量词'),
+    'suggestion_obligation':re.compile(r'培训|交付义务|建议.*义务'),
+    'existing_implementation':re.compile(r'既有实现|现有.*(?:支持|实现|覆盖)|已覆盖|实现证据'),
+}
+
+
+def validate_document_findings(findings,p,checks):
+    """Validate every claimed witness, including extras after coverage is met."""
+    ids={c['check_id'] for c in checks}
+    blocks={};by_kind={}
+    for kind,artifact in p.get('documents',{}).items():
+        texts=[]
+        for section in artifact.get('content',{}).get('sections',[]):
+            for index,block in enumerate(section.get('blocks',[])):
+                location=f"{artifact['id']}.{section['section_id']}.blocks[{index}]"
+                blocks[location]=block.get('text') or ''
+                texts.append(blocks[location])
+        by_kind[kind]=texts
+    for finding in findings:
+        message=finding['message']
+        claimed=DOCUMENT_CHECK.findall(message)
+        require(all(ref in ids for ref in claimed),'SEMANTIC_BLOCKED',
+            '复核引用了当前实际文档中不存在的语义检查：'+str([ref for ref in claimed if ref not in ids]))
+        inherited={c['dimension'] for c in checks if c['check_id'] in claimed}
+        for clause in clauses(message):
+            locations=DOCUMENT_LOCATION.findall(clause)
+            require(all(location in blocks for location in locations),'SEMANTIC_BLOCKED','复核文档段落定位不存在：'+str(locations))
+            quotes=[a or b or c for a,b,c in re.findall(r'“([^”]+)”|「([^」]+)」|"([^"]+)"',clause)]
+            for location in locations:
+                require(all(quote in blocks[location] for quote in quotes),'SEMANTIC_BLOCKED','复核所引原句不在指定段落：'+location)
+            # A paraphrase or "same error" assertion also needs a real witness.
+            # Unknown dimensions remain for model/human review; these four are
+            # the bounded deterministic dimensions already checked above.
+            error=DOCUMENT_ERROR.search(clause) and not re.search(r'没有.*错误|不存在.*错误|无此错误|未误写|表述正确',clause)
+            if error:
+                dimensions={dimension for dimension,pattern in DOCUMENT_DIMENSIONS.items() if pattern.search(clause)} or inherited
+                kinds={kind.lower() for kind in re.findall(r'(?<![A-Za-z])(PRD|MRD)(?![A-Za-z])',clause,re.I)}
+                for location in locations:
+                    require(all(any(c['location']==location and c['dimension']==dimension for c in checks) for dimension in dimensions),
+                        'SEMANTIC_BLOCKED','指定段落不存在所声称的语义错误：'+location)
+                for kind in kinds:
+                    require(all(any(quote in text for text in by_kind.get(kind,[])) for quote in quotes),'SEMANTIC_BLOCKED',
+                        '复核所引错误原句不在指定文档：'+kind.upper())
+                    require(all(any(c['document_type']==kind and c['dimension']==dimension for c in checks) for dimension in dimensions),
+                        'SEMANTIC_BLOCKED','指定文档不存在所声称的语义错误：'+kind.upper())

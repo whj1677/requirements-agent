@@ -401,7 +401,8 @@ def compile_plan(plan, p, kind, omitted=(), *, include_sketch=True):
                 from .semantic_quality import validate_explanation
                 evidence='\n'.join([current_context[r] for r in basis['context_refs']]+[items[r]['statement'] for r in basis['normative_refs']]+[verified_business_context(p)[r]['text'] for r in basis['business_claim_refs']])
                 existing='\n'.join([current_context[r] for r in basis['context_refs'] if r=='current_state']+[verified_business_context(p)[r]['text'] for r in basis['business_claim_refs']])
-                validate_explanation(explanation['text'],evidence,existing,at.replace('.evidence_refs','.text'))
+                scenario='\n'.join([current_context[r] for r in basis['context_refs'] if r!='current_state']+[items[r]['statement'] for r in basis['normative_refs']])
+                validate_explanation(explanation['text'],evidence,existing,at.replace('.evidence_refs','.text'),scenario_evidence=scenario)
                 block=dict(kind='explanation',ref_ids=basis['normative_refs'],
                            evidence_refs=copy.deepcopy(basis),text=explanation['text'])
                 if v4 and kind=='prd':
