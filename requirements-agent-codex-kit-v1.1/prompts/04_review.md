@@ -31,3 +31,6 @@ human_checks 明确提供当前人工核对记录与完全相同的历史修订�
 此审查发生在“正式确认”之前；尚无正式确认记录是正常流程状态，不能要求先正式确认才给 ready_for_human_review，否则会形成死循环。已核对、已采纳的草稿仍须经过最后人工确认，但这一步本身不是业务未知或 required_decisions。仅当存在具体未答决定、未应用修订、证据矛盾或缺失的必要业务规则时才要求补充。
 
 输出 stage=review；result 为 assessment、reviewed_refs、perspectives、required_decisions。具体发现放 findings；proposals 和 questions 必须为空，审查不直接创建或应用修订。
+
+
+本轮 semantic_quality_contract 为统一语义核对约束。semantic_checks/input_counting_checks 是待核对反例，不是已批准答案。问题冲突必须向PM举具体反例并提出选择，不能因为引用齐全或回答有出处就宣布一致。计数、角色、时点、量词和条件在规范/行为/摘要/解释中逐项对照；发现实际错误定位原句，不能修改历史批准快照、偷改规范或删去必要内容过关。

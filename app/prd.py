@@ -310,6 +310,8 @@ def compile_plan(plan, p, kind, omitted=(), *, include_sketch=True):
             return f'{e.validator}={e.validator_value}，实际长度={len(e.instance)}'
         return e.message[:400]
     require(not errors,'SCHEMA_INVALID','成文章节建议错误：'+'；'.join(at+' '+error_message(e) for at,e in zip(details,errors)))
+    from .semantic_quality import current_counting_checks
+    require(not current_counting_checks(p),'SEMANTIC_BLOCKED','当前条款/回答的计数口径有冲突，请先澄清、修订与人工核对，不能生成确定规则文档。')
     items={i['id']:i for i in p['items']}
     explained=version in ('3','4')
     v4=version=='4'
@@ -396,6 +398,10 @@ def compile_plan(plan, p, kind, omitted=(), *, include_sketch=True):
                     for k,ref in enumerate(basis[group]):
                         require(ref in allowed_refs,'REFERENCE_INVALID',
                                 f'{at}.{group}[{k}] {ref} 不在当前已核对依据白名单')
+                from .semantic_quality import validate_explanation
+                evidence='\n'.join([current_context[r] for r in basis['context_refs']]+[items[r]['statement'] for r in basis['normative_refs']]+[verified_business_context(p)[r]['text'] for r in basis['business_claim_refs']])
+                existing='\n'.join([current_context[r] for r in basis['context_refs'] if r=='current_state']+[verified_business_context(p)[r]['text'] for r in basis['business_claim_refs']])
+                validate_explanation(explanation['text'],evidence,existing,at.replace('.evidence_refs','.text'))
                 block=dict(kind='explanation',ref_ids=basis['normative_refs'],
                            evidence_refs=copy.deepcopy(basis),text=explanation['text'])
                 if v4 and kind=='prd':

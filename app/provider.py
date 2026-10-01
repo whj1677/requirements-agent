@@ -238,8 +238,31 @@ def answer_binding_tasks(p):
     return tasks
 
 
+def response_boundary(schema):
+    """Restate actual output keys; context diagnostics are never response fields."""
+    paths={}
+    def visit(node,path,seen=()):
+        ref=node.get('$ref') if isinstance(node,dict) else None
+        if ref:
+            if ref in seen or not ref.startswith('#/$defs/'):return
+            target=schema.get('$defs',{}).get(ref.rsplit('/',1)[1])
+            if target:visit(target,path,(*seen,ref))
+            return
+        if not isinstance(node,dict):return
+        if 'properties' in node:
+            paths[path]=list(node['properties'])
+            for key,child in node['properties'].items():visit(child,path+'.'+key,seen)
+        if 'items' in node:visit(node['items'],path+'[]',seen)
+    visit(schema,'$')
+    return dict(object_keys=paths,input_only=['semantic_checks','semantic_document_checks','input_counting_checks','excerpts','source_status','recent_messages'],
+        instruction='响应不是输入上下文的副本。每层对象只写schema规定字段，不添加*_note、诊断、说明元字段或上下文原样副本。root及各嵌套对象按object_keys输出，required字段不能遗漏。业务说明写已有合法说明字段；格式修复保持已有业务原文，summary和limitations不改写。')
+
+
 def assemble(p, stage, user_message, config, folder, kind='prd', generation_target=None, pending_images_only=False):
     header = dict(stage=stage, project_id=p['id'], current_revision=p['revision'], mode=p['mode'], schema=request_schema(stage), remaining_budget=config['max_calls'])
+    if stage in ('ingest','clarify','change','prd','review'):
+        from .semantic_quality import contract as semantic_contract
+        header['semantic_quality_contract']=semantic_contract()
     if stage!='ui':header['delivery_policy']='工作台已取消业务草图生成与核对。交付 MRD/PRD；原页面截图仍可作为现状参考。不要要求生成或批准草图才能成文，不把历史草图当作本轮交付。业务入口、字段、流程及异常仍必须在需求中表达。'
     if stage=='ingest':header['context_contract']='整理后必须输出 product_context_proposal 的全部字段，供用户核对，未知值填空字符串；不自动采纳或批准。已有条目仅因信息实质变化才提出修订，不重复建同义候选。'
     if stage=='ingest':header['ingest_contract']=ingest.contract()
@@ -274,6 +297,7 @@ def assemble(p, stage, user_message, config, folder, kind='prd', generation_targ
     if stage == 'ui':header['structure_example']=ui_structure_example()
     base = (KIT / 'prompts/00_system.md').read_text('utf-8')
     if stage=='prd':base=base.split('## 输出')[0]
+    header['response_boundary']=response_boundary(header['schema'])
     system = base + '\n' + (KIT / 'prompts' / STAGES[stage]).read_text('utf-8') + '\n可信任务头：' + dumps(header)
     context = {k:p[k] for k in ('items','questions','options','documents','ui')}
     context['discussion_direction'] = [dict(option_id=o['id'], name=o['name'], status=o['direction_status'])
@@ -380,6 +404,14 @@ def assemble(p, stage, user_message, config, folder, kind='prd', generation_targ
             remaining -= cost
     if stage == 'vision':
         require(images, 'VISION_UNAVAILABLE', '没有实际图片可发送')
+    if stage in ('ingest','clarify','change','prd','review'):
+        from .semantic_quality import current_counting_checks, counting_witness
+        context['semantic_checks']=current_counting_checks(p)
+        if stage=='review':
+            from .semantic_quality import current_document_checks
+            context['semantic_document_checks']=current_document_checks(p)
+        if stage in ('ingest','clarify','change'):
+            context['input_counting_checks']=[dict(source_id=e['source_id'],excerpt_id=e['id'],**w) for e in selected if (w:=counting_witness(e.get('text','')))]
     context['excerpts'] = selected
     context['omitted_excerpt_ids'] = omitted
     if stage=='vision':context['image_transport']='每批最多3张，最长边1600像素；原图保留在本机。看不清须列unreadable，不猜字段。'

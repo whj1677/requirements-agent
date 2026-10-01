@@ -134,6 +134,9 @@ def validate_response(value, stage, project, excerpts, document_type='prd'):
                     proposal['temp_id']+' 修订目标 '+target['id']+' 实际 kind='+target['kind']+'；必须保持同 kind，不得改变目标、原文或新增替代修订')
     from .understanding import validate as validate_understanding
     validate_understanding(value,project,excerpts)
+    from .semantic_quality import validate_analysis, validate_review
+    validate_analysis(value,project,excerpts)
+    if stage=='review':validate_review(value,project)
     if stage == 'ui':
         validate_ui(value['result']['spec'], project)
     if stage == 'prd':
@@ -257,7 +260,8 @@ def document_gaps(doc, p):
 
 
 def review_target(p):
-    target={'brief': brief_hash(p), 'documents': p['documents'], 'ui': p['ui']}
+    from .semantic_quality import VERSION
+    target={'brief': brief_hash(p), 'documents': p['documents'], 'ui': p['ui'], 'semantic_quality_version':VERSION}
     if p.get('requirement_relations'):target['requirement_relations']=p['requirement_relations']
     return digest(target)
 
