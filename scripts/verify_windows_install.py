@@ -214,7 +214,11 @@ class OwnedProcess:
                 'CLEANUP_ROOT_IDENTITY_CHANGED')
         diagnostics = []
         natural_exit = []
-        for pid in descendant_order(self.process.pid, process_parents()):
+        owned_descendants = []
+        parents=process_parents()
+        verified_created={self.process.pid:self.created}
+        for pid in reversed(descendant_order(self.process.pid, parents)):
+            if parents.get(pid) not in verified_created:continue
             handle = kernel.OpenProcess(0x1000 | 0x0001 | 0x00100000, False, pid)
             if not handle:
                 error = ctypes.get_last_error()
@@ -229,13 +233,25 @@ class OwnedProcess:
                     if wait != 0:
                         diagnostics.append(dict(phase='identify_descendant', pid=pid, wait_result=wait))
                     continue
+                # Parent PIDs survive in Windows after their process exits and
+                # can be reused. Older trees are unrelated, not ours to await.
+                if created < verified_created[parents[pid]]:continue
+                verified_created[pid]=created
                 allowed = image == self.executable or any(image.is_relative_to(root) for root in self.roots)
-                if created < self.created or not allowed:
+                if not allowed:
                     # Windows may attach a system console host. Never kill it;
                     # allow it to exit naturally after its owned root closes.
                     natural_exit.append((pid, handle))
                     handle = None
                     continue
+                owned_descendants.append((pid,handle))
+                handle=None
+            finally:
+                if handle:
+                    kernel.CloseHandle(handle)
+        # Identify parent chains before stopping them; terminate deepest first.
+        for pid,handle in reversed(owned_descendants):
+            try:
                 if not kernel.TerminateProcess(handle, 1):
                     error = ctypes.get_last_error()
                     wait = kernel.WaitForSingleObject(handle, 0)
@@ -243,8 +259,7 @@ class OwnedProcess:
                         diagnostics.append(dict(phase='terminate_descendant', pid=pid,
                                                 win32_error=error, wait_result=wait))
             finally:
-                if handle:
-                    kernel.CloseHandle(handle)
+                kernel.CloseHandle(handle)
         self.process.terminate()  # Popen retains the exact created process handle.
         self.process.wait(timeout=10)
         for pid, handle in natural_exit:

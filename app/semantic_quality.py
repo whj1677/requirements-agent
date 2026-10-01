@@ -2,7 +2,7 @@
 import re
 from .core import require
 
-VERSION = 'semantic-quality-3'
+VERSION = 'semantic-quality-4'
 POLICY = (
     '先核对输入自身是否一致，来源引用正确和人工回答有出处不证明其含义无矛盾。'
     '对计数单位、边界包含、量词、时点与条件构造具体反例；区分Unicode码点和扩展字素簇，'
@@ -48,6 +48,16 @@ def counting_witness(text):
             decision='请选择按Unicode码点分别计数，或按扩展字素簇计数；同步修订边界、emoji表述与验收，不代选。')
     return None
 
+
+def counting_option_examples(witness):
+    """Two checked alternatives, never a selected business counting unit."""
+    example=witness['counterexample'];limit=example['extended_grapheme_clusters']
+    points=example['codepoints'];letters=limit-1
+    return [
+        f'按Unicode码点分别计数：👍🏽占2个码点，{letters}个A加👍🏽共{points}个码点，超过上限{limit}而拒绝；复合emoji不能恒按一码点。',
+        f'按扩展字素簇计数：👍🏽占1个扩展字素簇，{letters}个A加👍🏽共{limit}个扩展字素簇，符合上限{limit}而允许；需求和验收中的Unicode码点口径须同步改为扩展字素簇。',
+    ]
+
 def current_counting_checks(p):
     checks=[]
     for i in p.get('items',[]):
@@ -79,8 +89,12 @@ def contract():
     return dict(version=VERSION,policy=POLICY,
         review_axes=['输入内部一致性与反例','当前决定与历史未知','运行角色与需求确认角色',
                      '既有事实/新增决定/模型建议','全部规范、行为字段、摘要与解释段条件量词'],
-        finding_binding='semantic_checks每项check_id唯一绑定object_id、location、dimension；尚存冲突的review必须在对应blocker.message和required_decisions同时原样写check_id，给反例与PM选择。不能用同一对象的其他blocker、其他计数字段或其他问题抵消。ingest/clarify/change中同一条可回答问题必须联合绑定冲突对象、source_id/excerpt_id与计数决定；不能用两条问题分别命中，也不能以码点颜色等其它维度过关。明确回答与修订或当前条款必须选择相同计数单位，否定某一单位或仍待确认不等于已决定。复用同对象同维度开放问题。',
-        document_finding_binding='semantic_document_checks是正文引用语义风险，按check_id定位实际解释原句及引用，逐项在finding.message原样写ID。每一个声称的检查ID、文档/章节/块位置和该位置的原句都必须真实，另一文档没有对应错误时不能连带报告。条件弱化/事实归属/义务外扩写纠错finding，不创造业务required_decisions；既有实现例外必须有同能力、同对象和同场景的肯定证据，否认/不确定/仅支持其它能力不能解除风险。',
+        finding_binding='semantic_checks每项check_id唯一绑定object_id、location、dimension；尚存冲突的review必须在对应blocker.message和required_decisions同时原样写check_id，给反例与PM选择。不能用同一对象的其他blocker、其他计数字段或其他问题抵消。ingest/clarify/change中同一条可回答问题必须联合绑定冲突对象、source_id/excerpt_id与计数决定；问题直接询问计数单位或明确给出码点/字素簇选择，不能用两条问题分别命中，也不能以码点颜色等其它维度过关。计数options可空；有选项时每个备选内部必须一致，不能把复合emoji按一个码点计说成与Unicode码点口径一致。明确回答与修订或当前条款必须选择相同计数单位，否定某一单位或仍待确认不等于已决定。复用同对象同维度开放问题。',
+        candidate_question_binding='先为本轮候选分配temp_id。若新增计数需求/验收候选仍保留旧争议的emoji一码点引句，即使标注待确认或条件适用，对应同一阻塞计数问题的related_refs仍必须同时包含该候选temp_id和原关联需求/验收ID，source_refs绑定该争议原片段。候选自己的related_refs不替代问题对候选的直接绑定；只问原条目、用另一问题补候选或只写why都不能覆盖。revise候选可按其明确target_item_id绑定。',
+        counting_options_policy='counting_option_examples给出经反例计算核对的两种备选，不是人工选择。计数问题可逐字使用其options；不要附加“与现有emoji一码点表述一致”等判断，因为码点选项要求纠正复合emoji恒为一码点的错误，字素簇选项要求同步改写Unicode码点口径。options仅写可选的自洽规则，不引用含矛盾的旧句作为本选项规则或一致性理由；旧句和差异放why说明。',
+        failure_condition_policy='原记录不变只绑定取消、超限拒绝或明确未提交失败等有依据的未写入条件。超时/结果未知时可保留输入，但不能断言原记录不变或已经改变；先查询同一请求结果，禁止自动重发。只有查询确认未提交或收到明确未提交结果后，才可断言原记录不变并允许再次确认。解释/摘要/验收说明不得将“明确未提交的失败、超时或结果未知等情形”并列概括为原记录不变；不能靠后附“不自动重发”或“遵循既定路径”弥补这个错误。',
+        document_finding_binding='semantic_document_checks是正文引用语义风险，按check_id定位实际解释原句及引用，逐项在finding.message原样写ID。每一个声称的检查ID、文档/章节/块位置和该位置的原句都必须真实，另一文档没有对应错误时不能连带报告。章节标题与原句分别核对；原句可用省略号缩略，但各非空片段须依次真实出现在同一指定段落。引用来源作对比时不要把来源原文称为该段落原句。条件弱化/事实归属/义务外扩写纠错finding，不创造业务required_decisions；既有实现例外必须有同能力、同对象和同场景的肯定证据，否认/不确定/仅支持其它能力不能解除风险。',
+        quotation_policy='document_quote_witnesses按真实文档位置列出计数表述，semantic_document_checks列解释原句。引用每一处必须取该处真实片段；需求的“emoji按一个码点计”与验收的“emoji一个码点”字面不同，不能用前一句加引号声称两处同文。分别写位置与原句，或不用引号归纳含义；不能把多个不同段落与同一引号原句联合绑定。',
         scope='只识别可定位的语义问题，不以字数、来源数量或模板完整作为通过标准；启发式不是通用语义证明。正式确认前最低覆盖全部本期已选需求、规则和验收条目；不完整审查保留缺口，不能解除gate。')
 
 
@@ -92,9 +106,10 @@ def counting_question(q):
     text=q.get('question','')
     # The actual decision must concern counting. A rationale mentioning length
     # cannot turn a colour/font question into a counting decision.
-    return bool(q.get('blocking') and UNIT.search(text) and
+    direct_unit=re.search(r'计数(?:单位|口径|方式)|(?:按|用|以).{0,6}单位.{0,4}(?:计数|统计|计算)',text)
+    return bool(q.get('blocking') and (UNIT.search(text) or direct_unit) and
         not re.search(r'颜色|字体|colou?r|font',text,re.I) and
-        (re.search(r'计数|计量|口径|长度|怎么算|如何计|count|length',text,re.I) or
+        (direct_unit or re.search(r'计数|计量|口径|长度|怎么算|如何计|count|length',text,re.I) or
          (CODEPOINT.search(text) and re.search(r'字素簇|grapheme',text,re.I) and
           re.search(r'还是|或|which|versus|\bvs\b',text,re.I))))
 
@@ -140,6 +155,9 @@ def validate_analysis(value,p,excerpts):
     items={i['id']:i for i in p.get('items',[])}
     pending=[q for q in p.get('questions',[]) if q.get('blocking') and q.get('status')!='answered' and not q.get('superseded_by') and not q.get('out_of_scope_reason')]
     questions=leaves(value['questions'])+pending
+    require(all(not counting_witness(option) for q in leaves(value['questions'])
+                if counting_question(q) for option in q.get('options',[])),
+            'SEMANTIC_BLOCKED','计数澄清的备选自身仍含码点与每个emoji恒为一码点的矛盾；保留开放问题或给出一致选项。')
     def bound(objects,pair):
         return any(counting_question(q) and objects & set(q.get('related_refs',[])) and
                    pair in source_pairs(q.get('source_refs',[])) for q in questions)
@@ -210,12 +228,32 @@ def clauses(text):
     return [part.strip() for part in parts if part.strip()]
 
 
-NEGATIVE = re.compile(r'不应|不得|不能|并非|不是|不算|不代表|不保证|未必|尚未|未支持|未实现|未覆盖|没有证据|无证据|不确定|待验证|待核对')
-IMPLEMENTED = re.compile(r'(?:已|已经)(?:支持|实现|覆盖)')
-UNCERTAIN_IMPLEMENTATION = re.compile(r'可能|或许|似乎|尚待|待确认|未确认|未证实|未经验证|无法(?:证明|证实|确认)|据说|据称')
-CAPABILITIES = ('审计','登录','推送','导出','批量','查询','编辑','保存')
-SUBJECTS = ('备注','姓名','联系人','电价','时段','站点','任务','附件','文件')
+NEGATIVE = re.compile(r'不应|不得|不能|不要|并非|不是|不算|不代表|不表示|不保证|不证明|不表明|不声称|不宣称|不认定|不主张|未必|尚未|未支持|未实现|未覆盖|没有证据|无证据|不确定|待验证|待核对')
+IMPLEMENTED = re.compile(r'(?:已|已经)(?:支持|实现|覆盖|能|可以)')
+UNCERTAIN_IMPLEMENTATION = re.compile(r'可能|或许|似乎|是否|能否|尚待|待确认|未确认|未证实|未经验证|无法(?:证明|证实|确认)|据说|据称')
+CAPABILITIES = ('审计','登录','查看','推送','导出','批量','查询','编辑','保存')
+SUBJECTS = ('备注','姓名','联系人','电价','时段','站点','任务','附件','文件','工单','标题','详情')
 SCENARIOS = ('成功','失败','超时','未知')
+RULE_SUBJECTS = (
+    r'同日(?:未来)?安排|同(?:一)?(?:生效)?日期.{0,6}未来安排|未来生效安排',
+    r'数量(?:边界|限制|上限)|单批.{0,6}(?:数量|上限)',
+    r'批量原子|整批原子|原子处理',
+)
+
+
+def existing_rule_supported(claim,existing):
+    """A current rule needs an affirmative current rule, not a to-be decision."""
+    if not positive_match(r'(?:既有|原有|现有|现行)(?:约束|规则|校验|限制)',claim):return True
+    subjects=[pattern for pattern in RULE_SUBJECTS if re.search(pattern,claim)]
+    if not subjects:return True
+    for pattern in subjects:
+        support=any(re.search(pattern,sentence) and
+            re.search(r'校验|拒绝|允许|限制|上限|原子|约束|规则',sentence) and
+            not re.search(r'没有证据|无证据|不确定|尚未|未确认|未证实|待确认|待验证|无法确认|是否',sentence)
+            and not re.search(r'(?:没有|无|未|不能|无法|不曾|不再).{0,8}(?:校验|限制|约束|规则|原子)',sentence)
+            for sentence in re.split(r'[。；;\n]',existing))
+        if not support:return False
+    return True
 
 
 def positive_match(pattern,clause):
@@ -233,8 +271,16 @@ def implementation_supported(claim,scenario_evidence,existing_evidence):
         direct={word for word in words if word in claim}
         return direct or {word for word in words if word in scenario_evidence}
     capabilities=signature(CAPABILITIES);subjects=signature(SUBJECTS)
-    scenarios=signature(SCENARIOS)
-    change=bool(re.search(r'变更|修改|更新',claim+' '+scenario_evidence))
+    scenarios={word for word in SCENARIOS if word in claim}
+    inherits_scenario='审计' in capabilities or re.search(r'这一场景|上述场景|本场景|该场景|此场景|上述行为|这一行为',claim)
+    if not scenarios and inherits_scenario:scenarios={word for word in SCENARIOS if word in scenario_evidence}
+    # An unrelated desired edit in the same context cannot change what an
+    # existing login/export capability must prove. Inherit only its scenario.
+    change=bool(re.search(r'变更|修改|更新',claim)) or '审计' in capabilities and any(
+        capabilities.issubset({w for w in CAPABILITIES if w in part}) and
+        subjects.issubset({w for w in SUBJECTS if w in part}) and
+        re.search(r'变更|修改|更新',part)
+        for sentence in re.split(r'[。；;\n]',scenario_evidence) for part in clauses(sentence))
     if not capabilities or not subjects:return False
     matching=[]
     for sentence in re.split(r'[。；;\n]',existing_evidence):
@@ -278,16 +324,33 @@ def explanation_issues(text,evidence,existing_evidence,scenario_evidence=None):
         failure_pattern=r'(?:失败场景(?:下)?|失败时|失败后)[^。；;\n]{0,50}?原(?:记录|数据).{0,4}不变'
         def explicit_failure(match):
             prefix=sentence[:match.start()]
-            return (re.search(r'(?<![不未非])明确\s*$',prefix) and
-                    not re.search(r'无法明确\s*$',prefix) and positive_match(r'明确\s*$',prefix))
-        conditional=('明确失败' in evidence and '未知' in evidence and any(
-            not explicit_failure(match) and positive_match(re.escape(match.group()),sentence)
-            for match in re.finditer(failure_pattern,sentence)))
+            qualifier=r'(?<![不未非])明确(?:[^，,。；]{0,12}(?:未提交|未写入|未保存)(?:的)?)?\s*$'
+            return (re.search(qualifier,prefix) and not re.search(r'无法明确[^，,]{0,12}$',prefix)
+                    and positive_match(qualifier,prefix))
+        unknown_pattern=r'(?:超时|(?:结果)?未知)[^。；;\n]{0,70}?原(?:记录|数据).{0,4}不变'
+        def confirmed_uncommitted(match):
+            # A later result can resolve the unknown branch. Merely listing a
+            # known failure beside it does not confirm the unknown request.
+            segment=match.group()
+            qualifier=r'(?:查询[^，,。；]{0,12}(?:确认|明确)|(?:收到|得到|获得)[^，,。；]{0,12}(?:明确|确认))[^，,。；]{0,8}(?:未提交|未写入|未保存)'
+            for proof in re.finditer(qualifier,segment):
+                tail=re.split(r'[，,]',segment[proof.end():])[0]
+                if (positive_match(re.escape(proof.group()),segment[:proof.end()])
+                        and not UNCERTAIN_IMPLEMENTATION.search(proof.group())
+                        and not re.search(r'未完成|未执行|未进行|没有完成|没有执行|没有进行',tail)):
+                    return True
+            return False
+        explicit_basis=re.search(r'明确[^。；;\n]{0,16}(?:失败|未提交|未写入|未保存)',evidence)
+        conditional=(explicit_basis and '未知' in evidence and (
+            any(not explicit_failure(match) and positive_match(re.escape(match.group()),sentence)
+                for match in re.finditer(failure_pattern,sentence)) or
+            any(not confirmed_uncommitted(match) and positive_match(re.escape(match.group()),sentence)
+                for match in re.finditer(unknown_pattern,sentence))))
         weaker=(re.search(r'(?:所有|全部)[^。；]{0,16}成功',evidence) and any(
             positive_match(r'(?:任一|任意一个|部分).{0,16}成功.{0,16}整批成功',part) for part in parts))
         obligation=any(positive_match(r'(?:需|须|必须|应当?).{0,14}(?:培训|说明).{0,12}(?:提示|告知)',part) and
             not re.search(r'建议|可考虑',part) for part in parts) and not re.search(r'(?:需|须|必须|应当?)[^。；]{0,14}(?:培训|说明)',evidence)
-        unsupported=any(positive_match(IMPLEMENTED,part) and
+        unsupported=not existing_rule_supported(sentence,existing_evidence) or any(positive_match(IMPLEMENTED,part) and
             not re.search(r'部署后|验收时|上线后',part) and
             not implementation_supported(part,evidence if scenario_evidence is None else scenario_evidence,existing_evidence) for part in parts)
         for dimension,present in [('failure_condition',conditional),('success_quantifier',weaker),('suggestion_obligation',obligation),('existing_implementation',unsupported)]:
@@ -314,6 +377,18 @@ def current_document_checks(p):
             for index,block in enumerate(section.get('blocks',[])):
                 location=f"{artifact['id']}.{section['section_id']}.blocks[{index}]"
                 basis=block.get('evidence_refs')
+                if block.get('kind')=='requirement' and location in visible:
+                    for ref in block.get('ref_ids',[]):
+                        item=items.get(ref,{})
+                        behavior=item.get('behavior',{})
+                        actor=behavior.get('actor','');flow=behavior.get('flow','')
+                        pm=r'(?:PM|产品经理)'
+                        has_pm_step=re.search(pm+r'\s*(?:人工)?(?:核对|确认|审批).{0,8}(?:提交|通过|应用)',flow)
+                        explicit_role=re.search(pm+r'.{0,6}(?:业务审批|审批)|(?:提交前|业务流程).{0,8}(?:由)?'+pm+r'.{0,8}(?:核对|确认)',item.get('statement',''))
+                        if actor and flow in visible[location] and not re.search(pm,actor) and has_pm_step and not explicit_role:
+                            checks.append(dict(check_id='DOC:'+location+':operator_role',object_id=artifact['id'],
+                                document_type=kind,document_version=artifact.get('document_version'),location=location,
+                                related_refs=[ref],dimension='operator_role',quote=flow))
                 if block.get('kind')!='explanation' or not basis or location not in visible:continue
                 refs=[r for r in basis.get('normative_refs',[]) if r in items]
                 keys=[r for r in basis.get('context_refs',[]) if r in context]
@@ -330,10 +405,11 @@ DOCUMENT_LOCATION = re.compile(r'[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.blocks\[\d+\]')
 DOCUMENT_CHECK = re.compile(r'DOC:[A-Za-z0-9_.-]+(?:\.blocks\[\d+\])?:[A-Za-z0-9_]+')
 DOCUMENT_ERROR = re.compile(r'误写|有误|错误|泛化|弱化|超出|断言|风险')
 DOCUMENT_DIMENSIONS = {
-    'failure_condition':re.compile(r'明确失败|失败场景|失败条件|失败时|失败后'),
+    'failure_condition':re.compile(r'明确失败|失败场景|失败条件|失败时|失败后|超时|结果未知|未知结果'),
     'success_quantifier':re.compile(r'整批成功|全部成功|部分成功|成功量词'),
     'suggestion_obligation':re.compile(r'培训|交付义务|建议.*义务'),
-    'existing_implementation':re.compile(r'既有实现|现有.*(?:支持|实现|覆盖)|已覆盖|实现证据'),
+    'existing_implementation':re.compile(r'既有实现|现有.*(?:支持|实现|覆盖)|已覆盖|实现证据|(?:既有|原有|现有|现行)(?:约束|规则|校验|限制)'),
+    'operator_role':re.compile(r'运行角色|操作者|审批人|PM.{0,8}(?:确认|核对|审批)|产品经理.{0,8}(?:确认|核对|审批)'),
 }
 
 
@@ -344,33 +420,80 @@ def readable_document_blocks(artifact):
             for section in reader['sections'] for block in section['blocks']}
 
 
+QUOTED = r'“([^”]+)”|「([^」]+)」|"([^"]+)"'
+ORIGINAL_QUOTE = re.compile(r'(?:原句|原文|正文)[：:]?\s*(?:'+QUOTED+r')')
+
+
+def quoted_text(text):
+    return [a or b or c for a,b,c in re.findall(QUOTED,text)]
+
+
+def quote_matches(quote,text):
+    """Ellipsis is omission only: preserve order, paragraph and actual words."""
+    if quote in text:return True
+    if not re.search(r'…|\.{3}',quote):return False
+    parts=[part for part in re.split(r'…+|\.{3,}',quote) if part]
+    if not parts or any(len(part.strip())<4 for part in parts):return False
+    offset=0
+    for part in parts:
+        found=text.find(part,offset)
+        if found<0:return False
+        offset=found+len(part)
+    return True
+
+
 def validate_document_findings(findings,p,checks):
     """Validate every claimed witness, including extras after coverage is met."""
     ids={c['check_id'] for c in checks}
-    blocks={};by_kind={}
+    blocks={};by_kind={};titles={};titles_by_kind={}
     for kind,artifact in p.get('documents',{}).items():
         visible=readable_document_blocks(artifact)
         blocks.update(visible)
         by_kind[kind]=list(visible.values())
+        section_titles={section['section_id']:section['title'] for section in artifact['content']['sections']}
+        titles.update({location:section_titles[location.split('.')[1]] for location in visible})
+        titles_by_kind[kind]=set(section_titles.values())
     for finding in findings:
         message=finding['message']
         claimed=DOCUMENT_CHECK.findall(message)
         require(all(ref in ids for ref in claimed),'SEMANTIC_BLOCKED',
             '复核引用了当前实际文档中不存在的语义检查：'+str([ref for ref in claimed if ref not in ids]))
         inherited={c['dimension'] for c in checks if c['check_id'] in claimed}
+        active_locations=[]
         for clause in clauses(message):
-            locations=DOCUMENT_LOCATION.findall(clause)
+            matches=list(DOCUMENT_LOCATION.finditer(clause))
+            locations=[m.group() for m in matches]
             require(all(location in blocks for location in locations),'SEMANTIC_BLOCKED','复核文档段落定位不存在：'+str(locations))
-            quotes=[a or b or c for a,b,c in re.findall(r'“([^”]+)”|「([^」]+)」|"([^"]+)"',clause)]
-            for location in locations:
-                require(all(quote in blocks[location] for quote in quotes),'SEMANTIC_BLOCKED','复核所引原句不在指定段落：'+location)
+            if locations:active_locations=locations
+            primary=[a or b or c for a,b,c in ORIGINAL_QUOTE.findall(clause)]
+            quotes=primary or quoted_text(clause)
+            for index,match in enumerate(matches):
+                location=match.group()
+                # Each adjacent location owns its following quotation. A
+                # single-location clause also owns the preceding title/quote.
+                segment=clause if len(matches)==1 else clause[match.start():
+                    matches[index+1].start() if index+1<len(matches) else len(clause)]
+                originals=[a or b or c for a,b,c in ORIGINAL_QUOTE.findall(segment)]
+                local_quotes=originals or quoted_text(segment)
+                if index==0 and len(matches)>1:
+                    local_quotes += [a or b or c for a,b,c in ORIGINAL_QUOTE.findall(clause[:match.start()])]
+                require(all(quote_matches(quote,blocks[location]) or
+                            not originals and quote==titles[location] for quote in local_quotes),
+                        'SEMANTIC_BLOCKED','复核所引原句不在指定段落：'+location)
+            if primary and not locations:
+                for location in active_locations:
+                    require(all(quote_matches(quote,blocks[location]) for quote in primary),
+                            'SEMANTIC_BLOCKED','复核所引原句不在指定段落：'+location)
             # A paraphrase or "same error" assertion also needs a real witness.
             # Unknown dimensions remain for model/human review; these four are
             # the bounded deterministic dimensions already checked above.
             error=DOCUMENT_ERROR.search(clause) and not re.search(r'没有.*错误|不存在.*错误|无此错误|未误写|表述正确',clause)
             if error:
                 dimensions={dimension for dimension,pattern in DOCUMENT_DIMENSIONS.items() if pattern.search(clause)} or inherited
-                kinds={kind.lower() for kind in re.findall(r'(?<![A-Za-z])(PRD|MRD)(?![A-Za-z])',clause,re.I)}
+                # A kind embedded in a block locator is handled by that block's
+                # binding; it is not an assertion about the entire document.
+                named_clause=DOCUMENT_LOCATION.sub('',clause)
+                kinds={kind.lower() for kind in re.findall(r'(?<![A-Za-z])(PRD|MRD)(?![A-Za-z])',named_clause,re.I)}
                 require(all(kind in by_kind for kind in kinds),'SEMANTIC_BLOCKED','复核声称错误的文档不存在：'+str(sorted(kinds)))
                 require(not (kinds or locations) or not re.search(r'同样错误|同样问题|相同错误',clause) or dimensions,
                         'SEMANTIC_BLOCKED','同样错误断言缺少本条finding的冲突维度与真实位置证据；不能借另一条finding推断。')
@@ -378,7 +501,8 @@ def validate_document_findings(findings,p,checks):
                     require(all(any(c['location']==location and c['dimension']==dimension for c in checks) for dimension in dimensions),
                         'SEMANTIC_BLOCKED','指定段落不存在所声称的语义错误：'+location)
                 for kind in kinds:
-                    require(all(any(quote in text for text in by_kind.get(kind,[])) for quote in quotes),'SEMANTIC_BLOCKED',
+                    require(all(any(quote_matches(quote,text) for text in by_kind.get(kind,[])) or
+                                not primary and quote in titles_by_kind.get(kind,set()) for quote in quotes),'SEMANTIC_BLOCKED',
                         '复核所引错误原句不在指定文档：'+kind.upper())
                     require(all(any(c['document_type']==kind and c['dimension']==dimension for c in checks) for dimension in dimensions),
                         'SEMANTIC_BLOCKED','指定文档不存在所声称的语义错误：'+kind.upper())

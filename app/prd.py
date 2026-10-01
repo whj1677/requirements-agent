@@ -196,6 +196,8 @@ def plan_contract(p, kind=None):
                    if kind=='mrd' else 'PRD的requirement、rule、acceptance原文固定分别进入功能需求、业务规则、验收条件；行为字段同步展示。单条规范解释紧随该条目；有来源的多条规范解释进入独立关联说明章节，避免在最后一条需求下复述整套功能。')+
                   'context_refs、normative_refs 所列原文及 PRD 行为字段会自动展示；explanations 没有新的有用关系或业务影响时用 []，不得换词复述或写组装过程。'
                   '解释只可归纳引用的已核对事实，不能发明数字、目标、权限、状态转换、默认行为或新规则；未知交还澄清候选。工程快照中的现有技术只证明快照现状；未经有权决策采纳，不得写成新功能已确定采用的技术选型或业务规范。'
+                  'MRD的required_analysis_sections必须分别有至少一段explanations，不能仅列引用或空数组；priority解释为什么先做，validation说明如何观察验收，各自引用对应依据。这些必需分析不适用普通章节可以不解释的规则。'
+                  '本期决定的数量边界、冲突拒绝及原子处理等规则仍是本期要求；只有current_state或肯定工程证据明确同一规则已经存在，才可称为既有约束/现行规则。不根据沿用、保持或验收前提推断已经实现。'
                   '已选规范由程序逐字回填，解释不能更改其含义；验收条款的“已有”前提可能指部署后的验收环境，不据此声称当前生产已经实现。候选条款、推断及冲突观察不能成为无标签正文事实。'
                   'context_refs、normative_refs、discussion_refs 的权限和附录规则沿用 v2。'+focus+
                   '本文为待人工核对草稿；模型解释无法由机器保证语义保真，须继续语义审查和人工评审。')
@@ -235,7 +237,36 @@ def plan_schema(p,kind):
     keys=list(contract['section_keys'])
     if contract['discussion_item_ids']:
         keys.append('discussion')
+    properties=schema['properties']['sections']['items']['properties']
+    def restrict(rule,ids):
+        if ids:rule['items']={**rule['items'],'enum':ids}
+        else:rule['maxItems']=0
+    for field,ids in (('context_refs',contract['context_ref_ids']),
+                      ('normative_refs',contract['normative_item_ids']),
+                      ('discussion_refs',contract['discussion_item_ids'])):
+        properties[field]=copy.deepcopy(properties[field])
+        restrict(properties[field],ids)
+    basis=properties['explanations']['items']['properties']['evidence_refs']['properties']
+    for field,ids in (('context_refs',contract['context_ref_ids']),
+                      ('normative_refs',contract['normative_item_ids']),
+                      ('business_claim_refs',contract['business_claim_ref_ids'])):
+        basis[field]=copy.deepcopy(basis[field])
+        restrict(basis[field],ids)
     schema['properties']['sections']['items']['properties']['section_key']={'enum':keys}
+    if kind=='mrd':
+        required=[]
+        for key in contract['required_analysis_sections']:
+            if key=='priority':
+                evidence={'context_refs':{'contains':{'const':'priority'}}}
+            else:
+                evidence={'anyOf':[
+                    {'properties':{'context_refs':{'contains':{'enum':['value','intent']}}}},
+                    {'properties':{'normative_refs':{'contains':{'enum':contract['validation_acceptance_ids']}}}}]}
+            basis_rule=({'properties':evidence} if key=='priority' else evidence)
+            required.append({'if':{'properties':{'section_key':{'const':key}}},
+                'then':{'properties':{'explanations':{'minItems':1,'contains':{
+                    'properties':{'evidence_refs':basis_rule}}}}}})
+        if required:schema['properties']['sections']['items']['allOf']=required
     return schema
 
 

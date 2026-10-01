@@ -115,6 +115,7 @@ def business_anchor(value, excerpts=()):
         for key, rule in properties.items():
             if key in ('source_refs', 'related_refs', 'target_item_id') or key not in node:
                 continue
+            if key=='decision_points' and missing_compound_points(node):continue
             validator = jsonschema.Draft202012Validator({'$defs': spec['$defs'], **rule})
             if validator.is_valid(node[key]):
                 locked[(*prefix, key)] = copy.deepcopy(node[key])
@@ -155,6 +156,28 @@ def anchor_hash(anchor):
     return digest([[list(k), v] for k, v in anchor.items()])
 
 
+def missing_compound_points(node):
+    # Match understanding.validate: [] is structurally missing for a parent
+    # with multiple questions, just like an omitted decision_points field.
+    question=node.get('question','')
+    return node.get('decision_points')==[] and isinstance(question,str) and question.count('？')+question.count('?')>1
+
+
+def compound_repair_schema(spec,value):
+    """Advertise the same immutable parent enforced by the repair guard."""
+    frozen=copy.deepcopy(spec)
+    rules=[]
+    for parent in value.get('questions',[]):
+        question=parent.get('question','')
+        if (not parent.get('decision_points') and isinstance(question,str) and
+                question.count('？')+question.count('?')>1 and isinstance(parent.get('temp_id'),str)):
+            rules.append({'if':{'properties':{'temp_id':{'const':parent['temp_id']}}},
+                'then':{'required':['decision_points'],'properties':{
+                    'question':{'const':question},'decision_points':{'minItems':2}}}})
+    if rules:frozen['$defs']['Question'].setdefault('allOf',[]).extend(rules)
+    return frozen
+
+
 def response_anchor(value, excerpts, stage, project=None):
     """Conservatively retain valid business fields in a malformed non-ingest reply."""
     if not isinstance(value, dict):
@@ -170,6 +193,7 @@ def response_anchor(value, excerpts, stage, project=None):
         if not isinstance(node,dict):return
         for key,rule in properties.items():
             if key not in node:continue
+            if key=='decision_points' and missing_compound_points(node):continue
             field=node[key]
             if key in ('source_refs','used_source_refs') and isinstance(field,list):
                 valid=[(r['source_id'],r['excerpt_id']) for r in field if isinstance(r,dict)

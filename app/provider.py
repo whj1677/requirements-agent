@@ -2,6 +2,8 @@ import asyncio
 import base64
 import json
 import io
+import copy
+import jsonschema
 from PIL import Image
 import time
 from urllib.parse import urlsplit
@@ -42,6 +44,37 @@ def delimiter_hint(content):
             stack.pop()
     if stack:return '输出结束时仍有未关闭容器：'+str(stack[-4:])+'；按从内到外次序关闭数组与对象。'
     return ''
+
+
+def normalize_review_result_tail(content):
+    """Remove one premature root close before a sole, complete result field.
+
+    Every existing field retains its decoded value. This does not repair nested
+    grouping, missing text, duplicate keys, or a partial result.
+    """
+    def unique_object(pairs):
+        value={}
+        for key,item in pairs:
+            if key in value:raise ValueError('duplicate key')
+            value[key]=item
+        return value
+    decoder=json.JSONDecoder(object_pairs_hook=unique_object,
+        parse_constant=lambda x: (_ for _ in ()).throw(ValueError(x)))
+    try:
+        stripped=content.lstrip()
+        prefix,end=decoder.raw_decode(stripped)
+        if not isinstance(prefix,dict) or prefix.get('stage')!='review' or 'result' in prefix:return None
+        tail=stripped[end:].lstrip()
+        if not tail.startswith(','):return None
+        suffix=decoder.decode('{'+tail[1:])
+        if not isinstance(suffix,dict) or set(suffix)!={'result'}:return None
+        candidate=decoder.decode(stripped[:end-1]+stripped[end:])
+        if set(candidate)!=set(prefix)|{'result'}:return None
+        if any(candidate[key]!=item for key,item in prefix.items()):return None
+        jsonschema.Draft202012Validator(request_schema('review')).validate(candidate)
+        return candidate,len(content)-len(stripped)+end-1
+    except (ValueError,TypeError,jsonschema.ValidationError):
+        return None
 
 
 def origin(config):
@@ -149,7 +182,15 @@ class Provider:
         try:
             value = json.loads(content, parse_constant=lambda x: (_ for _ in ()).throw(ValueError(x)))
         except json.JSONDecodeError as error:
-            raise Problem('SCHEMA_INVALID', f'模型最终内容不是完整 JSON：第 {error.lineno} 行，第 {error.colno} 列，字符偏移 {error.pos}；{error.msg}。'+delimiter_hint(content)+'请检查该位置的引号、逗号与括号配对，重新输出完整对象；不得删除业务内容。')
+            normalized=(normalize_review_result_tail(content) if evidence
+                and evidence.value.get('stage')=='review' and evidence.value.get('final_output')==content else None)
+            if normalized is None:
+                raise Problem('SCHEMA_INVALID', f'模型最终内容不是完整 JSON：第 {error.lineno} 行，第 {error.colno} 列，字符偏移 {error.pos}；{error.msg}。'+delimiter_hint(content)+'请检查该位置的引号、逗号与括号配对，重新输出完整对象；不得删除业务内容。')
+            value,offset=normalized
+            meta['syntax_normalization']=dict(rule='review-premature-root-close-before-result-1',
+                removed_character='}',removed_offset=offset,raw_hash=digest(content),derived_hash=digest(value))
+            evidence.value['syntax_normalization']=copy.deepcopy(meta['syntax_normalization'])
+            evidence.save()
         except ValueError:
             raise Problem('SCHEMA_INVALID', '模型最终内容不是完整 JSON')
         return value, meta
@@ -162,7 +203,26 @@ def request_schema(stage):
     if stage=='prd':return PLAN_SCHEMA_V4
     if stage=='ingest':
         return ingest.schema()
-    if stage not in ('ui','review'):return SCHEMA
+    if stage not in ('ui','review'):
+        # Advertise exactly the selected runtime stage; keep every validator
+        # constraint but remove unrelated result alternatives and definitions.
+        schema=copy.deepcopy(SCHEMA)
+        schema.pop('oneOf',None)
+        schema['properties']['stage']={'const':stage}
+        schema['properties']['result']={'$ref':'#/$defs/'+stage+'Result'}
+        definitions=schema.pop('$defs');needed={}
+        def visit(node):
+            if isinstance(node,list):
+                for child in node:visit(child)
+            elif isinstance(node,dict):
+                ref=node.get('$ref','')
+                if ref.startswith('#/$defs/'):
+                    name=ref.rsplit('/',1)[1]
+                    if name not in needed:
+                        needed[name]=definitions[name];visit(needed[name])
+                for child in node.values():visit(child)
+        visit(schema);schema['$defs']=needed
+        return schema
     # The provider cannot load local $ref files. Inline the actual UI dependencies,
     # preserving the validator's schema and its no-draft-mutation rule.
     def expand(value):
@@ -209,6 +269,14 @@ def ui_structure_example():
         states=['normal'],state_messages=dict(normal='结构示例',loading=None,empty=None,error=None,forbidden=None),not_applicable_states=[])
     return dict(schema_version='1.1',stage='ui',summary='仅演示数组与对象嵌套，不能作为项目产物',proposals=[],questions=[],findings=[],used_source_refs=[],limitations=[],
         result=dict(spec=dict(schema_version='1.1',title='结构示例',draft_revision=0,design_intent='仅演示协议结构',demo_data_label='模拟数据，仅用于原型演示',pages=[page])))
+
+
+def review_structure_example():
+    value=dict(schema_version='1.1',stage='review',summary='仅结构示例，不是项目审查结论',
+        proposals=[],questions=[],findings=[],used_source_refs=[],
+        result=dict(assessment='needs_changes',perspectives=[],required_decisions=[],reviewed_refs=[]),limitations=[])
+    jsonschema.Draft202012Validator(request_schema('review')).validate(value)
+    return value
 
 
 def answer_binding_tasks(p):
@@ -258,8 +326,9 @@ def response_boundary(schema):
             for key,child in node['properties'].items():visit(child,path+'.'+key,seen)
         if 'items' in node:visit(node['items'],path+'[]',seen)
     visit(schema,'$')
-    return dict(object_keys=paths,input_only=['semantic_checks','semantic_document_checks','input_counting_checks','excerpts','source_status','recent_messages'],
-        instruction='响应不是输入上下文的副本。每层对象只写schema规定字段，不添加*_note、诊断、说明元字段或上下文原样副本。root及各嵌套对象按object_keys输出，required字段不能遗漏。业务说明写已有合法说明字段；格式修复保持已有业务原文，summary和limitations不改写。')
+    return dict(object_keys=paths,input_only=['semantic_checks','semantic_document_checks','document_quote_witnesses','input_counting_checks','counting_option_examples','excerpts','source_status','recent_messages'],
+        instruction='响应不是输入上下文的副本。每层对象只写schema规定字段，不添加*_note、诊断、说明元字段或上下文原样副本。root及各嵌套对象按object_keys输出，required字段不能遗漏。业务说明写已有合法说明字段；格式修复保持已有业务原文，summary和limitations不改写。'
+        '返回严格JSON，不用Markdown包围。数组项的对象闭合后再闭合数组；questions是数组，decision_points是各父问题内部的数组；不能把父问题对象与questions数组的闭合次序颠倒。输出前逐层核对所有括号、逗号和转义，不拼接残缺JSON。')
 
 
 def assemble(p, stage, user_message, config, folder, kind='prd', generation_target=None, pending_images_only=False):
@@ -299,6 +368,9 @@ def assemble(p, stage, user_message, config, folder, kind='prd', generation_targ
             '需求变化、保持项及验收候选使用实际来源引用，走既有候选/人工采纳流程。'
             'MRD论证用户问题与价值，PRD展开本期行为、数据结果和工程影响；静态分析不证明线上部署版本或运行成功。')
     if stage == 'ui':header['structure_example']=ui_structure_example()
+    if stage == 'review':
+        header['structure_example']=review_structure_example()
+        header['review_format_notice']='structure_example仅是可完整解析的结构占位，不是业务结论或失败回退。按实际材料填写所有业务字段。result是根对象字段；limitations是根对象的字符串数组，数组闭合后再闭合根对象，不额外闭合数组，不追加空键或未知字段。先完成每层JSON结构再输出；完整响应继续进行来源与语义验证。'
     base = (KIT / 'prompts/00_system.md').read_text('utf-8')
     if stage=='prd':base=base.split('## 输出')[0]
     header['response_boundary']=response_boundary(header['schema'])
@@ -423,10 +495,19 @@ def assemble(p, stage, user_message, config, folder, kind='prd', generation_targ
         from .semantic_quality import current_counting_checks, counting_witness
         context['semantic_checks']=current_counting_checks(p)
         if stage=='review':
-            from .semantic_quality import current_document_checks
+            from .semantic_quality import current_document_checks, readable_document_blocks
             context['semantic_document_checks']=current_document_checks(p)
+            context['document_quote_witnesses']=[dict(location=location,quote=text)
+                for artifact in p.get('documents',{}).values()
+                for location,text in readable_document_blocks(artifact).items() if counting_witness(text)]
         if stage in ('ingest','clarify','change'):
             context['input_counting_checks']=[dict(source_id=e['source_id'],excerpt_id=e['id'],**w) for e in selected if (w:=counting_witness(e.get('text','')))]
+            from .semantic_quality import counting_option_examples
+            context['counting_option_examples']=[dict(check_id=check.get('check_id'),
+                source_refs=check.get('source_refs',[]) if 'check_id' in check else [{'source_id':check['source_id'],'excerpt_id':check['excerpt_id']}],
+                options=counting_option_examples(check))
+                for check in context['semantic_checks']+context['input_counting_checks']
+                if check.get('counterexample',{}).get('extended_grapheme_clusters')]
     context['excerpts'] = selected
     context['omitted_excerpt_ids'] = omitted
     if stage=='vision':context['image_transport']='每批最多3张，最长边1600像素；原图保留在本机。看不清须列unreadable，不猜字段。'

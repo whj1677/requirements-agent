@@ -314,6 +314,12 @@ def export_readiness(p, kind):
         issues.append(dict(code='NOT_FOUND', message='请先生成文档。'))
     elif artifact['brief_hash'] != brief_hash(p) or kind in p.get('stale_document_kinds',[]):
         issues.append(dict(code='STALE_REVISION', message='需求或页面已更新，请重新生成文档后下载。'))
+    from .semantic_quality import current_counting_checks, current_document_checks
+    semantic=current_counting_checks(p)+[check for check in current_document_checks(p)
+                                       if check['document_type']==kind]
+    for check in semantic:
+        issues.append(dict(code='SEMANTIC_BLOCKED',check_id=check['check_id'],location=check['location'],
+            message='当前内容存在可复现语义风险，请先核对并修订：'+check['check_id']))
     problems = []
     for q in p['questions']:
         if q.get('superseded_by'):

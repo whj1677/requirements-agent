@@ -1,6 +1,7 @@
 """Early conversation is saved input, never approval or normative requirements."""
 import copy
 import re
+import json
 
 import jsonschema
 
@@ -30,6 +31,24 @@ SCHEMA = dict(type='object',additionalProperties=False,
         limitations=dict(type='array',items=dict(type='string')),
         result=dict(type='object',additionalProperties=False,required=['can_organize'],
             properties=dict(can_organize=dict(type='boolean')))))
+
+
+def format_atoms(raw):
+    """Anchor every literal in a complete chat response; never repair syntax here.
+
+    Only interview's fixed, shallow schema may use this anchor. Its empty
+    proposal/question/finding arrays cannot acquire business structure.
+    """
+    if not isinstance(raw,str) or not raw.strip().startswith('{') or not raw.strip().endswith('}'):
+        return None
+    decoder=json.JSONDecoder();pos=0;atoms=[]
+    while pos<len(raw):
+        if raw[pos].isspace() or raw[pos] in '{}[],:':pos+=1;continue
+        try:value,end=decoder.raw_decode(raw,pos)
+        except ValueError:return None
+        if isinstance(value,(dict,list)):return None
+        atoms.append((type(value).__name__,value));pos=end
+    return atoms or None
 
 
 def validate(value, excerpts):
