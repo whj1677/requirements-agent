@@ -8,7 +8,7 @@ from .core import KIT, brief_hash, digest, read_json, require
 from .requirements import delivery_items
 
 API_CAPABILITIES = tuple(sorted(('actions', 'artifacts', 'confirmations', 'documents', 'exports', 'models',
-                                 'options-direction', 'options-items', 'projects', 'runs', 'session', 'sources', 'product-flow', 'five-step-workflow', 'requirements-exchange', 'business-context')))
+                                 'options-direction', 'options-items', 'projects', 'runs', 'session', 'sources', 'product-flow', 'five-step-workflow', 'requirements-exchange', 'business-context', 'conversational-intake')))
 
 SCHEMA = read_json(KIT / 'examples/runtime_response.schema.json')
 WIRE = read_json(KIT / 'examples/wireframe.schema.json')
@@ -80,6 +80,9 @@ def describe_schema_error(errors):
 
 
 def validate_response(value, stage, project, excerpts, document_type='prd'):
+    if stage=='interview':
+        from .interview import validate
+        return validate(value,excerpts)
     errors = sorted(VALIDATOR.iter_errors(value), key=lambda e: str(e.path))
     require(not errors, 'SCHEMA_INVALID', '模型响应不匹配 Schema：' + (describe_schema_error(errors) if errors else ''))
     require(value['stage'] == stage, 'SCHEMA_INVALID', '模型返回了错误阶段')

@@ -4,6 +4,7 @@ import { ArtifactTabs } from './workbench';
 import { SourcePanel, VersionHistory, ConfirmationPanel, DocumentStudio } from './panels';
 import { useDialog } from './shell';
 import { ProductCheckpoint, QuestionList } from './product-flow';
+import { IntakeChat } from './intake-chat';
 import { DraftConflictError, EditProof, useDirty, useNavigation } from './editing';
 import { Icon } from './ui-icons';
 import { phases, TaskStatus, ActionDialog, OptionDecision } from './guided';
@@ -175,7 +176,7 @@ export function Workspace({ id, active, models, onProjectsChanged, onProjectSnap
     return <div hidden={!active} className="workspace"><p>正在读取项目内容…</p></div>;
   }
   const direction = p.options.find(o => o.direction_status === 'selected');
-  const phaseActions=[['organize'],['organize','explore'],['clarify','change'],['prototype','change'],['document','review'],['review']][phase];
+  const phaseActions=[['interview','organize'],['organize','explore'],['clarify','change'],['prototype','change'],['document','review'],['review']][phase];
   const latest=tasks.filter(t=>phaseActions.includes(t.action)||Boolean(t.retry_input?.target)&&(phase===1&&t.retry_input?.target?.kind==='item'||phase===2&&t.retry_input?.target?.kind==='question'||phase===4&&t.retry_input?.target?.kind==='document')).slice(-1)[0];
   const localTask=Boolean(latest?.retry_input?.target);
   const retryTask=()=>{const input=latest?.retry_input;if(!input?.action||typeof input.message!=='string'||typeof input.document_type!=='string'||(['clarify','change'].includes(input.action)&&Boolean(input.message)&&!input.target)){activityNotice('无法恢复原任务对象和输入；请回到原对象重新填写后发起。',true);return;}void act(()=>planAction(input.action!,undefined,undefined,'',input));};
@@ -194,10 +195,11 @@ export function Workspace({ id, active, models, onProjectsChanged, onProjectSnap
     {error && <div className="error banner" role="alert">{error}<button onClick={() => act(refresh)}>刷新内容并保留输入</button><button onClick={() => setError('')}>关闭</button></div>}
     <div className="workflow-grid">
       <section className="workflow-main" ref={mainScroll} onScroll={e=>{scrollPositions.current[phase]=e.currentTarget.scrollTop;}}>
-        <div className="workflow-page" data-phase={phase}><div className="workflow-heading"><div className="task-icon" aria-hidden="true"><Icon name="document"/></div><p className="eyebrow">当前任务 · 第 {phase>3?phase:phase+1} / 5 步</p><h2>{phases[phase]}</h2><p className="muted">{['请先描述您要解决的问题，资料可随时补充。我们将基于你的描述，梳理现状并识别改动范围。','纠正理解偏差，确定这次改什么、保留什么。','回答会影响业务行为的问题，未知不会被自动补齐。','对照原页面，核对本次增量与操作意图。','分别阅读并核对 MRD、PRD 的当前版本。','复核范围与交付版本，再由服务端建立确认基线。'][phase]}</p>{phase<3&&<aside className="task-guidance"><Icon name="target"/><div><b>{['先提供已知信息，缺失项稍后澄清','核对整理结果','为什么需要澄清这些问题？'][phase]}</b><p>{['我们将梳理现状、改动目标与约束条件，再由你核对。','分析建议尚非业务决定，请检查现状、目标、保持项和不在本期的范围。','这些问题涉及业务规则、流程和约束，直接影响后续设计、开发与验收。'][phase]}</p></div></aside>}{phase===4&&<aside className="document-version"><span>当前底稿</span><b>v{p.revision}</b><small>{(p as any).document_review_status?.[docType]?.reviewed?(p.product_flow?.[4]?.missing?.length?'此文档已核对 · 仍有交付阻塞':'此文档已核对 · 可继续检查'):'当前文档待核对'}</small></aside>}</div>
+        <div className="workflow-page" data-phase={phase}><div className="workflow-heading"><div className="task-icon" aria-hidden="true"><Icon name="document"/></div><p className="eyebrow">当前任务 · 第 {phase>3?phase:phase+1} / 5 步</p><h2>{phases[phase]}</h2><p className="muted">{['可以随便聊聊，资料也可随时补充。','纠正理解偏差，确定这次改什么、保留什么。','回答会影响业务行为的问题，未知不会被自动补齐。','对照原页面，核对本次增量与操作意图。','分别阅读并核对 MRD、PRD 的当前版本。','复核范围与交付版本，再由服务端建立确认基线。'][phase]}</p>{phase>0&&phase<3&&<aside className="task-guidance"><Icon name="target"/><div><b>{['先提供已知信息，缺失项稍后澄清','核对整理结果','为什么需要澄清这些问题？'][phase]}</b><p>{['我们将梳理现状、改动目标与约束条件，再由你核对。','分析建议尚非业务决定，请检查现状、目标、保持项和不在本期的范围。','这些问题涉及业务规则、流程和约束，直接影响后续设计、开发与验收。'][phase]}</p></div></aside>}{phase===4&&<aside className="document-version"><span>当前底稿</span><b>v{p.revision}</b><small>{(p as any).document_review_status?.[docType]?.reviewed?(p.product_flow?.[4]?.missing?.length?'此文档已核对 · 仍有交付阻塞':'此文档已核对 · 可继续检查'):'当前文档待核对'}</small></aside>}</div>
         {phase!==0&&!(phase===4&&latest?.status==='partial')&&taskStatus}
-        <div hidden={phase!==0}><ProductCheckpoint p={p} phase={0} busy={busy||running} mutate={mutate} go={go} onSources={(sourceId)=>{setFocusRefs(sourceId?[{source_id:sourceId}]:[]);setSourcesOpen(true);}} analyzing={running} analysisStatus={taskStatus} onAnalyze={()=>planAction('organize')}/></div>
+        <div hidden={phase!==0}><IntakeChat p={p} model={models.model||{}} busy={busy||running} blocked={actionBlockReason} tasks={tasks} status={taskStatus} onRefresh={retry} onStarted={async task=>{setTasks(current=>[...current.filter(t=>t.id!==task.id),task]);await refresh().catch(onRefreshFail);}} onSources={()=>setSourcesOpen(true)} onOrganize={()=>act(()=>planAction('organize'))} go={go}/></div>
         <div hidden={phase!==1}>
+          <div className="toolbar"><button onClick={()=>go(0)}>返回聊天</button><button disabled={busy||running||!!actionBlockReason} onClick={()=>act(()=>planAction('organize'))}>根据已保存输入整理草稿</button><span>也可直接编辑下方卡片；保存不调用模型。</span></div>
           <ProductCheckpoint p={p} phase={1} busy={busy||running} mutate={mutate} go={go} onSources={(sourceId)=>{setFocusRefs(sourceId?[{source_id:sourceId}]:[]);setSourcesOpen(true);}} onHelp={openHelp} onCandidate={()=>setCandidateOpen(true)} onItem={shared.onItem} onSource={shared.onSource}/>
 
           <details className="secondary-tools"><summary>按需比较方案方向（不是必选步骤）</summary><p>当前方向：{direction?.name||'尚未选择'}。方向不会自动采纳关联假设。</p><button disabled={busy||running||!!actionBlockReason} onClick={()=>act(()=>planAction('explore'))}>探索可选方案</button><ArtifactTabs {...shared} tab="options"/>{currentPreviewOption&&<article><h3>{currentPreviewOption.name}</h3><p>{currentPreviewOption.user_path}</p><p>方向讨论不等于条目采纳或正式确认。</p><button onClick={()=>setPreviewOption(null)}>收起预览</button></article>}</details>

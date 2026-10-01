@@ -2,9 +2,9 @@ import React, { useRef, useState } from 'react';
 import { ActionInput, ActionPlan, Project, UserTask } from './api';
 import { useDialog } from './shell';
 type Obj = Record<string, any>;
-export const phases = ['提供现状与诉求', '核对现状、价值与改动范围', '澄清流程与规则', '核对功能草图', '评审 MRD 与 PRD', '确认与交接'];
+export const phases = ['聊清需求想法', '核对需求草稿', '澄清流程与规则', '核对功能草图', '评审 MRD 与 PRD', '确认与交接'];
 const states: Obj = { queued: '等待开始', running: '正在处理', succeeded: '已生成，待核对', partial: '已处理可用内容，仍有限制', awaiting_user: '等待你的决定', failed: '本次未完成，已有内容保留', cancelled: '已停止后续步骤', paused_budget: '已暂停，请核对后重新发起' };
-const steps: Obj = { vision: '分析待处理图片', ingest: '整理材料和目标', clarify: '更新需求理解', brainstorm: '比较可选方向', ui: '生成讨论原型', prd: '生成文档讨论稿', review: '审查当前内容', change: '分析修改建议' };
+const steps: Obj = { interview: '聊清需求想法', vision: '分析待处理图片', ingest: '整理材料和目标', clarify: '更新需求理解', brainstorm: '比较可选方向', ui: '生成讨论原型', prd: '生成文档讨论稿', review: '审查当前内容', change: '分析修改建议' };
 
 export function TaskStatus({ task, busy = false, uncertain = false, onRefresh, onCancel, onRetry, onViewResult }: { task?: UserTask; busy?: boolean; uncertain?: boolean; onRefresh?: () => void; onCancel: () => void; onRetry: () => void; onViewResult?: () => void }) {
   if (!task) return null;

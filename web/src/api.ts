@@ -2,7 +2,7 @@ import { beginActivity } from './activity';
 export type JsonObject = Record<string, any>;
 export interface ProjectSummary { id: string; name: string; revision: number; created?: string; updated_at?: string; flow_current_title?: string }
 export interface Run { id: string; stage: string; status: string; message: string; calls: number; error?: string; cost?: number }
-export type BusinessAction = 'organize' | 'explore' | 'clarify' | 'prototype' | 'document' | 'review' | 'change';
+export type BusinessAction = 'interview' | 'organize' | 'explore' | 'clarify' | 'prototype' | 'document' | 'review' | 'change';
 export interface ActionInput { expected_revision: number; action: BusinessAction; message: string; document_type: string; option_id?: string | null; max_calls?: number | null; target?: JsonObject }
 export interface BudgetPolicy { mode: 'function_first'|'fixed'|'unlimited'; initial_output_tokens: number; maximum_output_tokens: number; truncation_escalations: number; action_seconds: number | null; input_measure: string; input_allowance: number | null }
 export interface ActionPlan { budget_policies?: Record<string,BudgetPolicy>; plan_hash: string; label: string; stages: string[]; max_calls: number | null; expected_revision: number; pending_text: string; context_scope: string; missing: string[]; recipients: { origin: string; model: string; needs_authorization: boolean }[]; sources: { id: string; title: string; status: string }[]; generation_target?: JsonObject }

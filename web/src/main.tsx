@@ -14,7 +14,7 @@ import './workflow.css';
 import './source-preview.css';
 import './onboarding.css';
 
-const REQUIRED_CAPABILITIES = ['actions', 'five-step-workflow'];
+const REQUIRED_CAPABILITIES = ['actions', 'five-step-workflow', 'conversational-intake'];
 const LAST_PROJECT_KEY = 'ra-last-project-id';
 function storedProjectId() { try { return localStorage.getItem(LAST_PROJECT_KEY) || ''; } catch { return ''; } }
 function rememberProject(id: string) { try { if (id) localStorage.setItem(LAST_PROJECT_KEY, id); else localStorage.removeItem(LAST_PROJECT_KEY); } catch { /* Storage can be unavailable; project switching still works. */ } }

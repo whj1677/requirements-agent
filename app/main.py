@@ -78,7 +78,7 @@ class ActionTarget(Strict):
     section_id: str | None = None
 
 class ActionPlan(Revision):
-    action: Literal['organize','explore','clarify','prototype','document','review','change']
+    action: Literal['interview','organize','explore','clarify','prototype','document','review','change']
     message: str = Field(default='',max_length=12000)
     document_type: Literal['prd','mrd'] = 'prd'
     option_id: str | None = None
@@ -478,6 +478,23 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
                 require(set(body.scope_ids)<=valid,'REFERENCE_INVALID','本期范围只能引用实际目标需求')
                 p.setdefault('product_context',{})['scope_ids']=list(dict.fromkeys(body.scope_ids))
             p.setdefault('product_context',{}).update(body.values)
+        return p
+
+    @app.post('/api/projects/{pid}/intake/direct')
+    async def direct_intake(pid:str,body:ContextEdit):
+        require(set(body.values)<=(INTAKE.keys()|SCOPE.keys()),'CONTEXT_INVALID','未知核对字段')
+        require(all(len(v)<=6000 for v in body.values.values()),'CONTEXT_INVALID','核对说明过长')
+        require(any(v.strip() for v in body.values.values()),'INPUT_REQUIRED','请先填写已知的需求信息')
+        require(not body.scope_ids,'REFERENCE_INVALID','直接填写入口不采纳需求条目')
+        with store.edit(pid,body.expected_revision,'保存专业用户的原始需求输入') as (p,db):
+            text='\n\n'.join(f'{({**INTAKE,**SCOPE})[k]}：{v}' for k,v in body.values.items() if v.strip())
+            source=save_source(store,'直接填写的需求.txt',text.encode('utf-8'),'goal')
+            source['origin']='direct_intake';p['sources'].append(source)
+            p.setdefault('product_context',{}).update(body.values)
+            p['intake']=dict(text=text,platform='',preserved='',mode='direct',
+                source_ids=[s['id'] for s in p['sources'] if not s['excluded']],saved_at=now())
+            checkpoint(p,1,flow_status(p)[0]['content_hash'])
+            p['stage_checks']['1']['meaning']='人工原始输入已保存，尚非范围或业务规则确认'
         return p
 
     @app.post('/api/projects/{pid}/items/{iid}/behavior')

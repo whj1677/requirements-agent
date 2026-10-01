@@ -114,6 +114,7 @@ class Workflow:
 
     def start(self, pid, revision, stage, message, kind='prd', resumed_from=None, *, user_task_id=None, config_override=None, generation_target=None, discussion_target=None):
         require(stage in STAGES and stage != 'handoff', 'STAGE_INVALID', '请选择支持的分析阶段')
+        require(stage!='interview' or user_task_id,'STAGE_INVALID','需求访谈请通过聊天任务入口保存原话并核对接收端')
         config = copy.deepcopy(config_override or self.config(stage))
         require(not any(t['status'] in ('queued','running') and t['id'] != user_task_id for t in self.store.records(pid,'user_task')), 'PROJECT_BUSY','当前项目任务正在执行，请等待或取消',409)
         require(not any(t['status'] in ('queued','running') for t in self.store.records(pid,'run')), 'PROJECT_BUSY','当前项目已有模型任务',409)
@@ -217,7 +218,7 @@ class Workflow:
                         retries += 1
                         await asyncio.sleep(min(retries, 2))
                         continue
-                    if e.code in ('SCHEMA_INVALID','REFERENCE_INVALID','OUTPUT_EMPTY','OUTPUT_TRUNCATED') and repair_count < 2:
+                    if run['stage']!='interview' and e.code in ('SCHEMA_INVALID','REFERENCE_INVALID','OUTPUT_EMPTY','OUTPUT_TRUNCATED') and repair_count < 2:
                         failed_output = evidence.value.get('final_output') or (dumps(value) if value is not None else '无可用最终输出')
                         if run['stage'] in ('clarify','change','brainstorm','review'):
                             anchor_value=value if isinstance(value,dict) else (
@@ -276,10 +277,14 @@ class Workflow:
                 require(execution_hash(current)==execution_hash(p),'STALE_REVISION','任务执行期间输入或产物发生变化；结果已保留在调用证据，未激活',409)
                 if run['stage']=='review':
                     require(review_target(current)==review_target(p),'STALE_REVISION','审查期间文档或页面已改变，请重新审查',409)
-                if run['message'].strip():
+                if run['message'].strip() and not (run['stage']=='interview' and run.get('user_task_id')):
                     current['messages'].append(dict(role='user', stage=run['stage'], text=run['message'], created=now()))
                 candidate_count=len(current.get('ui_candidates', []))
                 apply_response(current, value)
+                if run['stage']=='interview':
+                    current['messages'][-1]['user_task_id']=run.get('user_task_id')
+                    current['messages'][-1]['run_id']=rid
+                    current['interview_state']=dict(can_organize=value['result']['can_organize'],run_id=rid)
                 if run['stage']=='prd':
                     artifact=current['documents'][run['document_type']]
                     artifact['sketch_policy']='excluded'

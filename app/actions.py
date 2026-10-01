@@ -9,9 +9,9 @@ from .sources import save_source
 from .product_flow import execution_issues
 from .budgets import policy_summary
 
-LABELS = {'organize':'整理当前信息','explore':'探索可选方案','clarify':'根据回答更新理解',
+LABELS = {'interview':'聊清需求想法','organize':'整理当前信息','explore':'探索可选方案','clarify':'根据回答更新理解',
           'prototype':'生成功能草图','document':'生成评审稿','review':'审查当前内容','change':'讨论修改方案'}
-STAGES = {'explore':['brainstorm'],'clarify':['clarify'],'prototype':['ui'],
+STAGES = {'interview':['interview'],'explore':['brainstorm'],'clarify':['clarify'],'prototype':['ui'],
           'document':['prd'],'review':['review'],'change':['change']}
 ACTIVE = ('queued','running')
 
@@ -47,6 +47,7 @@ class Actions:
         p = p or self.store.get(pid)
         require(p['revision']==body['expected_revision'],'STALE_REVISION','内容版本已变化，请保留输入并重新核对',409)
         require(body['action'] in LABELS,'ACTION_INVALID','业务动作不存在')
+        require(body['action']!='interview' or body['message'].strip(),'INPUT_REQUIRED','请先发一条消息，零碎的想法也可以。')
         target_label=target_context(p,body.get('target'))
         require(not target_label or body['action'] in ('clarify','change','prototype'), 'TARGET_INVALID','此动作不支持局部修改')
         active=[s for s in p['sources'] if not s['excluded']]
@@ -115,8 +116,12 @@ class Actions:
                     'DATA_AUTH_REQUIRED','请在当前任务中核对接收端及新增内容范围',403)
             if body['message'].strip():
                 source=save_source(self.store,'对话输入.txt',body['message'].encode('utf-8'),'goal')
+                if body['action']=='interview':source['origin']='interview'
                 p['sources'].append(source)
                 p['revision']+=1
+                if body['action']=='interview':
+                    from .interview import record_input
+                    record_input(p,body['message'],tid,source['id'])
                 db.execute('INSERT INTO revisions VALUES(?,?,?,?,?)',(pid,p['revision'],dumps(p),'保存当前任务输入为来源',now()))
             ids=[s['id'] for s in p['sources'] if not s['excluded']]
             if authorize:

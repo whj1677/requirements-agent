@@ -21,6 +21,7 @@ DEFAULT = dict(name='DeepSeek 官方', base_url='https://api.deepseek.com', mode
                thinking_disabled=True, review_thinking=True, documented_at='2026-09-27', local_allowed=False, proxy='', input_price=None, output_price=None,
                **POLICY_DEFAULTS)
 STAGES = read_json(KIT / 'prompts/registry.json')['stage_files']
+STAGES = dict(STAGES, interview=None)
 
 
 def delimiter_hint(content):
@@ -155,6 +156,9 @@ class Provider:
 
 
 def request_schema(stage):
+    if stage=='interview':
+        from .interview import SCHEMA as interview_schema
+        return interview_schema
     if stage=='prd':return PLAN_SCHEMA_V4
     if stage=='ingest':
         return ingest.schema()
@@ -298,7 +302,12 @@ def assemble(p, stage, user_message, config, folder, kind='prd', generation_targ
     base = (KIT / 'prompts/00_system.md').read_text('utf-8')
     if stage=='prd':base=base.split('## 输出')[0]
     header['response_boundary']=response_boundary(header['schema'])
-    system = base + '\n' + (KIT / 'prompts' / STAGES[stage]).read_text('utf-8') + '\n可信任务头：' + dumps(header)
+    if stage=='interview':
+        from .interview import PROMPT
+        base=base.split('## 输出')[0]
+        stage_prompt=PROMPT
+    else:stage_prompt=(KIT / 'prompts' / STAGES[stage]).read_text('utf-8')
+    system = base + '\n' + stage_prompt + '\n可信任务头：' + dumps(header)
     context = {k:p[k] for k in ('items','questions','options','documents','ui')}
     context['discussion_direction'] = [dict(option_id=o['id'], name=o['name'], status=o['direction_status'])
                                        for o in p['options'] if o.get('direction_status')]
@@ -311,6 +320,10 @@ def assemble(p, stage, user_message, config, folder, kind='prd', generation_targ
         context['sketch_review']={}
     context['requirement_relations']=p.get('requirement_relations',[])
     context['recent_messages'] = p['messages'][-8:]
+    if stage=='interview':
+        context['recent_messages']=[{k:m.get(k) for k in ('role','stage','text','created')} for m in p['messages'][-16:]]
+        context['documents']={}
+        context['interview_policy']='聊天内容尚未成为规范；已确认范围保持，新的讨论供后续整理成候选。当前不交付HTML或代码。'
     if stage=='clarify':
         from .product_flow import clarification_focus
         context['documents']=review_documents(p)
