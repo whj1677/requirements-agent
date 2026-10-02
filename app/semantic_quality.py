@@ -2,7 +2,7 @@
 import re
 from .core import require
 
-VERSION = 'semantic-quality-5'
+VERSION = 'semantic-quality-6'
 POLICY = (
     '先核对输入自身是否一致，来源引用正确和人工回答有出处不证明其含义无矛盾。'
     '对计数单位、边界包含、量词、时点与条件构造具体反例；区分Unicode码点和扩展字素簇，'
@@ -18,6 +18,9 @@ POLICY = (
     '建议不能升级为必须培训等交付义务。引用是溯源，不是语义蕴含证明；逐句核对引用能否支持本句。'
     '检查真实明确来源例外：运行时PM审批有明确依据、已有代码/材料明确支持同一场景、明确业务决定培训或计数时不要误报。'
     '规范文案错误写finding并定位句子/字段，业务计数等真正未决写required_decisions；不得改历史基线或自动采纳。'
+    'counting_definition_facts按来源、当前字段、人工回答和实际文档位置区分定义缺失与定义矛盾。'
+    '已写Unicode码点或扩展字素簇就是存在定义，不能再声称计数口径未明确；定义存在不证明其内部一致。'
+    '例如已定义码点却又说每个emoji恒为一码点，应报告定义矛盾，给可复算反例并请PM选择，不能把矛盾改称缺定义或替PM选。'
 )
 UNIT = re.compile(r'码点|code\s*points?|字素簇|grapheme', re.I)
 CODEPOINT = re.compile(r'(?:Unicode\s*)?码点|code\s*points?', re.I)
@@ -144,6 +147,94 @@ def counting_decision(text):
     return counting_choice(text) is not None
 
 
+def counting_definition(text):
+    """Definition presence is separate from consistency and from a PM choice."""
+    units=set()
+    for clause in clauses(text or ''):
+        if re.search(r'尚未|未决定|未确定|待确认|待决定|不确定|还是|undecided',clause,re.I) or clause.endswith(('？','?')):
+            continue
+        for match in UNIT.finditer(clause):
+            prefix=re.split(r'并且|且|但是|但',clause[:match.start()])[-1]
+            if re.search(r'不按|不采用|不选择|不使用|并非|不是|而非|不得|不能|不应',prefix):continue
+            if not (re.search(r'计数|计量|口径|长度|分别计|逐.*计|计入|最多|上限|不超过|count|length|maximum',clause,re.I)
+                    or re.search(r'(?:按|采用|选择|以).*(?:码点|字素簇|code\s*points?|grapheme)',clause,re.I)
+                    or re.search(r'\d',prefix)):
+                continue
+            units.add('codepoints' if CODEPOINT.fullmatch(match.group()) else 'graphemes')
+    witness=counting_witness(text or '')
+    return dict(dimension='text_length_counting_unit',definition_present=bool(units),
+                declared_units=sorted(units),status='contradictory' if witness else 'defined' if units else 'missing')
+
+
+def counting_definition_facts(p,excerpts=None):
+    """Read-only facts keep object/source/location; never merge unrelated units."""
+    facts=[]
+    def add(origin,location,text,refs=(),sources=()):
+        if not (UNIT.search(text or '') or re.search(r'计数|口径|长度|字符|count|length',text or '',re.I)):return
+        facts.append(dict(origin=origin,location=location,quote=text,related_refs=list(refs),
+                          source_refs=list(sources),**counting_definition(text)))
+    items=[i for i in p.get('items',[]) if i.get('selection_status')=='selected' and i.get('applies_to')=='to_be']
+    for item in items:
+        for field,text in [('statement',item.get('statement',''))]+[(f'behavior.{k}',v) for k,v in (item.get('behavior') or {}).items() if isinstance(v,str)]:
+            add('current_item',item['id']+'.'+field,text,[item['id']],item.get('source_refs',[]))
+    for q in p.get('questions',[]):
+        if q.get('status')=='answered' and not q.get('superseded_by') and not q.get('out_of_scope_reason'):
+            add('human_answer',q['id']+'.answer',q.get('answer') or '',[q['id']]+q.get('related_refs',[]),q.get('answer_source_refs',[]))
+    if excerpts is None:
+        excerpts=[e for s in p.get('sources',[]) if not s.get('excluded') for e in s.get('excerpts',[])]
+    for e in excerpts:
+        pair=(e['source_id'],e['id'])
+        owners=[i['id'] for i in items if pair in source_pairs(i.get('source_refs',[]))]
+        add('source',e['source_id']+'/'+e['id'],e.get('text',''),owners,[dict(source_id=e['source_id'],excerpt_id=e['id'])])
+    for artifact in p.get('documents',{}).values():
+        visible=readable_document_blocks(artifact)
+        for section in artifact.get('content',{}).get('sections',[]):
+            for index,block in enumerate(section.get('blocks',[])):
+                location=f"{artifact['id']}.{section['section_id']}.blocks[{index}]"
+                if location in visible:add('document',location,visible[location],block.get('ref_ids',[]))
+    return facts
+
+
+DEFINITION_TOPIC = re.compile(r'计数(?:单位|口径|方式|定义)|长度.{0,8}(?:单位|计算|计数)|(?:按|用|以)哪种.{0,4}(?:单位|口径)|counting\s+(?:unit|definition)',re.I)
+DEFINITION_MISSING = re.compile(r'(?:尚未|未|没有)(?:明确|定义|指定|确定|说明|提供|给出|标明|标注)|缺少|缺失|不明确|不清楚|undefined|missing',re.I)
+
+
+def definition_issue(text):
+    """Classify an asserted gap, not quoted evidence or a denial of that gap."""
+    prose=re.sub(r'“[^”]*”|「[^」]*」|"[^"]*"','',text)
+    if not DEFINITION_TOPIC.search(prose):return None
+    for match in DEFINITION_MISSING.finditer(prose):
+        if not re.search(r'不是|并非|不应(?:说|称|认为)|不能(?:说|称|认为)',prose[:match.start()]):
+            return 'missing_definition'
+    return None
+
+
+def validate_definition_claims(value,p,excerpts=None):
+    facts=counting_definition_facts(p,excerpts)
+    by_location={f['location']:f for f in facts}
+    statements=[(f,f.get('message','')+' '+f.get('suggested_resolution','')) for f in value.get('findings',[])]
+    from .understanding import leaves
+    statements += [(q,q.get('question','')+' '+q.get('why','')) for q in leaves(value.get('questions',[]))]
+    for statement,text in statements:
+        active=[]
+        for clause in clauses(text):
+            locations=DOCUMENT_LOCATION.findall(clause)
+            if locations:active=locations
+            if definition_issue(clause)!='missing_definition':continue
+            # A named block owns its unit label; parent rules cannot supply a
+            # missing local label, or turn a present local label into a gap.
+            if active:
+                bound=[by_location[loc] for loc in active if loc in by_location]
+            else:
+                refs=set(statement.get('related_refs',[]));pairs=source_pairs(statement.get('source_refs',[]))
+                bound=[f for f in facts if f['origin']!='document' and (
+                    f['origin']!='source' and refs & set(f['related_refs']) or
+                    f['origin']=='source' and pairs & source_pairs(f['source_refs']) and
+                    (not refs or not f['related_refs'] or refs & set(f['related_refs'])))]
+            require(not any(f['definition_present'] for f in bound),'SEMANTIC_BLOCKED',
+                    '计数定义已存在，不能报告定义缺失；核对定义是否矛盾，保留反例与PM选择：'+str([f['location'] for f in bound if f['definition_present']]))
+
+
 def item_counting_choices(item):
     texts=[item.get('statement','')]+[v for v in (item.get('behavior') or {}).values() if isinstance(v,str)]
     return {choice for text in texts if (choice:=counting_choice(text))}
@@ -151,6 +242,7 @@ def item_counting_choices(item):
 
 def validate_analysis(value,p,excerpts):
     if value['stage'] not in ('ingest','clarify','change'):return
+    validate_definition_claims(value,p,excerpts)
     from .understanding import leaves
     items={i['id']:i for i in p.get('items',[])}
     pending=[q for q in p.get('questions',[]) if q.get('blocking') and q.get('status')!='answered' and not q.get('superseded_by') and not q.get('out_of_scope_reason')]
@@ -202,6 +294,7 @@ def validate_analysis(value,p,excerpts):
         '输入或候选的计数口径互相矛盾：码点与每个emoji恒为一码点不能同时覆盖复合emoji。请提出阻塞澄清和具体反例，不替PM选口径。')
 
 def validate_review(value,p):
+    validate_definition_claims(value,p)
     checks=current_counting_checks(p)
     result=value['result']
     require(not checks or (result['assessment']=='needs_changes' and
