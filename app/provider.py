@@ -144,6 +144,12 @@ class Provider:
         started = time.monotonic()
         try:
             async with httpx.AsyncClient(timeout=config['timeout'], follow_redirects=False, trust_env=False, proxy=config.get('proxy') or None) as client:
+                if config.get('max_calls') is not None:
+                    require(evidence is not None and getattr(evidence,'request_budget',None) is not None
+                            and hasattr(evidence,'before_send'),
+                            'BUDGET_AUTH_REQUIRED', '有限请求上限必须绑定已授权任务计数器；未发送请求', 409)
+                if evidence and hasattr(evidence,'before_send'):
+                    evidence.before_send(config)
                 response = await client.post(config['base_url'].rstrip('/') + '/chat/completions', json=body, headers={'Authorization': 'Bearer ' + key})
         except httpx.TimeoutException:
             raise Problem('TIMEOUT', '模型请求超时；已发请求可能计费')

@@ -71,6 +71,7 @@ class RunInput(Revision):
     stage: str
     message: str = Field(default='',max_length=12000)
     document_type: Literal['prd','mrd'] = 'prd'
+    max_calls: int | None = Field(default=None,ge=1,strict=True)
 
 class ActionTarget(Strict):
     kind: Literal['item','question','ui','document']
@@ -82,7 +83,7 @@ class ActionPlan(Revision):
     message: str = Field(default='',max_length=12000)
     document_type: Literal['prd','mrd'] = 'prd'
     option_id: str | None = None
-    max_calls: int | None = Field(default=None,ge=1)
+    max_calls: int | None = Field(default=None,ge=1,strict=True)
     target: ActionTarget | None = None
 
 class ActionStart(ActionPlan):
@@ -910,7 +911,7 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
     @app.post('/api/models/{slot}/test')
     async def test_model(slot:str):
         require(slot in ('model','vision'),'CONFIG_INVALID','未知配置槽')
-        c=store.setting(slot) or dict(DEFAULT)
+        c=dict(store.setting(slot) or DEFAULT,max_calls=None)
         content='Return {"connection":"ok"}. This is a connection test with no project material.'
         if slot=='vision':
             import base64,io
@@ -940,7 +941,8 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
 
     @app.post('/api/projects/{pid}/runs')
     async def run(pid:str,body:RunInput):
-        return workflow.start(pid,body.expected_revision,body.stage,body.message,body.document_type)
+        config=dict(workflow.config(body.stage),max_calls=body.max_calls)
+        return workflow.start(pid,body.expected_revision,body.stage,body.message,body.document_type,config_override=config)
 
     @app.post('/api/projects/{pid}/actions/plan')
     async def action_plan(pid:str,body:ActionPlan):
@@ -982,6 +984,7 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
     async def resume(pid:str,rid:str,body:Revision):
         r=store.get_record(pid,rid,'run')
         require(not r.get('user_task_id'),'TASK_REVIEW_REQUIRED','此步骤属于业务任务，请重新核对整个任务的范围和总预算',409)
+        require(r['provider'].get('max_calls') is None,'TASK_REVIEW_REQUIRED','有限额度步骤需重新核对计划并明确授权，不自动续跑',409)
         require(r['status'] in ('failed','cancelled','paused_budget'),'RUN_FINISHED','无需重跑已成功阶段')
         return workflow.start(pid,body.expected_revision,r['stage'],r['message'],r['document_type'],rid)
 

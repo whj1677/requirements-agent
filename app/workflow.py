@@ -116,13 +116,20 @@ class Workflow:
         require(stage in STAGES and stage != 'handoff', 'STAGE_INVALID', '请选择支持的分析阶段')
         require(stage!='interview' or user_task_id,'STAGE_INVALID','需求访谈请通过聊天任务入口保存原话并核对接收端')
         config = copy.deepcopy(config_override or self.config(stage))
+        from .request_budget import validate_limit, initial_budget
+        limit=validate_limit(config.get('max_calls'))
+        if user_task_id:
+            approved=self.store.get_record(pid,user_task_id,'user_task')
+            require(approved['authorized_configs'][stage]=={k:v for k,v in config.items() if k!='proxy'},
+                    'BUDGET_AUTH_CHANGED','步骤配置与已批准计划不一致',409)
         require(not any(t['status'] in ('queued','running') and t['id'] != user_task_id for t in self.store.records(pid,'user_task')), 'PROJECT_BUSY','当前项目任务正在执行，请等待或取消',409)
         require(not any(t['status'] in ('queued','running') for t in self.store.records(pid,'run')), 'PROJECT_BUSY','当前项目已有模型任务',409)
         p = self.store.get(pid)
         require(p['revision'] == revision, 'STALE_REVISION', '页面已过期', 409)
         issues=execution_issues(p,stage,kind,discussion_target)
         require(not issues,'STAGE_BLOCKED','；'.join(issues),409)
-        run = dict(stage=stage, status='queued', revision=revision, message=message, document_type=kind, calls=0, attempts=[], events=[], created=now(), error=None, resumed_from=resumed_from, provider={k:v for k,v in config.items() if k not in ('proxy',)}, prompt_version='1.1', cost=None)
+        run = dict(stage=stage, status='queued', revision=revision, message=message, document_type=kind, max_calls=limit, calls=0, attempts=[], events=[], created=now(), error=None, resumed_from=resumed_from, provider={k:v for k,v in config.items() if k not in ('proxy',)}, prompt_version='1.1', cost=None)
+        if limit is not None:run['request_budget']=initial_budget(limit)
         rid = self.store.record(pid, 'run', run)
         self.store.update_run(pid,rid,user_task_id=user_task_id,generation_target=generation_target,input_state_hash=execution_hash(p))
         task = asyncio.create_task(self.execute(pid, rid, p, config))
@@ -132,6 +139,8 @@ class Workflow:
 
     async def execute(self, pid, rid, p, config):
         run = self.store.get_record(pid, rid, 'run')
+        from .request_budget import RequestBudget
+        budget=RequestBudget(self.store,pid,rid,config['max_calls']) if config.get('max_calls') is not None else None
         calls, repair_count, retries = 0, 0, 0
         repair_parent = None
         pending_repair = False
@@ -161,23 +170,27 @@ class Workflow:
                 state = self.store.get_record(pid, rid, 'run')
                 require(state['status'] != 'cancelled', 'CANCELLED', '任务已取消；已发请求仍可能计费')
                 check_context(messages, config)
+                if budget:budget.available()
                 if pending_repair:
                     repair_count += 1
                     pending_repair = False
-                calls += 1
+                if not budget:calls += 1
                 call_id = ident('CALL')
                 evidence = ModelCallEvidence(self.store.folder, call_id, rid, run['stage'],
                                              config['model'], origin(config), repair_parent,
-                                             self.provider.key(config))
+                                             self.provider.key(config),request_budget=budget)
                 evidence.request_context(dict(config,max_tokens=out_budget),messages,authorization,input_metrics(messages))
-                attempt = dict(call=calls, call_id=call_id, repair_of=repair_parent,max_tokens=out_budget,
+                attempt = dict(call=len(attempts)+1, call_id=call_id, repair_of=repair_parent,max_tokens=out_budget,
                     authorization_hash=digest(authorization),actual_input_hash=digest(messages))
-                events.append(dict(time=now(), phase='调用模型', call=calls, call_id=call_id))
-                self.store.update_run(pid, rid, calls=calls, events=events)
+                events.append(dict(time=now(), phase='调用模型', call=len(attempts)+1, call_id=call_id))
+                self.store.update_run(pid, rid, events=events,**({} if budget else {'calls':calls}))
                 value = None
                 call_started = time.monotonic()
                 try:
                     value, meta = await asyncio.wait_for(self.provider.request(dict(config, max_tokens=out_budget), messages, evidence=evidence), timeout=config['timeout'])
+                    if budget:
+                        require(evidence.value.get('request_state')=='response_received','BUDGET_AUTH_REQUIRED','模型响应缺少出站计数绑定，未采纳结果')
+                        calls=self.store.get_record(pid,rid,'run')['calls']
                     attempt.update(meta)
                     require(self.store.get_record(pid, rid, 'run')['status'] != 'cancelled', 'CANCELLED', '已取消，结果未采纳')
                     if run['stage']=='prd':
@@ -204,6 +217,7 @@ class Workflow:
                     attempts.append(attempt)
                     break
                 except (Problem, asyncio.TimeoutError) as e:
+                    if budget:calls=self.store.get_record(pid,rid,'run')['calls']
                     if isinstance(e, asyncio.TimeoutError):
                         e = Problem('TIMEOUT', '单次模型请求超时；已发请求可能计费')
                     evidence.finish(e.code, round(time.monotonic()-call_started, 3))
@@ -298,12 +312,14 @@ class Workflow:
                         raise Problem('OUTPUT_TRUNCATED','输出仍截断，有限修复已结束，不完整内容未采纳。请分段生成或调整模型单次输出上限。')
                     raise e
                 except asyncio.CancelledError:
+                    if budget:calls=self.store.get_record(pid,rid,'run')['calls']
                     evidence.finish('CANCELLED', round(time.monotonic()-call_started, 3))
                     attempt.update(error='CANCELLED', validation_result='CANCELLED',
                                    evidence_limitations=evidence.limitations[:])
                     attempts.append(attempt)
                     raise Problem('CANCELLED','任务已取消；本地已停止等待，接收端已发请求仍可能计费')
                 except Exception:
+                    if budget:calls=self.store.get_record(pid,rid,'run')['calls']
                     evidence.finish('INTERNAL_ERROR', round(time.monotonic()-call_started, 3))
                     attempt.update(error='INTERNAL_ERROR', validation_result='INTERNAL_ERROR',
                                    evidence_limitations=evidence.limitations[:])
@@ -360,8 +376,10 @@ class Workflow:
             status = 'partial' if omitted or value['limitations'] or any(s['parse_status'] in ('failed','partial','office_required','permission_denied') for s in p['sources'] if not s['excluded']) else ('awaiting_user' if value['questions'] else 'succeeded')
             self.store.update_run(pid, rid, status=status, calls=calls, attempts=attempts, completed=now(), response=value, result_applied=True, cost=cost, repair_count=repair_count, output_state_hash=execution_hash(output_state), events=events + [dict(time=now(),phase='校验并保存')])
         except asyncio.CancelledError:
+            if budget:calls=self.store.get_record(pid,rid,'run')['calls']
             self.store.update_run(pid,rid,status='cancelled',error='CANCELLED',message='任务已取消；未采纳后续结果',calls=calls,attempts=attempts,events=events,completed=now())
         except Exception as e:
+            if budget:calls=self.store.get_record(pid,rid,'run')['calls']
             error = e if isinstance(e, Problem) else Problem('INTERNAL_ERROR', '处理失败：' + type(e).__name__)
             state = 'cancelled' if error.code == 'CANCELLED' else 'paused_budget' if error.code == 'BUDGET_EXHAUSTED' else 'failed'
             self.store.update_run(pid, rid, status=state, error=error.code, message=error.message, calls=calls, attempts=attempts, repair_count=repair_count, events=events, completed=now())

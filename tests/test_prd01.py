@@ -94,7 +94,7 @@ def test_draft_assembly_preserves_answers_unknowns_and_exports(tmp_path):
     assert all(c['item_id']!='REQ-CANDIDATE' for c in r['result']['coverage'])
 
 
-def test_legacy_call_limit_does_not_change_frozen_single_request_capacity(tmp_path,monkeypatch):
+def test_omitted_call_limit_preserves_frozen_single_request_capacity(tmp_path,monkeypatch):
     # Single-request configuration snapshot; business gates are covered separately.
     monkeypatch.setattr('app.workflow.execution_issues',lambda *a:[])
     async def run():
@@ -104,14 +104,14 @@ def test_legacy_call_limit_does_not_change_frozen_single_request_capacity(tmp_pa
             async def request(self,c,m,evidence=None):
                 self.configs.append(dict(c));return await super().request(c,m,evidence)
         provider=Capture();w=Workflow(store,provider);store.setting('model',dict(DEFAULT,max_tokens=700,max_calls=2))
-        approved=dict(DEFAULT,max_tokens=700,max_calls=2)
+        approved=dict(DEFAULT,max_tokens=700,max_calls=None)
         r=w.start(p['id'],p['revision'],'prd','',config_override=approved)
         approved['max_tokens']=2800  # later setting/caller changes cannot alter this approved run
         await w.tasks[r['id']]
         result=store.get_record(p['id'],r['id'])
         assert [c['max_tokens'] for c in provider.configs]==[700,700,700]
         assert result['calls']==3 and result['status']=='failed' and result['error']=='OUTPUT_TRUNCATED'
-        assert result['repair_count']==2  # bounded repair, independent of legacy call quota
+        assert result['repair_count']==2  # omitted cap keeps the existing finite repair behavior
         assert store.get(p['id'])['documents']=={}
     asyncio.run(run())
 
@@ -205,7 +205,7 @@ def test_http_truncation_is_bounded_and_old_document_preserved(case):
     body,preview=action_plan(c,root,'document','',max_calls=2)
     assert start(c,root,body,preview).status_code==200
     task=finished(c,root)
-    assert task['calls']==3 and task['status']=='failed' and task['error']=='OUTPUT_TRUNCATED'
-    assert [b['max_tokens'] for b in model['requests'][before:]]==[700,700,700]
+    assert task['calls']==2 and task['status']=='paused_budget' and task['error']=='BUDGET_EXHAUSTED'
+    assert [b['max_tokens'] for b in model['requests'][before:]]==[700,700]
     assert c.get(root).json()['documents']==old
     assert task['cost'] is None

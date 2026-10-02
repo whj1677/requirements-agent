@@ -1,4 +1,4 @@
-"""No application spending quotas; source/cancel/provider limits still apply."""
+"""Omitted action caps retain defaults; source/cancel/provider limits still apply."""
 import asyncio
 import copy
 
@@ -11,7 +11,7 @@ from app.provider import DEFAULT, Provider
 from tests.test_ui02_actions import case, finished, image, plan, start
 
 
-def test_old_quota_configuration_and_old_clients_cannot_pause_new_tasks(case):
+def test_old_global_quota_and_omitted_action_cap_keep_default_execution(case):
     client, app, model, root = case
     legacy = dict(model['config'], budget_mode='fixed', max_calls=1, context_chars=10000, action_seconds=5)
     for slot in ('model', 'vision'):
@@ -20,7 +20,8 @@ def test_old_quota_configuration_and_old_clients_cannot_pause_new_tasks(case):
     assert all(c['budget_mode'] == 'unlimited' and c['max_calls'] is None for c in client.get('/api/models').json().values())
     for _ in range(25):
         image(client, root)
-    body, preview = plan(client, root, max_calls=1)
+    body, preview = plan(client, root, max_calls=None)
+    del body['max_calls']; preview=client.post(root+'/actions/plan',json=body).json()
     assert preview['max_calls'] is None and len(preview['stages']) == 10
     assert all(p['mode'] == 'unlimited' and p['input_allowance'] is None for p in preview['budget_policies'].values())
     assert start(client, root, body, preview).status_code == 200

@@ -12,9 +12,10 @@ MAX_EVIDENCE_CHARS = 2_000_000
 
 class ModelCallEvidence:
     def __init__(self, folder: Path, call_id: str, run_id: str, stage: str, model: str,
-                 origin: str, repair_of: str | None, secret: str):
+                 origin: str, repair_of: str | None, secret: str, request_budget=None):
         self.path = folder / 'evidence' / 'model-calls' / (call_id + '.json')
         self.secret = secret
+        self.request_budget = request_budget
         self.limitations = []
         self.final_limit = MAX_FINAL_CHARS
         self.value = dict(call_id=call_id, run_id=run_id, stage=stage, model=model,
@@ -23,6 +24,27 @@ class ModelCallEvidence:
                           usage=None, http_status=None, response_received=False,
                           final_output=None, validation_result='pending', evidence_limitations=[])
         self.save()
+
+    def before_send(self, config):
+        """Called synchronously by Provider immediately before client.post."""
+        if self.request_budget is not None:
+            from .core import Problem
+            try:
+                self.request_budget.reserve(self.value['call_id'], config)
+            except Problem:
+                self.value['request_state']='not_sent'
+                self.save()
+                raise
+            self.value['request_state']='reserved_unknown'
+            self.save()
+            try:
+                self.request_budget.mark(self.value['call_id'],'dispatch_unknown')
+            except Problem:
+                self.value['request_state']='not_sent'
+                self.save()
+                raise
+            self.value['request_state']='dispatch_unknown'
+            self.save()
 
     def save(self):
         try:
@@ -50,6 +72,9 @@ class ModelCallEvidence:
 
     def response(self, content=None, *, http_status=None, finish_reason=None, usage=None,
                  response_model=None, elapsed_seconds=None):
+        if self.request_budget is not None:
+            self.request_budget.mark(self.value['call_id'],'response_received')
+            self.value['request_state']='response_received'
         safe_finish = finish_reason if finish_reason in ('stop','length','content_filter','tool_calls') else None
         safe_model = response_model if isinstance(response_model, str) and len(response_model) <= 200 else None
         if safe_model:

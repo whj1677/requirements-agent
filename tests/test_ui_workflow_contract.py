@@ -105,7 +105,7 @@ def test_contextual_plan_identity_is_bound_and_invalid_object_rejected(tmp_path)
  c,app=client(tmp_path);p=prepared(app.state.store);p=check_prepared(app.state.store,p['id'],through=3);root='/api/projects/'+p['id']
  body=dict(expected_revision=p['revision'],action='clarify',message='只讨论这个问题',document_type='prd',max_calls=2,target={'kind':'question','id':'Q-0001'})
  r=c.post(root+'/actions/plan',json=body);assert r.status_code==200
- assert '相接边界如何处理' in r.json()['target_label'] and r.json()['max_calls'] is None
+ assert '相接边界如何处理' in r.json()['target_label'] and r.json()['max_calls']==2
  original=r.json()['plan_hash']
  body['target']={'kind':'item','id':'REQ-0001'}
  assert c.post(root+'/actions/plan',json=body).json()['plan_hash']!=original

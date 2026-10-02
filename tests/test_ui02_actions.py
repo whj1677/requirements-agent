@@ -26,7 +26,7 @@ def case(tmp_path):
             yield client,app,model,'/api/projects/'+p['id']
 
 
-def plan(c,root,action='organize',message='维护联系人列表，只读角色不能修改。',max_calls=8,**kwargs):
+def plan(c,root,action='organize',message='维护联系人列表，只读角色不能修改。',max_calls=None,**kwargs):
     p=c.get(root).json()
     body=dict(expected_revision=p['revision'],action=action,message=message,document_type='prd',max_calls=max_calls,option_id=None,**kwargs)
     response=c.post(root+'/actions/plan',json=body)
@@ -55,7 +55,7 @@ def test_authorization_budget_idempotency_and_vision_context(case):
     c,app,model,root=case
     image(c,root)
     body,preview=plan(c,root,max_calls=3)
-    assert preview['max_calls'] is None
+    assert preview['max_calls'] == 3
     assert preview['stages']==['vision','ingest'] and not model['requests']
     assert start(c,root,body,preview,False).status_code==403 and not model['requests']
     model['invalid_next']=True
@@ -66,7 +66,7 @@ def test_authorization_budget_idempotency_and_vision_context(case):
     assert duplicate.json()['id']==response.json()['id']
     task=finished(c,root)
     assert task['status']=='succeeded' and task['calls']==3 and len(model['requests'])==3
-    assert task['max_calls'] is None
+    assert task['max_calls'] == 3
     assert len(task['run_ids'])==2
     ctx=json.loads(model['requests'][-1]['messages'][1]['content'][0]['text'])
     assert ctx['vision_observations'][0]['result']['observations'][0]['observation']=='合成图中可见列表和新增按钮'
@@ -79,10 +79,11 @@ def test_authorization_budget_idempotency_and_vision_context(case):
     assert finished(c,root)['status']=='succeeded'
 
 
-def test_legacy_total_call_limit_does_not_block_later_stage(case):
+def test_omitted_total_call_limit_does_not_block_later_stage(case):
     c,app,model,root=case
     image(c,root)
-    body,preview=plan(c,root,max_calls=1)
+    body,preview=plan(c,root,max_calls=None)
+    del body['max_calls']; preview=c.post(root+'/actions/plan',json=body).json()
     assert start(c,root,body,preview).status_code==200
     task=finished(c,root)
     assert task['status']=='succeeded' and task['calls']==2 and len(model['requests'])==2
@@ -90,10 +91,10 @@ def test_legacy_total_call_limit_does_not_block_later_stage(case):
     assert c.get(root).json()['sources'][0]['parse_status']=='read'
 
 
-def test_legacy_total_call_limit_does_not_block_image_batches_or_ingest(case):
+def test_null_total_call_limit_does_not_block_image_batches_or_ingest(case):
     c,app,model,root=case
     for _ in range(4):image(c,root)
-    body,preview=plan(c,root,max_calls=2)
+    body,preview=plan(c,root,max_calls=None)
     assert preview['stages']==['vision','vision','ingest']
     assert start(c,root,body,preview).status_code==200
     task=finished(c,root)
@@ -106,6 +107,22 @@ def test_legacy_total_call_limit_does_not_block_image_batches_or_ingest(case):
     batches=[b & image_ids for b in batches]
     assert len(batches[0])==3 and len(batches[1])==1 and not batches[0]&batches[1]
     assert all(s.get('vision_run_id') for s in c.get(root).json()['sources'] if s.get('image_mime'))
+
+
+@pytest.mark.parametrize('cap',[1,2])
+def test_explicit_cap_shared_by_image_batches_preserves_completed_steps(case,cap):
+    c,app,model,root=case
+    for _ in range(4):image(c,root)
+    body,preview=plan(c,root,max_calls=cap)
+    assert preview['stages']==['vision','vision','ingest'] and preview['max_calls']==cap
+    assert start(c,root,body,preview).status_code==200
+    task=finished(c,root)
+    assert task['status']=='paused_budget' and task['error']=='BUDGET_EXHAUSTED'
+    assert task['completed_steps']==cap and task['calls']==len(model['requests'])==cap
+    assert task['request_budget']['used']==cap and len(task['run_ids'])==cap
+    assert all(s['status']=='NOT_RUN' for s in task['step_states'][cap:])
+    assert len([s for s in c.get(root).json()['sources'] if s.get('vision_run_id')])==(3 if cap==1 else 4)
+    assert not c.get(root).json()['items'] and not c.get(root).json()['documents']
 
 
 def test_cancel_external_change_and_restart_do_not_replay(case):
@@ -200,7 +217,7 @@ def test_changed_plan_and_new_source_require_fresh_review(case):
     assert len(model['requests'])==count
 
 
-def test_active_task_serialization_and_legacy_call_limit_does_not_block_pipeline(case):
+def test_active_task_serialization_and_explicit_cap_bounds_pipeline(case):
     c,app,model,root=case
     image(c,root);model['delay']=.2
     body,preview=plan(c,root,max_calls=1)
@@ -209,15 +226,16 @@ def test_active_task_serialization_and_legacy_call_limit_does_not_block_pipeline
     legacy=c.post(root+'/runs',json=dict(expected_revision=p['revision'],stage='ingest',message='',document_type='prd'))
     assert legacy.status_code==409
     task=finished(c,root)
-    assert task['status']=='succeeded' and len(model['requests'])==2
-    assert task['calls']==2 and task['max_calls'] is None and task['completed_steps']==2
+    assert task['status']=='paused_budget' and len(model['requests'])==1
+    assert task['calls']==1 and task['max_calls']==1 and task['completed_steps']==1
+    assert [s['status'] for s in task['step_states']]==['succeeded','NOT_RUN']
     assert c.post(root+'/runs/'+task['run_ids'][0]+'/resume',json={'expected_revision':c.get(root).json()['revision']}).status_code==409
-    # A fresh action skips the already-understood image; an old body quota is ignored.
+    # Continuing requires a newly reviewed plan; completed vision is preserved.
     body,preview=plan(c,root,message='',max_calls=1)
     assert preview['stages']==['ingest']
     assert start(c,root,body,preview,False).status_code==200
     resumed=finished(c,root)
-    assert resumed['status']=='succeeded' and resumed['max_calls'] is None and len(model['requests'])==3
+    assert resumed['status']=='succeeded' and resumed['max_calls']==1 and len(model['requests'])==2
 
 
 def test_restart_pauses_unfinished_records_without_network(tmp_path):
