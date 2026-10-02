@@ -101,3 +101,105 @@ def test_sourced_human_answers_are_classified_without_becoming_automatically_con
     assert facts[0]['source_refs']==p['questions'][0]['answer_source_refs'] and p==before
     if status=='contradictory':
         with pytest.raises(Problem):compile_plan(plan(),p,'prd')
+
+
+def adoption_review(p,stage='review',claim='本期计数口径未确定，需PM确认当前来源中的方案是否已经采纳。'):
+    value=copy.deepcopy(EXAMPLES[stage]);value['proposals']=[];value['questions']=[]
+    value['findings']=[dict(type='gap',severity='warning',message=claim,related_refs=['REQ-0001'],
+        source_refs=[dict(source_id='SRC-0001',excerpt_id='EX-0001')],suggested_resolution='由PM确认；审查不替PM决定。')]
+    if stage=='review':value['result']['required_decisions']=[]
+    return value
+
+
+@pytest.mark.parametrize('stage',['review','ingest'])
+@pytest.mark.parametrize('unit',['Unicode码点','扩展字素簇'])
+@pytest.mark.parametrize('case,accepted,decision',[
+    ('pending',True,'pending'),('confirmed',False,'confirmed'),
+    ('proposal_then_confirmed',False,'confirmed'),('confirmation_unproven',True,'pending')])
+def test_source_adoption_boundary_separates_proposed_units_and_human_decisions(tmp_path,stage,unit,case,accepted,decision):
+    from app.semantic_quality import counting_definition
+    proposal=f'方案建议：备注可以按{unit}计数；该方案需产品经理确认后才采纳。'
+    sources=dict(pending=proposal,confirmed=f'产品经理已确认：备注按{unit}计数，最多100。',
+        proposal_then_confirmed=proposal+f'产品经理已确认：本期采用{unit}计数。',
+        confirmation_unproven=proposal+'没有证据表明PM已确认采纳该方案。')
+    p=project(tmp_path,'备注最多100字符。');p['sources'][0]['excerpts'][0]['text']=sources[case]
+    value=adoption_review(p,stage);before=copy.deepcopy((p,value))
+    if accepted:validate_response(value,stage,p,p['sources'][0]['excerpts'])
+    else:
+        with pytest.raises(Problem) as error:validate_response(value,stage,p,p['sources'][0]['excerpts'])
+        assert error.value.code=='SEMANTIC_BLOCKED'
+    classification=counting_definition(sources[case])
+    assert classification['definition_present'] and classification['decision_status']==decision
+    assert classification['status']==('undecided' if accepted else 'defined')
+    assert (p,value)==before
+
+
+@pytest.mark.parametrize('unit',['Unicode码点','扩展字素簇'])
+def test_adoption_confirmation_can_reference_the_same_preceding_candidate(tmp_path,unit):
+    p=project(tmp_path,'备注最多100字符。')
+    p['sources'][0]['excerpts'][0]['text']=f'候选方案：备注按{unit}计数；该方案尚未采纳。PM已确认采纳上述方案。'
+    with pytest.raises(Problem) as error:validate_response(adoption_review(p),'review',p,p['sources'][0]['excerpts'])
+    assert error.value.code=='SEMANTIC_BLOCKED'
+
+
+@pytest.mark.parametrize('unit',['Unicode码点','扩展字素簇'])
+def test_pending_source_adoption_does_not_erase_an_existing_current_rule(tmp_path,unit):
+    p=project(tmp_path,f'备注按{unit}计数，最多100。')
+    p['sources'][0]['excerpts'][0]['text']=f'建议备注按{unit}计数；需PM确认后采纳。'
+    with pytest.raises(Problem):validate_response(adoption_review(p),'review',p,p['sources'][0]['excerpts'])
+
+
+@pytest.mark.parametrize('unit',['Unicode码点','扩展字素簇'])
+def test_sourced_human_adoption_answer_keeps_its_authority_and_bindings(tmp_path,unit):
+    from app.semantic_quality import counting_definition_facts
+    p=project(tmp_path,'备注最多100字符。')
+    p['sources'][0]['excerpts'][0]['text']=f'候选：备注可以按{unit}计数；需PM确认。'
+    answer=f'产品经理已确认：本期备注按{unit}计数，最多100。'
+    p['questions'][0].update(question='采用哪种计数口径？',answer=answer,related_refs=['REQ-0001'],
+        answer_source_refs=[dict(source_id='SRC-0001',excerpt_id='EX-0001')])
+    before=copy.deepcopy(p)
+    with pytest.raises(Problem):validate_response(adoption_review(p),'review',p,p['sources'][0]['excerpts'])
+    fact=next(f for f in counting_definition_facts(p) if f['origin']=='human_answer')
+    assert fact['decision_status']=='confirmed' and fact['quote']==answer
+    assert fact['location']==p['questions'][0]['id']+'.answer'
+    assert fact['source_refs']==p['questions'][0]['answer_source_refs'] and 'REQ-0001' in fact['related_refs']
+    assert p==before
+
+
+@pytest.mark.parametrize('unit',['Unicode码点','扩展字素簇'])
+def test_unadopted_candidate_is_still_a_present_unit_when_source_is_claimed_missing(tmp_path,unit):
+    p=project(tmp_path,'备注最多100字符。')
+    p['sources'][0]['excerpts'][0]['text']=f'方案建议：备注可以按{unit}计数；需PM确认后采纳。'
+    value=adoption_review(p,claim='材料未提供任何计数单位。')
+    with pytest.raises(Problem):validate_response(value,'review',p,p['sources'][0]['excerpts'])
+
+
+def test_adoption_confirmation_does_not_remove_a_sourced_counting_contradiction(tmp_path):
+    from app.semantic_quality import counting_definition_facts
+    p=project(tmp_path,CODEPOINTS)
+    p['questions'][0].update(question='本期采用哪种计数口径？',answer='产品经理已确认：'+AMBIGUOUS,
+        related_refs=['REQ-0001'],answer_source_refs=[dict(source_id='SRC-0001',excerpt_id='EX-0001')])
+    before=copy.deepcopy(p)
+    fact=next(f for f in counting_definition_facts(p) if f['origin']=='human_answer')
+    assert fact['decision_status']=='confirmed' and fact['status']=='contradictory'
+    with pytest.raises(Problem):compile_plan(plan(),p,'prd')
+    checks=current_counting_checks(p)
+    assert any(c.get('counterexample',{}).get('codepoints')==101 and
+        c['counterexample']['extended_grapheme_clusters']==100 and c['decision'] for c in checks)
+    assert p==before
+
+
+def test_unrelated_human_confirmation_does_not_adopt_a_counting_candidate(tmp_path):
+    p=project(tmp_path,'备注最多100字符。')
+    p['sources'][0]['excerpts'][0]['text']='候选方案：备注可以按Unicode码点计数；需PM确认后采纳。PM已确认采用登录方案。'
+    validate_response(adoption_review(p),'review',p,p['sources'][0]['excerpts'])
+
+
+@pytest.mark.parametrize('confirmation',['PM未确认采纳该方案。','PM已确认暂不采纳该方案。'])
+def test_adoption_confirmation_requires_affirmative_adoption(tmp_path,confirmation):
+    from app.semantic_quality import counting_definition
+    p=project(tmp_path,'备注最多100字符。')
+    source='候选方案：备注可以按Unicode码点计数；该方案需PM确认后采纳。'+confirmation
+    p['sources'][0]['excerpts'][0]['text']=source
+    validate_response(adoption_review(p),'review',p,p['sources'][0]['excerpts'])
+    assert counting_definition(source)['decision_status']=='pending'

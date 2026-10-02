@@ -2,7 +2,7 @@
 import re
 from .core import require
 
-VERSION = 'semantic-quality-6'
+VERSION = 'semantic-quality-7'
 POLICY = (
     '先核对输入自身是否一致，来源引用正确和人工回答有出处不证明其含义无矛盾。'
     '对计数单位、边界包含、量词、时点与条件构造具体反例；区分Unicode码点和扩展字素簇，'
@@ -19,7 +19,9 @@ POLICY = (
     '检查真实明确来源例外：运行时PM审批有明确依据、已有代码/材料明确支持同一场景、明确业务决定培训或计数时不要误报。'
     '规范文案错误写finding并定位句子/字段，业务计数等真正未决写required_decisions；不得改历史基线或自动采纳。'
     'counting_definition_facts按来源、当前字段、人工回答和实际文档位置区分定义缺失与定义矛盾。'
-    '已写Unicode码点或扩展字素簇就是存在定义，不能再声称计数口径未明确；定义存在不证明其内部一致。'
+    '已写Unicode码点或扩展字素簇代表单位证据存在，不能虚报来源没有单位；但显式待PM确认采纳的建议只是候选，不能当成本期规范。'
+    'decision_status及decision_evidence区分待采纳、明确人工确认和未见采纳表态；本期口径未确定可追问待采纳候选，不能反过来否认已有明确决定。'
+    '同文人工确认须绑定本计数单位或明确指回该计数方案；其它能力的确认不证明采纳。定义或采纳存在都不证明内部一致。'
     '例如已定义码点却又说每个emoji恒为一码点，应报告定义矛盾，给可复算反例并请PM选择，不能把矛盾改称缺定义或替PM选。'
 )
 UNIT = re.compile(r'码点|code\s*points?|字素簇|grapheme', re.I)
@@ -147,6 +149,32 @@ def counting_decision(text):
     return counting_choice(text) is not None
 
 
+ADOPTION_PENDING = re.compile(r'建议|候选|备选|待(?:采纳|确认|决定)|(?:尚未|未|不)(?:采纳|采用|确认)|'
+    r'(?:需|须|需要).{0,12}(?:PM|产品经理).{0,8}确认|可以.{0,8}(?:按|采用)',re.I)
+ADOPTION_CONFIRMED = re.compile(r'(?:PM|产品经理|人工).{0,8}(?:已|明确)(?:确认|采纳|决定|选择)|'
+    r'(?:经|由)(?:PM|产品经理|人工)(?:确认|采纳)',re.I)
+ADOPTION_REFERENT = re.compile(r'(?:上述|前述|该|此)(?:计数)?方案|计数(?:口径|单位|方式)|(?:后才?|前).{0,5}采纳')
+
+
+def counting_adoption(text,units):
+    """Only an explicit, locally bound confirmation can adopt a proposal."""
+    states={u:'not_stated' for u in units};active=set();evidence=[]
+    for clause in clauses(text or ''):
+        named={'codepoints' if CODEPOINT.fullmatch(m.group()) else 'graphemes' for m in UNIT.finditer(clause)}
+        if named:active=named & units
+        if not active or not (named or ADOPTION_REFERENT.search(clause)):continue
+        confirmation=ADOPTION_CONFIRMED.search(clause)
+        negated=confirmation and (re.search(r'未|没有|并非|不能|无法|尚待|待确认',clause[:confirmation.start()]) or
+            re.search(r'不(?:采纳|采用|选择)|拒绝(?:采纳|采用)|未(?:采纳|采用)',clause[confirmation.end():]))
+        if confirmation and not negated:state='confirmed'
+        elif ADOPTION_PENDING.search(clause) and not re.search(r'无需|不需要|不必',clause):state='pending'
+        else:continue
+        for unit in active:states[unit]=state
+        evidence.append(dict(quote=clause,declared_units=sorted(active),decision_status=state))
+    status='pending' if 'pending' in states.values() else 'confirmed' if 'confirmed' in states.values() else 'not_stated'
+    return dict(decision_status=status,decision_evidence=evidence)
+
+
 def counting_definition(text):
     """Definition presence is separate from consistency and from a PM choice."""
     units=set()
@@ -161,9 +189,9 @@ def counting_definition(text):
                     or re.search(r'\d',prefix)):
                 continue
             units.add('codepoints' if CODEPOINT.fullmatch(match.group()) else 'graphemes')
-    witness=counting_witness(text or '')
+    witness=counting_witness(text or '');adoption=counting_adoption(text,units)
     return dict(dimension='text_length_counting_unit',definition_present=bool(units),
-                declared_units=sorted(units),status='contradictory' if witness else 'defined' if units else 'missing')
+                declared_units=sorted(units),status='contradictory' if witness else 'undecided' if units and adoption['decision_status']=='pending' else 'defined' if units else 'missing',**adoption)
 
 
 def counting_definition_facts(p,excerpts=None):
@@ -197,15 +225,16 @@ def counting_definition_facts(p,excerpts=None):
 
 DEFINITION_TOPIC = re.compile(r'计数(?:单位|口径|方式|定义)|长度.{0,8}(?:单位|计算|计数)|(?:按|用|以)哪种.{0,4}(?:单位|口径)|counting\s+(?:unit|definition)',re.I)
 DEFINITION_MISSING = re.compile(r'(?:尚未|未|没有)(?:明确|定义|指定|确定|说明|提供|给出|标明|标注)|缺少|缺失|不明确|不清楚|undefined|missing',re.I)
+DEFINITION_UNDECIDED = re.compile(r'(?:尚未|未|没有)(?:确定|决定|确认|采纳)|待(?:确认|决定|采纳)|undecided|unconfirmed',re.I)
 
 
 def definition_issue(text):
     """Classify an asserted gap, not quoted evidence or a denial of that gap."""
     prose=re.sub(r'“[^”]*”|「[^」]*」|"[^"]*"','',text)
     if not DEFINITION_TOPIC.search(prose):return None
-    for match in DEFINITION_MISSING.finditer(prose):
+    for match in re.finditer(DEFINITION_MISSING.pattern+'|'+DEFINITION_UNDECIDED.pattern,prose,re.I):
         if not re.search(r'不是|并非|不应(?:说|称|认为)|不能(?:说|称|认为)',prose[:match.start()]):
-            return 'missing_definition'
+            return 'undecided_definition' if DEFINITION_UNDECIDED.fullmatch(match.group()) else 'missing_definition'
     return None
 
 
@@ -220,7 +249,8 @@ def validate_definition_claims(value,p,excerpts=None):
         for clause in clauses(text):
             locations=DOCUMENT_LOCATION.findall(clause)
             if locations:active=locations
-            if definition_issue(clause)!='missing_definition':continue
+            issue=definition_issue(clause)
+            if not issue:continue
             # A named block owns its unit label; parent rules cannot supply a
             # missing local label, or turn a present local label into a gap.
             if active:
@@ -231,8 +261,11 @@ def validate_definition_claims(value,p,excerpts=None):
                     f['origin']!='source' and refs & set(f['related_refs']) or
                     f['origin']=='source' and pairs & source_pairs(f['source_refs']) and
                     (not refs or not f['related_refs'] or refs & set(f['related_refs'])))]
-            require(not any(f['definition_present'] for f in bound),'SEMANTIC_BLOCKED',
-                    '计数定义已存在，不能报告定义缺失；核对定义是否矛盾，保留反例与PM选择：'+str([f['location'] for f in bound if f['definition_present']]))
+            contradictory=[f for f in bound if f['definition_present'] and
+                (issue=='missing_definition' or f['decision_status']!='pending')]
+            message='计数定义已存在，不能报告定义缺失；' if issue=='missing_definition' else '计数口径已有明确依据，不能报告仍未确定；'
+            require(not contradictory,'SEMANTIC_BLOCKED',
+                    message+'核对定义是否矛盾，保留反例与PM选择：'+str([f['location'] for f in contradictory]))
 
 
 def item_counting_choices(item):
