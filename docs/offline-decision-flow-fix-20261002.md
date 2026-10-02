@@ -51,6 +51,12 @@ Office相关实现未变。本轮五项 opt-in 明确 skip；只复用[既有干
 
 `tested-source-final.json`逐文件记录源码、测试及契约材料 hash；原20项目、308 revisions、788 records、settings/migrations各1全部原行hash一致，188个原模型CALL文件及两个历史证据目录逐文件一致，未知work元数据一致，其他受控文件未变。新增真实模型请求 **0**，真实复验 **NOT_RUN**；不推断费用。
 
-新磁盘 app/*.py 指纹 `c6e25f01e6d832a8`。服务与源码对应、提交父链及正式导出门待本轮全量结束后核对并记录；只复用8765及原启动方式，不留下第二工作台。
+实现/测试/初步说明提交 **29341eaca5337acc63f20fc0c0d1363b15710c8d**，直接父 **1d1961b0af3cbc33977e358dacf865e0e1b07e73**；再上层是 `9e2c1cfce07fb1ffc031d993893cc4f5db195666 → 0e50e17fd32dd43d8a41102d3f2941a8aa242c6e`。11个明确文件，342增/20删；精确diff/新增测试源码用 `git show 29341ea -- <上述文件>` 或本轮 `source-commit.diff`复核。不使用 add -A；后续仅说明提交记录收口事实，不改变测试源码或运行指纹。
+
+`restart-guard.json`将全量对应文件逐个绑定磁盘/Git对象，按CRLF规范化一致；重启前无在途任务、可见输入为空、无停止按钮，原所有数据行及模型证据仍一致。原 `scripts/stop.ps1` 和 `scripts/start.ps1 -NoAuth` 均实际退出0，没有Force或第二服务。`.env`仅作hash保护、web/dist逐文件hash重启前后相同，未改正式配置、凭据或网络。正式8765唯一监听127.0.0.1，PID40440。运行指纹 **c6e25f01e6d832a8** 等于全量源码/磁盘 app/*.py 的既有算法指纹，旧运行指纹为2ac887ab1413b844。
+
+`final-audit.json`记录四次指定原document_id的真实GET：MRD MD/DOCX均HTTP409/SEMANTIC_BLOCKED，明确包含 `DOC:DOC-de11a734ca904255.MRD-adbe1a74626a.blocks[2]:current_workflow` 及未答问题；PRD MD/DOCX均HTTP409/CLARIFICATION_REQUIRED，仅未答问题，不连带声称PRD有MRD错误。原 MRD v2、PRD v1及needs_changes审查记录未改，Q-a9c484eba79746ae仍open；正式确认、成功导出及机器交接本轮NOT_RUN。
+
+正式UI初次刷新有正常加载瞬态，随后实际显示20项目、MRD v2原正文及未答问题，交接按钮禁用。保存 `formal-ui-final.txt`、`formal-ui-settled.txt`、`formal-ui-mrd.txt`，没有把加载中的“0项目”当真实数据丢失。新语义契约使当前审查目标hash变化，UI显示“已有历史审查，需重新核对”；原needs_changes记录仍保留，未发模型把它更新成当前审查，不能称已完成新版本真实复核。
 
 限制：词法见证只覆盖有限动作/方式/对象形式，不是通用语义证明，复杂指代/别名及跨句前提仍须人工审查。来源匹配证明的是材料中有陈述，不证明实际实现或真实PM批准。模型生成是否遵守新任务约束尚未真实复验，不能把本轮离线通过称全面ready。主项目 needs_changes、未知反馈Q-a9c484eba79746ae及409必须保留；不代填未知，不新建确认/基线。收口后给父离线证据，等待父独立验收再决定后续最小真实步骤；本任务到此停止，不扩业务、新机、安装器、机器消费者或发布验证。
