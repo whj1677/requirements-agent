@@ -21,6 +21,56 @@ NON_ASSERTION = re.compile(r'建议|假设|待(?:澄清|核对|确认)|未采纳
                           r'不能[^，,。；;\n]{0,12}(?:推断|认定|断言)|并非|不代表|不意味着|不蕴含')
 SUBJECTS = re.compile(r'云资源|资源|工单|订单|记录|备注|时段|配置|文件')
 CONNECTOR = re.compile(r'则|便|就|即可|即会|即|将|会|能够|可以|可')
+ASSERTION = re.compile(r'断言|推断|认定|确认|反推|展示')
+NEGATOR = r'并非|不是|没有|不能|不得|禁止|不允许|不应|不可|无法|不|未'
+ASSERTION_MODIFIER = r'据此|因此|直接|自行|轻易|作出|进行|作|做|\s'
+ASSERTION_NEGATION = re.compile(r'(?:'+NEGATOR+r')(?:(?:'+ASSERTION_MODIFIER+r')|(?:'+NEGATOR+r'))*$')
+ASSERTION_PREMISE = re.compile(r'(?P<negation>(?:'+NEGATOR+r')(?:(?:'+ASSERTION_MODIFIER+r')|(?:'+NEGATOR+r'))*)(?:从|根据|依据)[^，,]{1,80}$')
+ASSERTION_BREAK = re.compile(r'[，,]|然而|但是|但|却|实际上|同时|并且')
+
+
+def assertion_scope(text, position):
+    """A negated inference governs its local result list, not later clauses.
+
+    Offsets refer to the untouched sentence. An even number of negators does
+    not prohibit the assertion. This finite grammar does not parse all Chinese.
+    """
+    found=None
+    for predicate in ASSERTION.finditer(text,0,position+1):
+        boundary=ASSERTION_BREAK.search(text,predicate.end())
+        end=boundary.start() if boundary else len(text)
+        if position>=end:continue
+        previous=list(ASSERTION_BREAK.finditer(text,0,predicate.start()))
+        start=previous[-1].end() if previous else 0
+        before=text[start:predicate.start()]
+        negation=ASSERTION_NEGATION.search(before)
+        premise=ASSERTION_PREMISE.search(before) if not negation else None
+        # Negation inside the premise (e.g. quota not satisfied) does not
+        # negate the governing inference prohibition a second time.
+        modal=negation.group() if negation else premise['negation'] if premise else ''
+        count=len(re.findall(NEGATOR,modal))
+        if not modal and found and re.fullmatch(r'\s*(?:或|及|、|以及)\s*',
+                text[found['start']+len(found['predicate']):predicate.start()]):
+            count=found['negators']
+        found=dict(predicate=predicate.group(),start=predicate.start(),end=end,
+                   negators=count,denied=bool(count%2))
+    return found
+
+
+def rejection_branch(clause):
+    """An explicit local refusal branch does not inherit an earlier unknown."""
+    match=REJECTION.search(clause)
+    return bool(match and not UNKNOWN.search(clause) and not re.search(
+        r'不(?:是|能|会)?|未|没有',clause[max(0,match.start()-4):match.start()]))
+
+
+def quoted_prior_assertion(text, position):
+    """An explicitly corrected quotation ends at its original closing quote."""
+    for match in re.finditer(r'(?:(?:原句|旧句|错误表述)[：:]?|纠正|更正)\s*[“「"]',text):
+        closing={'“':'”','「':'」','"':'"'}[text[match.end()-1]]
+        end=text.find(closing,match.end())
+        if end!=-1 and match.end()<=position<end:return True
+    return False
 
 
 def subject(text):
@@ -79,11 +129,15 @@ def facts(text, *, location, object_id=None, source_refs=(), fallback_operation=
             result.append(dict(base,role='rejection_condition',guard=None,conditions=['service_rejects']))
         for effect in EFFECT.finditer(sentence):
             prefix=sentence[:effect.start()]
-            part=re.split(r'[，,]',prefix)[-1]
+            part=ASSERTION_BREAK.split(prefix)[-1]
             # Retaining local edit input is not the business transaction's effect.
             if re.match(r'\s*(?:输入|草稿|编辑内容)',sentence[effect.end():]):continue
-            non_asserted=tentative or bool(NON_ASSERTION.search(part))
-            if re.search(r'(?:原句|旧句|错误表述)[：:]?\s*[“「"]',prefix):continue
+            # A saved answer is workflow evidence, not a transaction outcome.
+            if effect.group()=='保存' and re.match(r'\s*[^，,。；]{0,12}(?:回答|答案)(?=[，,。；：:\s]|$)',sentence[effect.end():]):continue
+            inference=assertion_scope(sentence,effect.start())
+            denied=bool(inference and inference['denied'])
+            non_asserted=tentative or denied or (not inference and bool(NON_ASSERTION.search(part)))
+            if quoted_prior_assertion(sentence,effect.start()):continue
             negative=bool(re.search(r'(?:不|未|不得|不能|禁止|没有|拒绝|阻止)(?:再|任何)?\s*$',prefix))
             # Bind this effect to its target/local clause, not another object's
             # successful branch mentioned before a comma.
@@ -91,6 +145,10 @@ def facts(text, *, location, object_id=None, source_refs=(), fallback_operation=
             effect_subject=subject(target) or subject(part) or fallback_subject or local_subject
             current=dict(base,operation=OPERATIONS[effect.group()],subject=effect_subject,
                          scope=sorted(scopes(sentence,effect_subject)))
+            if denied:
+                result.append(dict(current,role='inference_constraint',guard=None,conditions=[],
+                                   assertion_scope=inference))
+                continue
             prohibition=re.search(r'(?:禁止|不得|不能|不可|不允许|不应)(?:再次|重新|重复|再)?\s*$',prefix)
             new_attempt=re.match(r'\s*(?:新(?:的)?|另一个)(?:申请|请求)',target)
             if prohibition and new_attempt:
@@ -99,7 +157,7 @@ def facts(text, *, location, object_id=None, source_refs=(), fallback_operation=
                 continue
             if rejection and not negative and not non_asserted:
                 result.append(dict(current,role='rejection_effect',guard=None,conditions=['service_rejects']))
-            if unknown and not confirmed and not tentative and not NON_ASSERTION.search(prefix):
+            if unknown and not confirmed and not non_asserted and not rejection_branch(part):
                 result.append(dict(current,role='unknown_certainty',guard=None,conditions=[],outcome='no_effect' if negative else 'effect'))
                 continue
             for guard,pattern in GUARDS.items():
@@ -117,8 +175,15 @@ def facts(text, *, location, object_id=None, source_refs=(), fallback_operation=
                     result.append(dict(current,role=role,guard=guard,conditions=sorted(scopes(prefix,effect_subject)|{guard+':positive'})))
             if negative and rejection and not unknown:
                 result.append(dict(current,role='proposal' if non_asserted else 'rejection_exception',guard=None,conditions=['service_rejects']))
-        if unknown and not confirmed and not tentative and re.search(r'(?:原|既有)(?:记录|数据|资源)[^，,。；]{0,4}不变',sentence) and not NON_ASSERTION.search(sentence):
-            result.append(dict(base,role='unknown_certainty',guard=None,conditions=[],outcome='no_effect'))
+        if unknown and not confirmed and not tentative:
+            for unchanged in re.finditer(r'(?:原|既有)(?:记录|数据|资源)[^，,。；]{0,4}(?:不变|未变)',sentence):
+                inference=assertion_scope(sentence,unchanged.start())
+                prefix=sentence[:unchanged.start()]
+                part=ASSERTION_BREAK.split(prefix)[-1]
+                if inference and inference['denied']:
+                    result.append(dict(base,role='inference_constraint',guard=None,conditions=[],assertion_scope=inference))
+                elif not rejection_branch(part) and (inference or not NON_ASSERTION.search(part)):
+                    result.append(dict(base,role='unknown_certainty',guard=None,conditions=[],outcome='no_effect'))
     return result
 
 
