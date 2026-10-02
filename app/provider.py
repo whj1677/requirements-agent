@@ -274,7 +274,8 @@ def ui_structure_example():
 def review_structure_example():
     value=dict(schema_version='1.1',stage='review',summary='仅结构示例，不是项目审查结论',
         proposals=[],questions=[],findings=[],used_source_refs=[],
-        result=dict(assessment='needs_changes',perspectives=[],required_decisions=[],reviewed_refs=[]),limitations=[])
+        result=dict(assessment='needs_changes',perspectives=[dict(role='审查角色（结构示例）',
+            considerations=['仅演示字符串数组及对象闭合，不是项目结论。'])],required_decisions=[],reviewed_refs=[]),limitations=[])
     jsonschema.Draft202012Validator(request_schema('review')).validate(value)
     return value
 
@@ -370,7 +371,7 @@ def assemble(p, stage, user_message, config, folder, kind='prd', generation_targ
     if stage == 'ui':header['structure_example']=ui_structure_example()
     if stage == 'review':
         header['structure_example']=review_structure_example()
-        header['review_format_notice']='structure_example仅是可完整解析的结构占位，不是业务结论或失败回退。按实际材料填写所有业务字段。result是根对象字段；limitations是根对象的字符串数组，数组闭合后再闭合根对象，不额外闭合数组，不追加空键或未知字段。先完成每层JSON结构再输出；完整响应继续进行来源与语义验证。'
+        header['review_format_notice']='structure_example仅是可完整解析的结构占位，不是业务结论或失败回退。按实际材料填写所有业务字段。result是根对象字段；perspectives每项是只含role字符串和considerations字符串数组的对象，字符串数组闭合后关闭对象，不能追加引号、空键或尾逗号。limitations是根对象的字符串数组，数组闭合后再闭合根对象，不额外闭合数组，不追加空键或未知字段。先完成每层JSON结构再输出；完整响应继续进行来源与语义验证。'
     base = (KIT / 'prompts/00_system.md').read_text('utf-8')
     if stage=='prd':base=base.split('## 输出')[0]
     header['response_boundary']=response_boundary(header['schema'])

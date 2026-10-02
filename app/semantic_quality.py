@@ -2,7 +2,7 @@
 import re
 from .core import require
 
-VERSION = 'semantic-quality-4'
+VERSION = 'semantic-quality-5'
 POLICY = (
     '先核对输入自身是否一致，来源引用正确和人工回答有出处不证明其含义无矛盾。'
     '对计数单位、边界包含、量词、时点与条件构造具体反例；区分Unicode码点和扩展字素簇，'
@@ -409,7 +409,7 @@ DOCUMENT_DIMENSIONS = {
     'success_quantifier':re.compile(r'整批成功|全部成功|部分成功|成功量词'),
     'suggestion_obligation':re.compile(r'培训|交付义务|建议.*义务'),
     'existing_implementation':re.compile(r'既有实现|现有.*(?:支持|实现|覆盖)|已覆盖|实现证据|(?:既有|原有|现有|现行)(?:约束|规则|校验|限制)'),
-    'operator_role':re.compile(r'运行角色|操作者|审批人|PM.{0,8}(?:确认|核对|审批)|产品经理.{0,8}(?:确认|核对|审批)'),
+    'operator_role':re.compile(r'运行角色|操作者.{0,12}(?:误写|有误|错误|混淆|混入|替换|审批|确认提交|PM|产品经理)|审批人|PM.{0,8}(?:确认|核对|审批)|产品经理.{0,8}(?:确认|核对|审批)'),
 }
 
 
@@ -489,6 +489,10 @@ def validate_document_findings(findings,p,checks):
             # the bounded deterministic dimensions already checked above.
             error=DOCUMENT_ERROR.search(clause) and not re.search(r'没有.*错误|不存在.*错误|无此错误|未误写|表述正确',clause)
             if error:
+                # An explicit "this paragraph" refers to this finding's nearest
+                # location; it cannot add an unsupported error after a valid one.
+                if not locations and re.search(r'该段|此段|本段|这一段|该位置|此位置|此处',clause):
+                    locations=active_locations
                 dimensions={dimension for dimension,pattern in DOCUMENT_DIMENSIONS.items() if pattern.search(clause)} or inherited
                 # A kind embedded in a block locator is handled by that block's
                 # binding; it is not an assertion about the entire document.

@@ -178,7 +178,7 @@ def plan_contract(p, kind=None):
         focus=('MRD 解释问题、使用者、价值依据、目标、衡量方式和业务影响；没有数据时只写具名待决。'
                if kind=='mrd' else
                'PRD 解释场景、操作流程、状态、数据、权限、异常和可观察验收；未知行为只写具名待决。')
-        return dict(version='prd-plan-contract-9',plan_version='4',document_type=kind,
+        return dict(version='prd-plan-contract-10',plan_version='4',document_type=kind,
             example=example,can_generate=example is not None,
             example_notice='仅演示合法引用结构，不是项目答案。' if example else '没有可引用的已核对事实或条目，不可生成。',
             section_keys=([key for key in ('background','users','goal','scope','priority','validation','risks')] if kind=='mrd' else
@@ -190,6 +190,7 @@ def plan_contract(p, kind=None):
             rules='根节点只有 plan_version=4、sections；每节只有 section_key、context_refs、normative_refs、discussion_refs、explanations。'
                   '每节至少有一项当前有效引用；explanations 为可选的有来源解释，每项只含 text 和 evidence_refs；'
                   'evidence_refs 必须完整含 context_refs、normative_refs、business_claim_refs，至少一项非空，且仅引用对应白名单。'
+                  '每段解释的依据独立绑定；叙述已能登录、查看、导出或其它现有实现时，该段evidence_refs必须引用current_state或相应肯定工程证据。仅引用users或本期要求不能借用其它段的现状证明。章节context_refs的不重复排版约束不限制explanations.evidence_refs重复引用真实依据；现状即使已在背景章展示，使用者章引用其能力时仍须在该段evidence_refs列current_state。'
                   '解释只写有来源的信息增量，不在各节换词复述同一功能。MRD说明使用者的实际工作路径与问题影响；priority章用已核对priority分析为什么先做及决策依据；validation章依据已选验收或已核对价值，说明试点中可观察的成功判据、验证方式和待补数据。缺少耗时、规模、成功率或收益数字时写具名待决，不编阈值或ROI。risks仅在有据时写依赖、风险和待决。PRD聚焦流程、状态数据、边界和可观察验收。'
                   '已核对上下文若已在有该 context_ref 的解释里完整引用原句，不再重复回填展示；原始快照仍保留。'+
                   ('MRD正文分别安排背景、使用者、目标、范围、优先级与试点验证；可用证据不足时不强制生成试点验证或风险章节。priority已核对原句由程序放在优先级章，不要在目标章重述。全部已选规范原文统一在末尾产品要求附录单次展示。'
