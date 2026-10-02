@@ -74,7 +74,9 @@ def test_required_result_not_optional_or_auto_filled(tmp_path):
     bad = empty_ingest()
     del bad['result']
     run, project, _ = execute_run(tmp_path, [bad] * 3)
-    assert run['error'] == 'SCHEMA_INVALID' and run['calls'] == 3
+    # Missing required fields remain invalid; an identical repair stops at call 2.
+    assert run['error'] == 'SCHEMA_INVALID' and run['calls'] == 2
+    assert not run.get('result_applied') and run['repair_count'] == 1
     assert project['documents'] == {} and project['items'] == []
 
 

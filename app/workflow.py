@@ -138,6 +138,7 @@ class Workflow:
         repair_anchor = None
         repair_original = None
         interview_anchor = None
+        failed_outputs = set()
         # Both initial output and the one permitted escalation are frozen in the plan.
         out_budget = config['max_tokens']
         escalated = False
@@ -213,6 +214,19 @@ class Workflow:
                     self.store.update_run(pid, rid, attempts=attempts)
                     require(not evidence.value.get('json_integrity_failure'),'SEMANTIC_BLOCKED',
                             '模型 JSON 有重复键，无法证明格式修复保持原义；原始证据保留，未追加修复请求')
+                    if not e.model_repair_allowed:
+                        raise e
+                    # Compare decoded objects, or exact full raw output for parse
+                    # errors. Missing/truncated/redacted output proves no identity.
+                    raw=evidence.value.get('final_output')
+                    output_identity=(('decoded',digest(value)) if value is not None else
+                        ('raw',digest(raw)) if raw and not ({'final_output_truncated','final_output_redacted'} & set(evidence.limitations)) else None)
+                    if output_identity is not None and e.code in ('SCHEMA_INVALID','REFERENCE_INVALID'):
+                        failure=(output_identity,e.code,e.message)
+                        if failure in failed_outputs:
+                            events.append(dict(time=now(),phase='相同解码输出重复同一校验错误，停止追加格式修复',call=calls))
+                            raise e
+                        failed_outputs.add(failure)
                     if e.code=='OUTPUT_TRUNCATED' and (run['stage']=='review' or config.get('retry_max_tokens')):
                         if not escalated and out_budget < output_ceiling(config):
                             escalated = True

@@ -14,7 +14,7 @@ from .config import ProjectEnvironment, usable_key
 from .prd import PLAN_SCHEMA, PLAN_SCHEMA_V4, plan_contract, plan_schema, context as document_context
 from . import business_context
 from . import ingest
-from .understanding import contract as understanding_contract, answer_target, answer_targets
+from .understanding import contract as understanding_contract, answer_target, answer_targets, current_answer, question_action_contract
 from .budgets import POLICY_DEFAULTS, IMAGE_INPUT_RESERVE, input_allowance, input_size
 
 DEFAULT = dict(name='DeepSeek 官方', base_url='https://api.deepseek.com', model='deepseek-flash',
@@ -295,15 +295,13 @@ def answer_binding_tasks(p):
     def all_answer_bindings_current(candidate):
         for qid in candidate.get('answer_refs') or []:
             bound=questions.get(qid)
-            if (not bound or bound.get('status')!='answered' or bound.get('out_of_scope_reason')
-                    or bound.get('superseded_by') or answer_target(p,bound,candidate) is None
+            if (not bound or not current_answer(bound) or answer_target(p,bound,candidate) is None
                     or (candidate.get('answer_versions') or {}).get(qid)!=digest(bound.get('answer'))):
                 return False
         return True
 
     for q in p['questions']:
-        if (q.get('status')!='answered' or q.get('understanding_status')=='applied'
-                or q.get('out_of_scope_reason') or q.get('superseded_by')):continue
+        if not current_answer(q) or q.get('understanding_status')=='applied':continue
         applied=set(q.get('applied_item_ids',q.get('applied_requirement_ids',[])))
         version=digest(q.get('answer'))
         for item in answer_targets(p,q):
@@ -341,6 +339,12 @@ def response_boundary(schema):
 
 def assemble(p, stage, user_message, config, folder, kind='prd', generation_target=None, pending_images_only=False):
     header = dict(stage=stage, project_id=p['id'], current_revision=p['revision'], mode=p['mode'], schema=request_schema(stage), remaining_budget=config['max_calls'])
+    if stage in ('ingest','clarify','change'):
+        header['question_action_contract']=question_action_contract(p)
+        # A generation-only constraint; the public response schema is unchanged.
+        header['schema']=copy.deepcopy(header['schema'])
+        target=header['schema']['$defs']['Question']['properties']['target_question_id']
+        target['enum']=[None]+header['question_action_contract']['splittable_question_ids']
     if stage in ('ingest','clarify','change','prd','review'):
         from .semantic_quality import contract as semantic_contract
         header['semantic_quality_contract']=semantic_contract()
@@ -413,8 +417,7 @@ def assemble(p, stage, user_message, config, folder, kind='prd', generation_targ
         from .product_flow import clarification_focus
         context['documents']=review_documents(p)
         focus=clarification_focus(p)
-        current_answer_ids={q['id'] for q in p['questions'] if q.get('status')=='answered'
-                            and not q.get('out_of_scope_reason') and not q.get('superseded_by')}
+        current_answer_ids={q['id'] for q in p['questions'] if current_answer(q)}
         focus['answer_revision_targets']=[row for row in focus['answer_revision_targets']
                                           if row['question_id'] in current_answer_ids]
         focus['answer_updates_pending']=[qid for qid in focus['answer_updates_pending'] if qid in current_answer_ids]

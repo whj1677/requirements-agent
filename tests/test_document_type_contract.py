@@ -50,7 +50,8 @@ def test_failed_document_update_retains_previous_document_and_business(case):
     body,preview=action_plan(c,root,'document','')
     assert start(c,root,body,preview).status_code==200
     task=finished(c,root)
-    assert task['status']=='failed' and task['calls']==3
+    # Identical invalid plans stop after the first repair repeats the same error.
+    assert task['status']=='failed' and task['calls']==2
     after=c.get(root).json()
     assert after['documents']['prd']==doc
     assert after['items']==before['items'] and after['questions']==before['questions']

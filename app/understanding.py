@@ -2,7 +2,7 @@
 import copy
 import unicodedata
 import re
-from .core import require, now, digest
+from .core import Problem, require, now, digest
 from .requirements import TRACKED
 
 ANSWER_TARGET_KINDS = (*TRACKED, "constraint")
@@ -15,7 +15,7 @@ def contract():
             change=dict(kind='requirement',change_type='new',scope_states=['change']),
             preserve=dict(kind='constraint',change_type='preserved',scope_states=['preserve'])),
         classification='功能需求需分别表达现状/current、变化/change、保持/preserve；scope_evidence逐条引用本次真实片段的原文quote及source_ref。current+change=modified，只有change=new，只有preserve=preserved，只有current=existing；没有充分依据则unspecified。一个功能的权限、分页、排序等保持性约束可写在该功能的behavior或关联rule中供PM核对，不要把每个字段维度机械拆成独立requirement；单条requirement的scope_evidence不得混写change与preserve状态，也不得把保持内容说成新增。引用原句同时含变化和保持时保留原文，change_type只对应本条statement的变化身份。classification_reason说明判定依据及未知。applies_to=as_is仅用于existing。原条目变化用revise/target_item_id，不新建同义编号。',
-        questions='一个问题只问一个可独立回答的决定。复合问题必须列出decision_points（完整Question对象，各自独立temp_id/topic_key/关联需求/阻塞属性），程序展开为独立回答。拆分已有未答问题使用target_question_id；原问题保留为分组记录，不能拆掉已有回答。已答问题若问题文字或风险条件发生变化，不能假定原答案仍适用；材料已回答的事项不要再次提问，编号错字记findings。',
+        questions='一个问题只问一个可独立回答的决定。复合问题必须列出decision_points（完整Question对象，各自独立temp_id/topic_key/关联需求/阻塞属性），程序展开为独立回答。target_question_id仅用于明确拆分可追问的未答问题，decision_points必须非空；已答决定使用同类revise候选的answer_refs落实，不输出target_question_id重问或拆分。原问题及回答保留；独立的新未知使用target_question_id=null另建问题。失效/超范围回答不能用于落实当前条款。已答问题若问题文字或风险条件发生变化，不能假定原答案仍适用；材料已回答的事项不要再次提问，编号错字记findings。',
         answer_binding='answer_refs只用于基于已保存回答修订该问题直接关联的原requirement/rule/acceptance/constraint：action=revise、target_item_id为该问题related_refs中的原条目ID，kind必须与目标一致，不能指向另一修订候选。使用本轮真实回答片段的source_refs说明依据；新增acceptance等action=add候选不得填写answer_refs，其回答依据放source_refs并用related_refs关联原需求。保留原条目编号与内容，回答不会自动采纳候选；所有直接关联条目的修订明确采纳后才闭环。',
         question_shape='普通单问题省略decision_points或写空数组[]；不能写仅含一个子项的数组。只有确有两项及以上独立决定时才用decision_points分组，每个子项都要是完整Question。',
         question_self_check='输出前检查每个可回答问题只包含一个决定、至多一个问号。'
@@ -48,6 +48,25 @@ def answer_target(p,q,candidate):
     return next((i for i in answer_targets(p,q)
                  if i['id']==candidate.get('target_item_id')
                  and i['kind']==candidate.get('kind') and candidate.get('action')=='revise'),None)
+
+
+def active_question(q):
+    return not q.get('superseded_by') and not q.get('out_of_scope_reason')
+
+
+def current_answer(q):
+    return active_question(q) and q.get('status')=='answered' and q.get('answer') is not None
+
+
+def question_action_contract(p):
+    """Derived action permissions; never discard historical questions or answers."""
+    return dict(
+        answered_decision_ids=[q['id'] for q in p['questions'] if current_answer(q)],
+        splittable_question_ids=[q['id'] for q in p['questions'] if active_question(q)
+                                 and q.get('status')!='answered' and q.get('answer') is None],
+        inactive_question_ids=[q['id'] for q in p['questions'] if not active_question(q)
+                               or (q.get('status')=='answered')!=(q.get('answer') is not None)],
+        instruction='已答决定保留身份与原回答，通过同kind revise/answer_refs提出待人工采纳的落实候选；target_question_id只允许splittable_question_ids中的未答问题且须有decision_points。新的独立未知用null目标；失效记录仅供历史核对，不恢复或采纳。')
 
 
 def leaves(questions):
@@ -164,8 +183,9 @@ def validate(value,p,excerpts):
             allowed='、'.join(q.get('related_refs',[])) if q else '无（问题不存在）'
             advice='；answer_refs仅用于该问题related_refs中原requirement/rule/acceptance/constraint的同kind revise候选；新增条目使用真实回答片段的source_refs，不能以新增条目代替原条款修订'
             advice+='；已存在的间接关联条款仍保留 action=revise 和原 target_item_id，删除不适用的 answer_refs，保留真实回答 source_refs 作为依据；不要把修订改成新增。'
-            require(q is not None and q['status']=='answered','REFERENCE_INVALID',
-                    identity+' 的 answer_refs='+qid+' 没有已保存回答；允许目标='+allowed+advice)
+            if q is None or not current_answer(q):
+                raise Problem('REFERENCE_INVALID',identity+' 的 answer_refs='+qid+
+                    ' 没有当前有效的已保存回答；允许目标='+allowed+advice,model_repair_allowed=False)
             expected_kind=next((t['kind'] for t in answer_targets(p,q) if t['id']==i.get('target_item_id')),None)
             advice+='；该目标实际 kind='+str(expected_kind)+'，必须保持原目标类型，不能把约束改成规则'
             require(answer_target(p,q,i) is not None,
@@ -176,8 +196,10 @@ def validate(value,p,excerpts):
         target=parent.get('target_question_id')
         old=next((q for q in p['questions'] if q['id']==target),None) if target else None
         if target:
-            require(old is not None and old['status']!='answered' and not old.get('superseded_by') and parent.get('decision_points'),
-                    'REFERENCE_INVALID','只能明确拆分尚未回答的现有问题；已有回答必须保留')
+            if (old is None or not active_question(old) or old['status']=='answered'
+                    or old.get('answer') is not None or not parent.get('decision_points')):
+                raise Problem('REFERENCE_INVALID','只能明确拆分尚未回答的现有问题；已有回答必须保留',
+                              model_repair_allowed=False)
         for q in parent.get('decision_points') or [parent]:
             require(q['question'].count('？')+q['question'].count('?')<=1,'SCHEMA_INVALID',
                     q['temp_id']+' 含多个独立问句，请用decision_points分别表达')
@@ -247,7 +269,7 @@ def accept_answer_update(p,candidate):
     require(len(questions)==len(refs),'REFERENCE_INVALID','修订候选关联的回答不存在')
     # Validate every answer before mutating any state, including direct callers.
     for q in questions:
-        require(q.get('status')=='answered' and answer_target(p,q,candidate) is not None,
+        require(current_answer(q) and answer_target(p,q,candidate) is not None,
                 'REFERENCE_INVALID','回答只能应用于该问题直接关联的原需求、规则或验收的同类修订')
         require(candidate.get('answer_versions',{}).get(q['id'])==digest(q.get('answer')),
                 'STALE_ANSWER','回答已变化，请根据最新回答重新生成修订候选',409)

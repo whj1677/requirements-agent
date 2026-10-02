@@ -79,3 +79,43 @@ def test_stored_finding_is_bound_only_to_real_unsupported_document_and_quote(tmp
     assert len(checks)==1 and checks[0]['document_type']=='mrd'
     assert checks[0]['location']==f"{artifact['id']}.{section['section_id']}.blocks[{idx}]"
     assert checks[0]['quote']==CURRENT.rstrip('。')
+
+
+BENEFIT=('本期的直接目标是让租户管理员在同一租户内一次提交最多20项云资源申请，'
+         '从而减少逐项重复提交的动作量。这个目标来自本轮已采纳的新增条款，'
+         '其具体价值截至目前没有量化收益证据支撑。')
+
+
+@pytest.mark.parametrize('kind',['mrd','prd'])
+@pytest.mark.parametrize('existing,text,accepted',[
+    ('现有申请流程没有提供。',BENEFIT,False),
+    ('租户管理员目前逐项提交云资源申请。',BENEFIT,True),
+    ('工单管理员目前逐项提交云资源申请。',BENEFIT,False),
+    ('租户管理员目前逐项提交工单申请。',BENEFIT,False),
+    ('假设租户管理员目前逐项提交云资源申请。',BENEFIT,False),
+    ('本期决定租户管理员逐项提交云资源申请。',BENEFIT,False),
+    ('现有申请流程没有提供。','假设现状为逐项提交云资源申请，本期批量提交预期可减少逐项重复提交的动作量，前提待核对。',True),
+    ('现有申请流程没有提供。','若现状为逐项提交云资源申请，批量提交预期减少逐项重复提交的动作量；前提尚未验证。',True),
+    ('现有申请流程没有提供。',NEW+'预期降低操作成本；尚无量化收益证据，需验证收益。',True),
+    ('现有申请流程没有提供。',NEW+'预期减少操作量，具体收益尚待验证。',True),
+    ('现有申请流程没有提供。','方案建议：一次提交最多20项云资源申请，减少逐项重复提交的动作量；现状前提与收益均待验证，未作为事实。',True),
+])
+def test_benefit_can_be_qualitative_but_cannot_invent_existing_operation(tmp_path,kind,existing,text,accepted):
+    p=case(tmp_path,existing);before=copy.deepcopy(p)
+    if accepted:
+        result=compile_explanation(p,text,kind,['current_state'])
+        validate_response(result,'prd',p,p['sources'][0]['excerpts'],kind)
+    else:
+        with pytest.raises(Problem) as caught:compile_explanation(p,text,kind,['current_state'])
+        assert caught.value.code=='SEMANTIC_BLOCKED'
+    assert p==before
+
+
+@pytest.mark.parametrize('stage',['ingest','clarify','change','prd'])
+def test_unsupported_operation_premise_is_checked_in_summary(tmp_path,stage):
+    p=case(tmp_path);value=copy.deepcopy(EXAMPLES[stage])
+    if stage=='prd':value=compile_explanation(p,NEW,'prd',['current_state'])
+    else:value.update(proposals=[],questions=[])
+    value['summary']=BENEFIT
+    with pytest.raises(Problem) as caught:validate_response(value,stage,p,p['sources'][0]['excerpts'])
+    assert caught.value.code=='SEMANTIC_BLOCKED'

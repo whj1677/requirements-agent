@@ -131,4 +131,5 @@ def test_cancel_prevents_commit_and_new_request(tmp_path):
 
 def test_schema_failure_no_draft_write(tmp_path):
     r,p,provider=execute_run(tmp_path,[{'confirmed':True}]*3)
-    assert r['calls']==3 and r['status']=='failed' and not p['messages']
+    # A complete identical object with the same schema error is a proven repeat.
+    assert r['calls']==2 and r['status']=='failed' and not p['messages']

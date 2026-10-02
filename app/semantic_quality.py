@@ -2,7 +2,7 @@
 import re
 from .core import require
 
-VERSION = 'semantic-quality-10'
+VERSION = 'semantic-quality-11'
 POLICY = (
     '先核对输入自身是否一致，来源引用正确和人工回答有出处不证明其含义无矛盾。'
     '对计数单位、边界包含、量词、时点与条件构造具体反例；区分Unicode码点和扩展字素簇，'
@@ -16,6 +16,7 @@ POLICY = (
     '但人工决定、preserved标签和classification_reason中的解释都不证明旧系统已实现新增细则；核对每句现状断言的真实实现依据。'
     '解释、摘要、风险段与规范原文同样受语义约束：明确失败不能概括为含未知结果的失败，所有不能弱化为部分/当前页，'
     '本期批量申请不证明现状逐项申请、手工操作或效率低；现状操作方式须有同对象、同方式的肯定既有事实。建议或假设必须在该句明确标注，不能由引用位置替代事实依据。'
+    '定性预期收益无需已有量化证明，但“减少逐项重复提交”等说明隐含的既有操作前提仍须有来源，或明确标为待核对假设；未量化不能替该前提作证或自动否定收益。'
     '建议不能升级为必须培训等交付义务。引用是溯源，不是语义蕴含证明；逐句核对引用能否支持本句。'
     '检查真实明确来源例外：运行时PM审批有明确依据、已有代码/材料明确支持同一场景、明确业务决定培训或计数时不要误报。'
     '规范文案错误写finding并定位句子/字段，业务计数等真正未决写required_decisions；不得改历史基线或自动采纳。'
@@ -487,6 +488,28 @@ def implementation_supported(claim,scenario_evidence,existing_evidence):
 CURRENT_METHOD = re.compile(r'(?:目前|当前|现有|既有|原有|原先|此前|现在)[^。；;\n，,]{0,24}?(逐项|逐个|逐条|单项|手工|人工|线下|邮件|批量|自动)[^。；;\n，,]{0,8}?(申请|提交|处理|录入|保存|编辑|审批)([^。；;\n，,]{1,24})')
 METHOD_NONFACT = re.compile(r'假设|推测|猜测|模型建议|方案建议|建议|尚未确认|未确认|无法确认|不能确认|没有证据|未提供|是否|可能|本期决定|本期新增|本期要求|拟|计划|将要')
 WORKFLOW_ACTOR = re.compile(r'(?:租户|系统|平台|工单)?管理员|人员|用户|员工|操作者')
+BENEFIT_METHOD = re.compile(r'(?:减少|降低|节省|避免|免去)[^。；;\n，,]{0,8}?(逐项|逐个|逐条|单项|手工|人工|线下|邮件)[^。；;\n，,]{0,6}?(申请|提交|处理|录入|保存|编辑|审批)([^。；;\n，,]{0,24}?)的(?:动作量|操作量|次数|时间|成本|工作量)')
+METHOD_HYPOTHESIS = re.compile(r'假设|假定|若|如果|倘若|模型建议|方案建议|前提待(?:核对|验证)|现状(?:尚)?未确认')
+
+
+def benefit_method_claims(text):
+    """A benefit can be expected; its named old operation is still a premise."""
+    for sentence in re.split(r'[。；;\n]',text):
+        for match in BENEFIT_METHOD.finditer(sentence):
+            # Uncertainty must describe this operation premise, not a later
+            # disclaimer about the amount of benefit or unrelated evidence.
+            local=re.split(r'[，,]',sentence[:match.start()])[-1]+match.group()
+            if NEGATIVE.search(local) or METHOD_HYPOTHESIS.search(sentence[:match.end()]):continue
+            mode,action,obj=match.groups()
+            if not obj:
+                # Bind the unnamed operation object to the preceding action in
+                # this very sentence, never to an unrelated project/source.
+                prior=list(re.finditer(re.escape(action)+r'([^。；;\n，,]{1,30})',sentence[:match.start()]))
+                obj=prior[-1].group(1) if prior else ''
+                obj=re.sub(r'^(?:最多|至少|不超过)?\s*\d+\s*(?:项|条|个|份)\s*','',obj)
+            mode='单项' if mode in ('逐项','逐个','逐条','单项') else '人工' if mode in ('手工','人工') else mode
+            actors=set(WORKFLOW_ACTOR.findall(sentence[:match.start()]))
+            yield (mode,action,obj.strip(),actors),sentence.strip()
 
 
 def current_method_claims(text):
@@ -503,7 +526,8 @@ def current_method_claims(text):
 
 def current_workflow_issues(text,existing):
     supported=list(current_method_claims(existing))
-    return [dict(dimension='current_workflow',quote=quote) for claim,quote in current_method_claims(text)
+    claims=[*current_method_claims(text),*benefit_method_claims(text)]
+    return [dict(dimension='current_workflow',quote=quote) for claim,quote in claims
             if not any(claim[:3]==fact[:3] and claim[3].issubset(fact[3]) for fact,_ in supported)]
 
 

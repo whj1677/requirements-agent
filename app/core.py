@@ -31,8 +31,10 @@ def ident(prefix):
 
 
 class Problem(Exception):
-    def __init__(self, code, message, status=400):
+    def __init__(self, code, message, status=400, *, model_repair_allowed=True):
         self.code, self.message, self.status = code, message, status
+        # Internal retry eligibility; HTTP code/message/status contracts stay intact.
+        self.model_repair_allowed = model_repair_allowed
         super().__init__(message)
 
 
