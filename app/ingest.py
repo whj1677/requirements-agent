@@ -82,7 +82,9 @@ def validate(value, excerpts):
 def diagnostic_object(output):
     """A parseable first object is only an anchor, never a cleaned accepted response."""
     try:
-        value, _ = json.JSONDecoder().raw_decode(output.lstrip())
+        from .core import unique_json_object
+        value, _ = json.JSONDecoder(object_pairs_hook=unique_json_object,
+            parse_constant=lambda token: (_ for _ in ()).throw(ValueError(token))).raw_decode(output.lstrip())
         return value if isinstance(value, dict) else None
     except (ValueError, AttributeError):
         return None
@@ -91,7 +93,8 @@ def diagnostic_object(output):
 def complete_object(output):
     """Only a fully decoded JSON object can anchor a non-ingest format repair."""
     try:
-        value=json.loads(output,parse_constant=lambda x: (_ for _ in ()).throw(ValueError(x)))
+        from .core import strict_model_json
+        value=strict_model_json(output)
     except (ValueError,TypeError):
         return None
     return value if isinstance(value,dict) else None

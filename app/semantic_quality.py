@@ -2,7 +2,7 @@
 import re
 from .core import require
 
-VERSION = 'semantic-quality-9'
+VERSION = 'semantic-quality-10'
 POLICY = (
     '先核对输入自身是否一致，来源引用正确和人工回答有出处不证明其含义无矛盾。'
     '对计数单位、边界包含、量词、时点与条件构造具体反例；区分Unicode码点和扩展字素簇，'
@@ -15,6 +15,7 @@ POLICY = (
     '人工核对并采纳的具体行为选择可以构成本期决定，不要求原始诉求预先含后续决定；人工核对不证明原文蕴含的说明，不等于没有人工选择。'
     '但人工决定、preserved标签和classification_reason中的解释都不证明旧系统已实现新增细则；核对每句现状断言的真实实现依据。'
     '解释、摘要、风险段与规范原文同样受语义约束：明确失败不能概括为含未知结果的失败，所有不能弱化为部分/当前页，'
+    '本期批量申请不证明现状逐项申请、手工操作或效率低；现状操作方式须有同对象、同方式的肯定既有事实。建议或假设必须在该句明确标注，不能由引用位置替代事实依据。'
     '建议不能升级为必须培训等交付义务。引用是溯源，不是语义蕴含证明；逐句核对引用能否支持本句。'
     '检查真实明确来源例外：运行时PM审批有明确依据、已有代码/材料明确支持同一场景、明确业务决定培训或计数时不要误报。'
     '规范文案错误写finding并定位句子/字段，业务计数等真正未决写required_decisions；不得改历史基线或自动采纳。'
@@ -483,6 +484,34 @@ def implementation_supported(claim,scenario_evidence,existing_evidence):
     return bool(matching)
 
 
+CURRENT_METHOD = re.compile(r'(?:目前|当前|现有|既有|原有|原先|此前|现在)[^。；;\n，,]{0,24}?(逐项|逐个|逐条|单项|手工|人工|线下|邮件|批量|自动)[^。；;\n，,]{0,8}?(申请|提交|处理|录入|保存|编辑|审批)([^。；;\n，,]{1,24})')
+METHOD_NONFACT = re.compile(r'假设|推测|猜测|模型建议|方案建议|建议|尚未确认|未确认|无法确认|不能确认|没有证据|未提供|是否|可能|本期决定|本期新增|本期要求|拟|计划|将要')
+WORKFLOW_ACTOR = re.compile(r'(?:租户|系统|平台|工单)?管理员|人员|用户|员工|操作者')
+
+
+def current_method_claims(text):
+    """Finite explicit historical operation witnesses, with local uncertainty."""
+    for sentence in re.split(r'[。；;\n]',text):
+        for part in clauses(sentence):
+            if METHOD_NONFACT.search(part) or NEGATIVE.search(part):continue
+            for match in CURRENT_METHOD.finditer(part):
+                mode,action,obj=match.groups()
+                mode='单项' if mode in ('逐项','逐个','逐条','单项') else '人工' if mode in ('手工','人工') else mode
+                actors=set(WORKFLOW_ACTOR.findall(part[:match.start(1)]))
+                yield (mode,action,obj.strip(),actors),sentence.strip()
+
+
+def current_workflow_issues(text,existing):
+    supported=list(current_method_claims(existing))
+    return [dict(dimension='current_workflow',quote=quote) for claim,quote in current_method_claims(text)
+            if not any(claim[:3]==fact[:3] and claim[3].issubset(fact[3]) for fact,_ in supported)]
+
+
+def validate_current_workflow(text,existing,at):
+    require(not current_workflow_issues(text,existing),'SEMANTIC_BLOCKED',
+            at+' 现状操作方式缺少同对象、同方式的肯定既有事实；本期新要求、建议和未核对假设不能反推旧流程。')
+
+
 def explanation_issues(text,evidence,existing_evidence,scenario_evidence=None):
     issues=[]
     for sentence in re.split(r'[。；;\n]',text):
@@ -521,11 +550,11 @@ def explanation_issues(text,evidence,existing_evidence,scenario_evidence=None):
             not implementation_supported(part,evidence if scenario_evidence is None else scenario_evidence,existing_evidence) for part in parts)
         for dimension,present in [('failure_condition',conditional),('success_quantifier',weaker),('suggestion_obligation',obligation),('existing_implementation',unsupported)]:
             if present:issues.append(dict(dimension=dimension,quote=sentence.strip()))
-    return issues
+    return issues+current_workflow_issues(text,existing_evidence)
 
 def validate_explanation(text,evidence,existing_evidence,at,*,scenario_evidence=None):
     require(not explanation_issues(text,evidence,existing_evidence,scenario_evidence),'SEMANTIC_BLOCKED',at+
-        ' 解释超出引用语义：核对明确失败/未知结果、全部/部分、建议/义务与既有实现证据；不能删规范或代定规则来过关。')
+        ' 解释超出引用语义：核对明确失败/未知结果、全部/部分、建议/义务与既有实现/现状操作证据；不能删规范或代定规则来过关。')
 
 def current_document_checks(p):
     # Evaluate actual stored explanation text against the very citations it claims.
@@ -555,7 +584,12 @@ def current_document_checks(p):
                             checks.append(dict(check_id='DOC:'+location+':operator_role',object_id=artifact['id'],
                                 document_type=kind,document_version=artifact.get('document_version'),location=location,
                                 related_refs=[ref],dimension='operator_role',quote=flow))
-                if block.get('kind')!='explanation' or not basis or location not in visible:continue
+                if location not in visible:continue
+                if block.get('kind')=='narrative':
+                    existing='\n'.join([context.get('current_state','')]+[c['text'] for c in business.values()])
+                    for issue in current_workflow_issues(visible[location],existing):
+                        checks.append(dict(check_id='DOC:'+location+':'+issue['dimension'],object_id=artifact['id'],document_type=kind,document_version=artifact.get('document_version'),location=location,related_refs=scope,**issue))
+                if block.get('kind')!='explanation' or not basis:continue
                 refs=[r for r in basis.get('normative_refs',[]) if r in items]
                 keys=[r for r in basis.get('context_refs',[]) if r in context]
                 claims=[r for r in basis.get('business_claim_refs',[]) if r in business]
@@ -571,6 +605,7 @@ DOCUMENT_LOCATION = re.compile(r'[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.blocks\[\d+\]')
 DOCUMENT_CHECK = re.compile(r'DOC:[A-Za-z0-9_.-]+(?:\.blocks\[\d+\])?:[A-Za-z0-9_]+')
 DOCUMENT_ERROR = re.compile(r'误写|有误|错误|泛化|弱化|超出|断言|风险')
 DOCUMENT_DIMENSIONS = {
+    'current_workflow':re.compile(r'现状|旧流程|逐项|手工|人工操作|操作方式|无来源|无依据|事实依据'),
     'failure_condition':re.compile(r'明确失败|失败场景|失败条件|失败时|失败后|超时|结果未知|未知结果'),
     'success_quantifier':re.compile(r'整批成功|全部成功|部分成功|成功量词'),
     'suggestion_obligation':re.compile(r'培训|交付义务|建议.*义务'),

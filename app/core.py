@@ -45,6 +45,25 @@ def read_json(path):
     return json.loads(Path(path).read_text('utf-8'))
 
 
+class DuplicateJsonMember(ValueError):
+    pass
+
+
+def unique_json_object(pairs):
+    value = {}
+    for key, item in pairs:
+        if key in value:
+            raise DuplicateJsonMember('duplicate JSON member: ' + key)
+        value[key] = item
+    return value
+
+
+def strict_model_json(content):
+    """Model JSON must preserve every member; never collapse duplicate keys."""
+    return json.loads(content, object_pairs_hook=unique_json_object,
+                      parse_constant=lambda token: (_ for _ in ()).throw(ValueError(token)))
+
+
 def brief_hash(p):
     content={k:p[k] for k in ('items','questions','options')}
     # Old snapshots retain their original hash; new scope statements are real inputs.

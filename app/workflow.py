@@ -211,6 +211,8 @@ class Workflow:
                                    evidence_limitations=evidence.limitations[:])
                     attempts.append(attempt)
                     self.store.update_run(pid, rid, attempts=attempts)
+                    require(not evidence.value.get('json_integrity_failure'),'SEMANTIC_BLOCKED',
+                            '模型 JSON 有重复键，无法证明格式修复保持原义；原始证据保留，未追加修复请求')
                     if e.code=='OUTPUT_TRUNCATED' and (run['stage']=='review' or config.get('retry_max_tokens')):
                         if not escalated and out_budget < output_ceiling(config):
                             escalated = True
@@ -219,7 +221,9 @@ class Workflow:
                             events.append(dict(time=now(),phase=f'输出截断，提高单次输出上限到 {out_budget} tokens 后重试一次；输入范围保持不变',call=calls))
                             continue
                         raise Problem('OUTPUT_TRUNCATED','输出已达到本模型的单次允许上限，结果仍不完整，未采纳。请按业务主题分段处理或调整模型单次容量。')
-                    if e.code in ('NETWORK_ERROR','TIMEOUT','RATE_LIMITED','PROVIDER_ERROR') and retries < 2:
+                    # A missing response does not prove the paid request failed.
+                    # Preserve the unknown result for reconciliation, not resend.
+                    if e.code in ('RATE_LIMITED','PROVIDER_ERROR') and retries < 2:
                         retries += 1
                         await asyncio.sleep(min(retries, 2))
                         continue

@@ -113,6 +113,12 @@ def test_auth_failure_not_retried(tmp_path):
     r,p,provider=execute_run(tmp_path,[Problem('AUTH_FAILED','401')])
     assert r['calls']==1 and r['error']=='AUTH_FAILED'
 
+@pytest.mark.parametrize('error',['NETWORK_ERROR','TIMEOUT'])
+def test_unknown_paid_outcome_is_recorded_without_automatic_resend(tmp_path,error):
+    r,p,provider=execute_run(tmp_path,[Problem(error,'结果未知'),empty_ingest()])
+    assert r['calls']==1 and r['status']=='failed' and r['error']==error
+    assert len(provider.received)==1 and not p['messages']
+
 def test_repeated_format_errors_fail_after_two_repairs_even_when_legacy_call_limit_is_one(tmp_path):
     r,p,provider=execute_run(tmp_path,[Problem('SCHEMA_INVALID','bad')]*4,max_calls=1)
     assert r['calls']==3 and r['status']=='failed' and r['error']=='SCHEMA_INVALID' and not p['messages']

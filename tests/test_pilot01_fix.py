@@ -166,10 +166,14 @@ def test_no_response_records_absence_without_invented_output(tmp_path, monkeypat
         await workflow.tasks[result['id']]
         return store.get_record(p['id'],result['id'])
     result=asyncio.run(run())
-    assert result['calls']==3 and NoResponseClient.calls==3 and len(result['attempts'])==3
+    # The caller cannot know whether a missing response was charged/completed.
+    # Reconcile the original request; do not automatically submit it again.
+    assert result['calls']==1 and NoResponseClient.calls==1 and len(result['attempts'])==1
     assert result['status']=='failed' and result['error']=='NETWORK_ERROR'
     assert all(attempt['error']=='NETWORK_ERROR' for attempt in result['attempts'])
-    evidence=json.loads(next((tmp_path/'evidence'/'model-calls').glob('*.json')).read_text('utf-8'))
+    files=list((tmp_path/'evidence'/'model-calls').glob('*.json'))
+    assert len(files)==1
+    evidence=json.loads(files[0].read_text('utf-8'))
     assert evidence['validation_result']=='NETWORK_ERROR'
     assert evidence['response_received'] is False and evidence['final_output'] is None
 

@@ -180,7 +180,8 @@ class Provider:
         require(key not in content, 'SECURITY_BLOCKED', '模型输出包含凭据信息，已拒绝保存')
         # Never persist hidden reasoning; only final response is processed.
         try:
-            value = json.loads(content, parse_constant=lambda x: (_ for _ in ()).throw(ValueError(x)))
+            from .core import strict_model_json, DuplicateJsonMember
+            value = strict_model_json(content)
         except json.JSONDecodeError as error:
             normalized=(normalize_review_result_tail(content) if evidence
                 and evidence.value.get('stage')=='review' and evidence.value.get('final_output')==content else None)
@@ -191,8 +192,13 @@ class Provider:
                 removed_character='}',removed_offset=offset,raw_hash=digest(content),derived_hash=digest(value))
             evidence.value['syntax_normalization']=copy.deepcopy(meta['syntax_normalization'])
             evidence.save()
+        except DuplicateJsonMember:
+            if evidence:
+                evidence.value['json_integrity_failure']='duplicate_member'
+                evidence.save()
+            raise Problem('SCHEMA_INVALID', '模型 JSON 有重复键；原成员含义不唯一，不能作为格式修复依据')
         except ValueError:
-            raise Problem('SCHEMA_INVALID', '模型最终内容不是完整 JSON')
+            raise Problem('SCHEMA_INVALID', '模型最终内容不是严格完整 JSON（不得有重复键或非 JSON 常量）')
         return value, meta
 
 
@@ -275,7 +281,8 @@ def review_structure_example():
     value=dict(schema_version='1.1',stage='review',summary='仅结构示例，不是项目审查结论',
         proposals=[],questions=[],findings=[],used_source_refs=[],
         result=dict(assessment='needs_changes',perspectives=[dict(role='审查角色（结构示例）',
-            considerations=['仅演示字符串数组及对象闭合，不是项目结论。'])],required_decisions=[],reviewed_refs=[]),limitations=[])
+            considerations=['仅演示字符串数组及对象闭合，不是项目结论。']),
+            dict(role='第二个审查角色（结构示例）',considerations=['仅演示对象之间的逗号，不是项目结论。'])],required_decisions=[],reviewed_refs=[]),limitations=[])
     jsonschema.Draft202012Validator(request_schema('review')).validate(value)
     return value
 
@@ -339,6 +346,11 @@ def assemble(p, stage, user_message, config, folder, kind='prd', generation_targ
         header['semantic_quality_contract']=semantic_contract()
     if stage!='ui':header['delivery_policy']='工作台已取消业务草图生成与核对。交付 MRD/PRD；原页面截图仍可作为现状参考。不要要求生成或批准草图才能成文，不把历史草图当作本轮交付。业务入口、字段、流程及异常仍必须在需求中表达。'
     if stage=='ingest':header['context_contract']='整理后必须输出 product_context_proposal 的全部字段，供用户核对，未知值填空字符串；不自动采纳或批准。已有条目仅因信息实质变化才提出修订，不重复建同义候选。'
+    if stage=='review':header['review_json_self_check']={
+        'version':'review-json-integrity-1',
+        'steps':['每层字段名仅出现一次；重复键即拒绝，不能用后值覆盖前值。',
+                 'perspectives中的对象写成 {"role":"…","considerations":["…"]}；对象之间仅用逗号，数组后不得追加引号。',
+                 '输出前核对根及所有嵌套必需字段、字符串转义与所有对象/数组闭合；缺字段、截断或语义变化不能靠宽松解析通过。']}
     if stage=='ingest':header['ingest_contract']=ingest.contract()
     if stage in ('ingest','clarify','change'):header['understanding_contract']=understanding_contract()
     if stage in ('ingest','clarify','change'):

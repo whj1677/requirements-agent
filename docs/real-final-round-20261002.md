@@ -36,7 +36,7 @@
 
 规范REQ/RULE、结果未知AC和PRD业务规则保留了明确拒绝/未知分支、同租户/最多20/任一项量词、原申请ID查询与确认前不重复提交。审计正文明确本期要求不等于旧实现已覆盖；未新增执行审批人。但独立内容检查找到真实错误：**MRD-3e895b840001.blocks[1]** 写“租户管理员目前逐项申请云资源”“本期改为”“逐项提交的低效”，冻结来源没有提供该现状和动机，不能由新增批量需求反推旧流程。问题只定位这份MRD和真实块，不连带声称PRD有同句。另 **MRD-b359808c62ad.blocks[1]** 的“本期优先安排”与已核对优先级仍待定并存，标为待人工核对措辞，未替业务方作排序。
 
-真实最终审查 **RUN-b9494359cfba4eda / CALL-794cd14276f741fa** 也在原始文本中指出上述MRD位置及仍open的反馈问题，文字意向为needs_changes；然而 `perspectives` 返回多余引号等JSON语法错误，首次解析为 `Expecting ':' delimiter`，offset3273/column3274。原文SHA-256 **6099b245365bda6977d2b5acd28e569515c67591987b87f63754733c5d240ed1**。HTTP200、finish_reason=stop；合法review没有登记（project.review=null），不能把人工读出的needs_changes算产品审查成功。CALL为SCHEMA_INVALID，程序保真修复检查拒绝不完整JSON，run终态SEMANTIC_BLOCKED。未手修JSON入库，也未追加付费修复。
+真实最终审查 **RUN-b9494359cfba4eda / CALL-794cd14276f741fa** 也在原始文本中指出上述MRD位置及仍open的反馈问题，文字意向为needs_changes；然而 `perspectives` 返回多余引号等JSON语法错误，首次解析为 `Expecting ':' delimiter`，offset3273/column3274。整个CALL JSON文件SHA-256 **6099b245365bda6977d2b5acd28e569515c67591987b87f63754733c5d240ed1**；`final_output` UTF-8正文SHA-256 **681f86a0bbf373b6ae98570c3f38b269da5cb7c0b8f15f2bd89085d3d85e47ea**。本轮仅更正hash口径，原CALL未改写。HTTP200、finish_reason=stop；合法review没有登记（project.review=null），不能把人工读出的needs_changes算产品审查成功。CALL为SCHEMA_INVALID，程序保真修复检查拒绝不完整JSON，run终态SEMANTIC_BLOCKED。未手修JSON入库，也未追加付费修复。
 
 反例原文 **SRC-0e3655ff87e54b82/EX-b89fba3ce0804b47** 同时写100Unicode码点、emoji一码点及超时明确失败。修复后真实整理 **RUN-c63db7e6f36a4920** 产生 **Q-285b7d4a7c7744a8、Q-a2378286a6454466**，正确指出已有单位定义自相矛盾，给出99个A+👍🏽=101码点/100扩展字素簇，提供一致选项并要求人工选择，同时区分明确失败与未知。没有把材料错报为完全未定义计数单位。
 

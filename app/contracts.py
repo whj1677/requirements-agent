@@ -139,6 +139,13 @@ def validate_response(value, stage, project, excerpts, document_type='prd'):
     validate_understanding(value,project,excerpts)
     from .semantic_quality import validate_analysis, validate_review
     validate_analysis(value,project,excerpts)
+    if stage in ('ingest','clarify','change','prd'):
+        from .semantic_quality import validate_current_workflow
+        context=project.get('product_context',{})
+        used={(r['source_id'],r['excerpt_id']) for r in value['used_source_refs']}
+        existing='\n'.join([context.get('current_state','')]+[
+            e['text'] for e in excerpts if (e['source_id'],e['id']) in used])
+        validate_current_workflow(value['summary'],existing,'summary')
     if stage=='review':validate_review(value,project)
     if stage == 'ui':
         validate_ui(value['result']['spec'], project)
@@ -238,6 +245,17 @@ def validate_document(doc, p, kind):
                         'REFERENCE_INVALID','解释性正文引用未核对或未选中的业务背景')
                 require(set(b['ref_ids'])==set(basis.get('normative_refs',[])),
                         'REFERENCE_INVALID','解释性正文的规范引用与依据不一致')
+                from .semantic_quality import validate_explanation
+                context=verified_context(p);business=verified_business_context(p)
+                evidence='\n'.join([context[r] for r in basis.get('context_refs',[])]+[items[r]['statement'] for r in basis.get('normative_refs',[])]+[business[r]['text'] for r in basis.get('business_claim_refs',[])])
+                existing='\n'.join([context[r] for r in basis.get('context_refs',[]) if r=='current_state']+[business[r]['text'] for r in basis.get('business_claim_refs',[])])
+                scenario='\n'.join([context[r] for r in basis.get('context_refs',[]) if r!='current_state']+[items[r]['statement'] for r in basis.get('normative_refs',[])])
+                validate_explanation(b['text'],evidence,existing,s['section_id'],scenario_evidence=scenario)
+            if b['kind']=='narrative' and not s['title'].startswith(('历史分析提示','附录：条目身份与历史讨论','附录：未采纳与历史讨论')):
+                from .prd import verified_context, verified_business_context
+                from .semantic_quality import validate_current_workflow
+                existing='\n'.join([verified_context(p).get('current_state','')]+[c['text'] for c in verified_business_context(p).values()])
+                validate_current_workflow(b['text'],existing,s['section_id'])
             if b['kind'] in ('requirement', 'rule', 'acceptance'):
                 unselected = sorted(r for r in b['ref_ids'] if r not in {i['id'] for i in delivery_items(p)})
                 require(not unselected, 'SEMANTIC_BLOCKED', '规范内容只能引用本期已选目标条目（' + '、'.join(unselected[:5]) + (' 等' if len(unselected) > 5 else '') + ' 未已选）')

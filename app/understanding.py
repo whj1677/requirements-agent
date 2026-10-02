@@ -10,6 +10,10 @@ ANSWER_TARGET_KINDS = (*TRACKED, "constraint")
 
 def contract():
     return dict(version='understanding-2',
+        classification_separation_example=dict(
+            instruction='同项同时含本期变化和既有保持时不能混写change/preserve。可分离的变化及保持约束分别引用各自原句；变更原条目继续revise原ID。未知现状留未知，不把新要求编成current。示例仅演示分类，不能作为业务来源或新增交付。',
+            change=dict(kind='requirement',change_type='new',scope_states=['change']),
+            preserve=dict(kind='constraint',change_type='preserved',scope_states=['preserve'])),
         classification='功能需求需分别表达现状/current、变化/change、保持/preserve；scope_evidence逐条引用本次真实片段的原文quote及source_ref。current+change=modified，只有change=new，只有preserve=preserved，只有current=existing；没有充分依据则unspecified。一个功能的权限、分页、排序等保持性约束可写在该功能的behavior或关联rule中供PM核对，不要把每个字段维度机械拆成独立requirement；单条requirement的scope_evidence不得混写change与preserve状态，也不得把保持内容说成新增。引用原句同时含变化和保持时保留原文，change_type只对应本条statement的变化身份。classification_reason说明判定依据及未知。applies_to=as_is仅用于existing。原条目变化用revise/target_item_id，不新建同义编号。',
         questions='一个问题只问一个可独立回答的决定。复合问题必须列出decision_points（完整Question对象，各自独立temp_id/topic_key/关联需求/阻塞属性），程序展开为独立回答。拆分已有未答问题使用target_question_id；原问题保留为分组记录，不能拆掉已有回答。已答问题若问题文字或风险条件发生变化，不能假定原答案仍适用；材料已回答的事项不要再次提问，编号错字记findings。',
         answer_binding='answer_refs只用于基于已保存回答修订该问题直接关联的原requirement/rule/acceptance/constraint：action=revise、target_item_id为该问题related_refs中的原条目ID，kind必须与目标一致，不能指向另一修订候选。使用本轮真实回答片段的source_refs说明依据；新增acceptance等action=add候选不得填写answer_refs，其回答依据放source_refs并用related_refs关联原需求。保留原条目编号与内容，回答不会自动采纳候选；所有直接关联条目的修订明确采纳后才闭环。',
