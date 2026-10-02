@@ -2,7 +2,7 @@
 import re
 from .core import require
 
-VERSION = 'semantic-quality-11'
+VERSION = 'semantic-quality-12'
 POLICY = (
     '先核对输入自身是否一致，来源引用正确和人工回答有出处不证明其含义无矛盾。'
     '对计数单位、边界包含、量词、时点与条件构造具体反例；区分Unicode码点和扩展字素簇，'
@@ -18,6 +18,8 @@ POLICY = (
     '本期批量申请不证明现状逐项申请、手工操作或效率低；现状操作方式须有同对象、同方式的肯定既有事实。建议或假设必须在该句明确标注，不能由引用位置替代事实依据。'
     '定性预期收益无需已有量化证明，但“减少逐项重复提交”等说明隐含的既有操作前提仍须有来源，或明确标为待核对假设；未量化不能替该前提作证或自动否定收益。'
     '建议不能升级为必须培训等交付义务。引用是溯源，不是语义蕴含证明；逐句核对引用能否支持本句。'
+    '必要条件不是充分成功条件：任一配额不足则拒绝，不蕴含配额足够就保证创建。statement、behavior.result、exceptions、summary与understanding须对应同一条件作用域。'
+    '允许明确标记的正常成功分支和独立拒绝/未知例外；正常结果不代表所有满足某一必要条件的请求都成功。未知结果不能推断创建或未创建。'
     '检查真实明确来源例外：运行时PM审批有明确依据、已有代码/材料明确支持同一场景、明确业务决定培训或计数时不要误报。'
     '规范文案错误写finding并定位句子/字段，业务计数等真正未决写required_decisions；不得改历史基线或自动采纳。'
     'counting_definition_facts按来源、当前字段、人工回答和实际文档位置区分定义缺失与定义矛盾。'
@@ -114,6 +116,7 @@ def current_counting_checks(p):
 
 def contract():
     return dict(version=VERSION,policy=POLICY,
+        result_condition_policy='result_condition_facts是内部可选输入投影，保留对象、来源、位置、原句和必要/充分/正常分支/拒绝/未知角色，不是新业务规则或正式PM批准。仅有必要条件时不反推充分成功；已明确充分来源也须保留同一对象和条件作用域。正常结果应写成明确的正常成功分支，同时完整保留拒绝和未知例外；摘要、理解和解释不得把分支压缩成无条件保证。来源或人工回答自身矛盾时，同一blocking问题须联合绑定对象、双方来源及成功/拒绝条件选择，不能默默采纳一方；建议和待澄清文案仍是候选，不自动升级规范。',
         review_axes=['输入内部一致性与反例','当前决定与历史未知','运行角色与需求确认角色',
                      '既有事实/新增决定/模型建议','全部规范、行为字段、摘要与解释段条件量词'],
         finding_binding='semantic_checks每项check_id唯一绑定object_id、location、dimension；尚存冲突的review必须在对应blocker.message和required_decisions同时原样写check_id，给反例与PM选择。不能用同一对象的其他blocker、其他计数字段或其他问题抵消。ingest/clarify/change中同一条可回答问题必须联合绑定冲突对象、source_id/excerpt_id与计数决定；问题直接询问计数单位或明确给出码点/字素簇选择，不能用两条问题分别命中，也不能以码点颜色等其它维度过关。计数options可空；有选项时每个备选内部必须一致，不能把复合emoji按一个码点计说成与Unicode码点口径一致。明确回答与修订或当前条款必须选择相同计数单位，否定某一单位或仍待确认不等于已决定。复用同对象同维度开放问题。',
@@ -574,11 +577,14 @@ def explanation_issues(text,evidence,existing_evidence,scenario_evidence=None):
             not implementation_supported(part,evidence if scenario_evidence is None else scenario_evidence,existing_evidence) for part in parts)
         for dimension,present in [('failure_condition',conditional),('success_quantifier',weaker),('suggestion_obligation',obligation),('existing_implementation',unsupported)]:
             if present:issues.append(dict(dimension=dimension,quote=sentence.strip()))
-    return issues+current_workflow_issues(text,existing_evidence)
+    from .result_conditions import cited_text_issues
+    outcome=[dict(dimension='failure_condition' if f['reason']=='unknown_result_asserted' else 'outcome_condition',
+                  quote=f['quote']) for f in cited_text_issues(text,evidence)]
+    return issues+current_workflow_issues(text,existing_evidence)+outcome
 
 def validate_explanation(text,evidence,existing_evidence,at,*,scenario_evidence=None):
     require(not explanation_issues(text,evidence,existing_evidence,scenario_evidence),'SEMANTIC_BLOCKED',at+
-        ' 解释超出引用语义：核对明确失败/未知结果、全部/部分、建议/义务与既有实现/现状操作证据；不能删规范或代定规则来过关。')
+        ' 解释超出引用语义：核对必要/充分/正常成功分支、明确失败/未知结果、全部/部分、建议/义务与既有实现/现状操作证据；不能删规范或代定规则来过关。')
 
 def current_document_checks(p):
     # Evaluate actual stored explanation text against the very citations it claims.
@@ -629,6 +635,9 @@ DOCUMENT_LOCATION = re.compile(r'[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.blocks\[\d+\]')
 DOCUMENT_CHECK = re.compile(r'DOC:[A-Za-z0-9_.-]+(?:\.blocks\[\d+\])?:[A-Za-z0-9_]+')
 DOCUMENT_ERROR = re.compile(r'误写|有误|错误|泛化|弱化|超出|断言|风险')
 DOCUMENT_DIMENSIONS = {
+    # Quoting a common effect verb (e.g. audit "保存成功") is not itself
+    # an assertion of another error dimension. Check IDs retain the binding.
+    'outcome_condition':re.compile(r'必要条件|充分条件|成功条件|正常(?:成功)?分支'),
     'current_workflow':re.compile(r'现状|旧流程|逐项|手工|人工操作|操作方式|无来源|无依据|事实依据'),
     'failure_condition':re.compile(r'明确失败|失败场景|失败条件|失败时|失败后|超时|结果未知|未知结果'),
     'success_quantifier':re.compile(r'整批成功|全部成功|部分成功|成功量词'),

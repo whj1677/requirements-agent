@@ -338,7 +338,7 @@ def response_boundary(schema):
             for key,child in node['properties'].items():visit(child,path+'.'+key,seen)
         if 'items' in node:visit(node['items'],path+'[]',seen)
     visit(schema,'$')
-    return dict(object_keys=paths,input_only=['semantic_checks','semantic_document_checks','document_quote_witnesses','input_counting_checks','counting_option_examples','counting_definition_facts','excerpts','source_status','recent_messages'],
+    return dict(object_keys=paths,input_only=['semantic_checks','semantic_document_checks','document_quote_witnesses','input_counting_checks','counting_option_examples','counting_definition_facts','result_condition_facts','excerpts','source_status','recent_messages'],
         instruction='响应不是输入上下文的副本。每层对象只写schema规定字段，不添加*_note、诊断、说明元字段或上下文原样副本。root及各嵌套对象按object_keys输出，required字段不能遗漏。业务说明写已有合法说明字段；格式修复保持已有业务原文，summary和limitations不改写。'
         '返回严格JSON，不用Markdown包围。数组项的对象闭合后再闭合数组；questions是数组，decision_points是各父问题内部的数组；不能把父问题对象与questions数组的闭合次序颠倒。输出前逐层核对所有括号、逗号和转义，不拼接残缺JSON。')
 
@@ -515,6 +515,8 @@ def assemble(p, stage, user_message, config, folder, kind='prd', generation_targ
         require(images, 'VISION_UNAVAILABLE', '没有实际图片可发送')
     if stage in ('ingest','clarify','change','prd','review'):
         from .semantic_quality import current_counting_checks, counting_witness, counting_definition_facts
+        from .result_conditions import projection
+        context['result_condition_facts']=projection(p,selected)
         context['semantic_checks']=current_counting_checks(p)
         context['counting_definition_facts']=counting_definition_facts(p,selected)
         if stage=='review':

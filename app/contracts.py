@@ -139,6 +139,8 @@ def validate_response(value, stage, project, excerpts, document_type='prd'):
     validate_understanding(value,project,excerpts)
     from .semantic_quality import validate_analysis, validate_review
     validate_analysis(value,project,excerpts)
+    from .result_conditions import validate_response_conditions
+    validate_response_conditions(value,project,excerpts)
     if stage in ('ingest','clarify','change','prd'):
         from .semantic_quality import validate_current_workflow
         context=project.get('product_context',{})
