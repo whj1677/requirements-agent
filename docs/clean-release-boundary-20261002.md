@@ -56,3 +56,41 @@ python -X utf8 -m pytest tests/test_office_sources.py::test_installed_office_rea
 ```
 
 有限规则不能理解所有省略、跨对象描述、多份材料时间关系或隐含撤回；复杂歧义继续人工审查。只对这8个固定输入及既有回归收口，不追加无穷同义词。真实PM尚未验收；新机器安装、Windows安装器重构建、外部消费者与发布环境验证不在本轮执行范围。
+
+## 最终执行收口
+
+上述提交前准备状态已完成验证。实现/测试/初始说明提交为 **3535156dbf40db09baa62f778a6c783fa51c3ce4**，父e6fdf7c；本次补充只记录执行结果。后续说明提交不改变该提交的实现、测试、前端及打包输入，不把说明提交冒充重新执行过的源码版本。最终SHA/父链和逐文件对应见 `commit-receipt.json`。
+
+- 从本地Git获取3535156后，同一隔离目录保持detached、tracked clean，未补入原work或旧data。8项冻结探针8/8匹配原预期、输入不变；旧B2仍SEMANTIC_BLOCKED，实际联系人复核仍accepted/needs_changes，两项计数矛盾、反例和PM选择保留。模型请求、自动模型修复及模型用量0。
+- **3535156干净全量启用Office：1147通过、0失败、0错误、0skip，2个既有弃用警告，253.29秒**；退出0、JUnit1147项。包含新8项回归及五项实际Office用例。与e6fdf7c基准两套结果分开归属，不相加或重复计数。仅合成Office，结束后Word/Excel/PowerPoint进程查询为空。
+- 记录332个Git检出输入，其中208个实现/测试/脚本/前端/依赖检查输入；所有测试期间冻结字节保持，原工作区和干净检出对应Git对象一致。依赖固定版本没有不匹配，未发现源码/参考模板/打包输入缺失；运行时和Office复用本机安装，不等于独立安装验证。
+- 精简单机包108项文件逐项验证hash，manifest为source_commit=3535156、working_tree_dirty=false、included_untracked=[]；再次前端构建一致，包内应用工厂的会话及静态首页检查退出0。ZIP SHA-256 **4ed90318913c3315c61e191d2510e2032981a4f05f83afc7de25018a6df50c71**。JS/CSS与正式构建字节相同；index.html仅CRLF/LF差异，规范化后相同。没有重打Windows安装器或发布标签。
+
+成功导出使用全新隔离合成项目 **P-31b6a46a9f394f7d**，与两个旧项目、原daily data独立。明确真值为可空备注最多100Unicode码点、复合emoji分别计码点、同租户权限、0/100允许、101拒绝并保留输入/原记录。来源原文由text-source接口保存，候选和行为明确输入，人工采纳/阶段核对/文档核对/确认均调用真实本地接口；成文和审查答复是明确标记的确定性合成夹具，未伪装真实模型或PM判断。全部门正常执行，gate bypass=0。
+
+首次探针退出1因MRD不允许function章节；第二次退出1因MRD缺少独立优先级分析。两次脚本、日志、隔离数据保留。第三次按现有v4契约提供有出处的goal、priority及validation计划，退出0；没有降低计划版本、删除业务内容或放松校验。
+
+- MRD/PRD的md/docx四次真实TestClient HTTP下载200，逐段核对明确业务正文及REQ-CLEAN-0001 v2；RULE/AC为v1。两个文档v1、底稿v10，文档ID、导出记录及下载SHA-256一致；两个错文档ID请求仍409/STALE_DOCUMENT。
+- 合成确认 **CONF-fea9ac5f5e9e4ad0**，基线 **BASE-03416e15de9445ad**，交接 **EXPORT-19a7352fb58b4478**。交接包16项artifact哈希、三项实体ID/namespace/version/content_hash、两份文档ID/version及正文投影hash、baseline/confirmation/hash均核对；规范正文和两份阅读文档均保留三条合成真值。
+- 合成交接ZIP SHA-256 **d80e4a73fbaa8b08b424ad6daf0586388f5b769f64f26af0d5fcbd3ddaecfa83**。输出和manifest见 `synthetic-export-attempt3/`；真实PM验收NOT_RUN，材料内“已确认”与该工程合成确认均不证明真实业务批准。
+
+正式服务仅原8765、root data：重启前活动任务0、可见输入为空，先一致性SQLite备份，再正常stop/start一次。新正式fingerprint **7001cabd1554f22b** 与原项目磁盘一致；干净检出及合成TestClient为 **ad73a1a7adbea392**。二者各自绑定原始字节，Git规范化代码对象相同（canonical app SHA-256 **87185857ca4843962389952fe84c13e54f15a336b2ed8059b7e86f5b77def4cf**）。没有修改正式前端、凭据或启动模式。
+
+18个原项目可读，SQLite integrity_check=ok、foreign_key_check空。旧P-12c6a9828d0743b4/P-d74273d61fae4b69的PRD md/docx四次请求仍409/SEMANTIC_BLOCKED，未创建导出或强放行；原聊天项目及人工核对提示保留。8765只有一个已核归属监听，Windows虚拟环境launcher PID和实际Python子进程PID不同，已核父子关系及相同serve.py路径；本轮探针仅TestClient，未创建第二个工作台监听。全量套件自有临时fixture服务由测试生命周期管理。
+
+保护终检：**34,714个原有文件无变化**，projects/revisions/records/settings/migrations行数18/279/727/1/1及完整内容hash未变；work、已确认历史、原证据、来源、数据和配置均保留。本轮本地仅app/semantic_quality.py、新测试和本报告三文件归档；逐文件原始before/after、Git对象、两份提交补丁及hash存于file-archive。未推送、合并或部署。
+
+最终测试实际命令（使用明确的现有解释器）：
+
+```powershell
+Set-Location -LiteralPath 'D:/01_AI工程/01_工程项目/pm-req-clean-verify-e6fdf7c-20261002'
+$env:PYTHONUTF8='1'
+$env:PYTHONPATH=''
+$env:RA_DATA_DIR='D:/01_AI工程/01_工程项目/pm-req-clean-verify-e6fdf7c-20261002/evidence/final-test-import-sandbox'
+$env:RA_TEST_LOCAL_OFFICE='1'
+& 'D:/01_AI工程/01_工程项目/pm-req/.venv/Scripts/python.exe' -X utf8 -m pytest tests -q --basetemp=evidence/pytest-base-3535156 --junitxml='D:/01_AI工程/01_工程项目/pm-req/evidence/clean-release-boundary-20261002-1947/clean-3535156-full-office.xml'
+# 同一干净目录内的包验证：
+& 'D:/01_AI工程/01_工程项目/pm-req/.venv/Scripts/python.exe' -X utf8 scripts/package_local.py --web-dist evidence/verify-dist --output evidence/package-3535156
+```
+
+可交付边界是“本机既有环境上的干净Git源码恢复、固定语义验收、合成Office、精简包离线应用/静态就绪与合成导出机制已执行验证”。完整新机安装、Windows安装器、真实模型新输出质量、复杂自然语言全覆盖、真实PM业务验收及发布环境尚未验证；原业务计数矛盾仍须PM选择。满足本轮有限验收后停止，不宣称已正式发布或所有输入均可自动判定。
