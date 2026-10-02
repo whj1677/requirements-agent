@@ -2,7 +2,7 @@
 import re
 from .core import require
 
-VERSION = 'semantic-quality-8'
+VERSION = 'semantic-quality-9'
 POLICY = (
     '先核对输入自身是否一致，来源引用正确和人工回答有出处不证明其含义无矛盾。'
     '对计数单位、边界包含、量词、时点与条件构造具体反例；区分Unicode码点和扩展字素簇，'
@@ -22,6 +22,7 @@ POLICY = (
     '已写Unicode码点或扩展字素簇代表单位证据存在，不能虚报来源没有单位；但显式待PM确认采纳的建议只是候选，不能当成本期规范。'
     'decision_status及decision_evidence区分待采纳、明确人工确认和未见采纳表态；本期口径未确定可追问待采纳候选，不能反过来否认已有明确决定。'
     '同文人工确认须绑定本计数单位或明确指回该计数方案；其它能力的确认不证明采纳。定义或采纳存在都不证明内部一致。'
+    '明确撤回只作用于同一计数对象；未采纳的替代建议不撤销已有本期决定。来源有明确对象ID时分开核对同名计数建议。'
     '例如已定义码点却又说每个emoji恒为一码点，应报告定义矛盾，给可复算反例并请PM选择，不能把矛盾改称缺定义或替PM选。'
 )
 UNIT = re.compile(r'码点|code\s*points?|字素簇|grapheme', re.I)
@@ -153,6 +154,7 @@ ADOPTION_PENDING = re.compile(r'建议|候选|备选|待(?:采纳|确认|决定)
     r'(?:需|须|需要).{0,12}(?:PM|产品经理).{0,8}确认|可以.{0,8}(?:按|采用)',re.I)
 ADOPTION_CONFIRMED = re.compile(r'(?:PM|产品经理|人工).{0,8}(?:已|明确)(?:确认|采纳|决定|选择)|'
     r'(?:经|由)(?:PM|产品经理|人工)(?:确认|采纳)',re.I)
+ADOPTION_REVOKED = re.compile(r'(?:PM|产品经理|人工).{0,8}(?:已|明确)(?:撤回|撤销|取消)',re.I)
 ADOPTION_REFERENT = re.compile(r'(?:上述|前述|该|此|这个)(?:计数)?(?:方案|建议)|计数(?:口径|单位|方式)|(?:后才?|前).{0,5}采纳')
 
 
@@ -164,14 +166,17 @@ def counting_adoption(text,units):
         if named:active=named & units
         if not active or not (named or ADOPTION_REFERENT.search(clause)):continue
         confirmation=ADOPTION_CONFIRMED.search(clause)
+        revocation=ADOPTION_REVOKED.search(clause)
+        revoked=revocation and not re.search(r'未|没有|并非|不能|无法',clause[:revocation.end()])
         negated=confirmation and (re.search(r'未|没有|并非|不能|无法|尚待|待确认',clause[:confirmation.end()]) or
             re.search(r'不(?:采纳|采用|选择)|拒绝(?:采纳|采用)|未(?:采纳|采用)',clause[confirmation.end():]))
-        if confirmation and not negated:state='confirmed'
+        if revoked:state='pending'
+        elif confirmation and not negated:state='confirmed'
         elif ADOPTION_PENDING.search(clause) and not re.search(r'无需|不需要|不必',clause):state='pending'
         else:continue
         for unit in active:states[unit]=state
         evidence.append(dict(quote=clause,declared_units=sorted(active),decision_status=state))
-    status='pending' if 'pending' in states.values() else 'confirmed' if 'confirmed' in states.values() else 'not_stated'
+    status='confirmed' if 'confirmed' in states.values() else 'pending' if 'pending' in states.values() else 'not_stated'
     return dict(decision_status=status,decision_evidence=evidence)
 
 
@@ -194,13 +199,25 @@ def counting_definition(text):
                 declared_units=sorted(units),status='contradictory' if witness else 'undecided' if units and adoption['decision_status']=='pending' else 'defined' if units else 'missing',**adoption)
 
 
+def counting_source_scopes(text,owners):
+    """Explicit object IDs bound local references; same unit names do not bind."""
+    patterns={ref:re.compile(r'(?<![A-Za-z0-9_-])'+re.escape(ref)+r'(?![A-Za-z0-9_-])') for ref in owners}
+    if not any(pattern.search(text) for pattern in patterns.values()):return None
+    scoped={};active=set()
+    for clause in clauses(text):
+        named={ref for ref,pattern in patterns.items() if pattern.search(clause)}
+        if named:active=named
+        for ref in active:scoped.setdefault(ref,[]).append(clause)
+    return scoped
+
+
 def counting_definition_facts(p,excerpts=None):
     """Read-only facts keep object/source/location; never merge unrelated units."""
     facts=[]
-    def add(origin,location,text,refs=(),sources=()):
+    def add(origin,location,text,refs=(),sources=(),definition_text=None):
         if not (UNIT.search(text or '') or re.search(r'计数|口径|长度|字符|count|length',text or '',re.I)):return
         facts.append(dict(origin=origin,location=location,quote=text,related_refs=list(refs),
-                          source_refs=list(sources),**counting_definition(text)))
+                          source_refs=list(sources),**counting_definition(text if definition_text is None else definition_text)))
     items=[i for i in p.get('items',[]) if i.get('selection_status')=='selected' and i.get('applies_to')=='to_be']
     for item in items:
         for field,text in [('statement',item.get('statement',''))]+[(f'behavior.{k}',v) for k,v in (item.get('behavior') or {}).items() if isinstance(v,str)]:
@@ -213,7 +230,11 @@ def counting_definition_facts(p,excerpts=None):
     for e in excerpts:
         pair=(e['source_id'],e['id'])
         owners=[i['id'] for i in items if pair in source_pairs(i.get('source_refs',[]))]
-        add('source',e['source_id']+'/'+e['id'],e.get('text',''),owners,[dict(source_id=e['source_id'],excerpt_id=e['id'])])
+        text=e.get('text','');scoped=counting_source_scopes(text,owners)
+        sources=[dict(source_id=e['source_id'],excerpt_id=e['id'])]
+        if scoped is None:add('source',e['source_id']+'/'+e['id'],text,owners,sources)
+        else:
+            for ref,parts in scoped.items():add('source',e['source_id']+'/'+e['id'],text,[ref],sources,'；'.join(parts))
     for artifact in p.get('documents',{}).values():
         visible=readable_document_blocks(artifact)
         for section in artifact.get('content',{}).get('sections',[]):
