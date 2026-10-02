@@ -1,5 +1,5 @@
 """Input-only evidence roles for generation; no adoption or response rewriting."""
-from .understanding import current_answer
+from .understanding import current_answer, answer_targets, applied_targets
 
 STAGES = ('ingest', 'clarify', 'change')
 SOURCE_POLICY = (
@@ -61,8 +61,10 @@ def condition_layers(projection,p):
     # Optional input cards reference existing projections; no new response
     # fields, generated identities, inferred answers or adoption decisions.
     tasks=[]
+    pending=[(q,{i['id'] for i in answer_targets(p,q)}-applied_targets(p,q))
+             for q in p.get('questions',[]) if current_answer(q)]
     for oid,item in items.items():
-        decisions=[q for q in p.get('questions',[]) if current_answer(q) and oid in q.get('related_refs',[])]
+        decisions=[q for q,targets in pending if oid in targets]
         if not decisions or item['kind'] not in ('requirement','rule','acceptance','constraint'):continue
         tasks.append(dict(target_item_id=oid,kind=item['kind'],question_ids=[q['id'] for q in decisions],
             predicate_locations=sorted({f['location'] for f in projection['facts'] if f.get('object_id')==oid}),

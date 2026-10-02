@@ -106,24 +106,50 @@ def scopes(text,expected_subject=None):
     return result
 
 
+def confirmed_result(sentence):
+    match=re.search(r'(?:查询|收到|获得)[^，,。；]{0,12}(?:确认|明确)[^，,。；]{0,12}(?:成功|拒绝|失败|未写入|未提交|未创建)',sentence)
+    return match if match and not re.search(r'未|没有|尚未',sentence[:match.start()]) else None
+
+
+def outcome_sentences(text,fallback_subject):
+    """Semicolons end assertion scope, not the same object's unknown context.
+
+    Carry only the original uncertainty quote within one sentence. A different
+    object, explicit processing/refusal branch or confirmed query does not
+    inherit that context. No strings or source records are rewritten.
+    """
+    for paragraph in re.split(r'[。\n]',text or ''):
+        context=None
+        for sentence in re.split(r'[；;]',paragraph):
+            sentence=sentence.strip()
+            if not sentence:continue
+            obj=subject(sentence) or fallback_subject
+            tentative=bool(re.match(r'(?:方案)?建议[：:]|假设[：:]|待(?:澄清|核对|确认)[：:]',sentence))
+            confirmed=confirmed_result(sentence)
+            if confirmed and (not context or not obj or not context['subject'] or obj==context['subject']):context=None
+            if UNKNOWN.search(sentence) and not confirmed and not tentative:
+                context=dict(subject=obj,quote=sentence)
+            inherited=context if (context and (not obj or not context['subject'] or obj==context['subject'])
+                and not normal_branch(sentence,obj) and not rejection_branch(sentence)) else None
+            yield sentence,inherited
+
+
 def facts(text, *, location, object_id=None, source_refs=(), fallback_operation=None, fallback_subject=None, origin='model'):
     """Preserve the sentence owning each predicate and its evidence role."""
     result=[]
-    for sentence in re.split(r'[。；;\n]',text or ''):
-        sentence=sentence.strip()
-        if not sentence:continue
+    for sentence,context in outcome_sentences(text,fallback_subject):
         tentative=bool(re.match(r'(?:方案)?建议[：:]|假设[：:]|待(?:澄清|核对|确认)[：:]',sentence))
         local_subject=subject(sentence) or fallback_subject
         op=operation(sentence) or fallback_operation
         if not op:continue
         base=dict(object_id=object_id,location=location,source_refs=list(source_refs),origin=origin,
                   subject=local_subject,operation=op,quote=sentence,scope=sorted(scopes(sentence)))
-        unknown=UNKNOWN.search(sentence)
+        unknown=UNKNOWN.search(sentence) or context
         # A query with an affirmative confirmed result can resolve uncertainty.
-        confirmed=re.search(r'(?:查询|收到|获得)[^，,。；]{0,12}(?:确认|明确)[^，,。；]{0,12}(?:成功|拒绝|失败|未写入|未提交|未创建)',sentence)
-        if confirmed and re.search(r'未|没有|尚未',sentence[:confirmed.start()]):confirmed=None
+        confirmed=confirmed_result(sentence)
         if unknown and not confirmed and not tentative:
-            result.append(dict(base,role='unknown_result',guard=None,conditions=[]))
+            result.append(dict(base,quote=context['quote'] if context else sentence,
+                               role='unknown_result',guard=None,conditions=[]))
         rejection=REJECTION.search(sentence)
         if rejection and not tentative and not re.search(r'不(?:是|能|会)?|未|没有',sentence[max(0,rejection.start()-4):rejection.start()]):
             result.append(dict(base,role='rejection_condition',guard=None,conditions=['service_rejects']))
