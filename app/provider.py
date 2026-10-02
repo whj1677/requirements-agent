@@ -14,6 +14,7 @@ from .config import ProjectEnvironment, usable_key
 from .prd import PLAN_SCHEMA, PLAN_SCHEMA_V4, plan_contract, plan_schema, context as document_context
 from . import business_context
 from . import ingest
+from . import generation_context
 from .understanding import contract as understanding_contract, answer_target, answer_targets, current_answer, question_action_contract
 from .budgets import POLICY_DEFAULTS, IMAGE_INPUT_RESERVE, input_allowance, input_size
 
@@ -338,7 +339,7 @@ def response_boundary(schema):
             for key,child in node['properties'].items():visit(child,path+'.'+key,seen)
         if 'items' in node:visit(node['items'],path+'[]',seen)
     visit(schema,'$')
-    return dict(object_keys=paths,input_only=['semantic_checks','semantic_document_checks','document_quote_witnesses','input_counting_checks','counting_option_examples','counting_definition_facts','result_condition_facts','excerpts','source_status','recent_messages'],
+    return dict(object_keys=paths,input_only=['semantic_checks','semantic_document_checks','document_quote_witnesses','input_counting_checks','counting_option_examples','counting_definition_facts','result_condition_facts','generation_evidence','excerpts','source_status','recent_messages'],
         instruction='响应不是输入上下文的副本。每层对象只写schema规定字段，不添加*_note、诊断、说明元字段或上下文原样副本。root及各嵌套对象按object_keys输出，required字段不能遗漏。业务说明写已有合法说明字段；格式修复保持已有业务原文，summary和limitations不改写。'
         '返回严格JSON，不用Markdown包围。数组项的对象闭合后再闭合数组；questions是数组，decision_points是各父问题内部的数组；不能把父问题对象与questions数组的闭合次序颠倒。输出前逐层核对所有括号、逗号和转义，不拼接残缺JSON。')
 
@@ -351,6 +352,7 @@ def assemble(p, stage, user_message, config, folder, kind='prd', generation_targ
         header['schema']=copy.deepcopy(header['schema'])
         target=header['schema']['$defs']['Question']['properties']['target_question_id']
         target['enum']=[None]+header['question_action_contract']['splittable_question_ids']
+        header['generation_evidence_contract']=generation_context.contract(header['schema'])
     if stage in ('ingest','clarify','change','prd','review'):
         from .semantic_quality import contract as semantic_contract
         header['semantic_quality_contract']=semantic_contract()
@@ -415,6 +417,7 @@ def assemble(p, stage, user_message, config, folder, kind='prd', generation_targ
         context['sketch_review']={}
     context['requirement_relations']=p.get('requirement_relations',[])
     context['recent_messages'] = p['messages'][-8:]
+    if stage=='ingest':context['recent_messages']=generation_context.history(p)
     if stage=='interview':
         context['recent_messages']=[{k:m.get(k) for k in ('role','stage','text','created')} for m in p['messages'][-16:]]
         context['documents']={}
@@ -517,6 +520,9 @@ def assemble(p, stage, user_message, config, folder, kind='prd', generation_targ
         from .semantic_quality import current_counting_checks, counting_witness, counting_definition_facts
         from .result_conditions import projection
         context['result_condition_facts']=projection(p,selected)
+        if stage in generation_context.STAGES:
+            context['result_condition_facts']=generation_context.condition_layers(context['result_condition_facts'],p)
+            context['generation_evidence']=generation_context.evidence(p,selected)
         context['semantic_checks']=current_counting_checks(p)
         context['counting_definition_facts']=counting_definition_facts(p,selected)
         if stage=='review':
