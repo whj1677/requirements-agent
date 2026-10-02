@@ -15,7 +15,8 @@ NEGATIVE = r'不满足|不足|不够|不通过|未通过|失败'
 REJECTION = re.compile(r'(?:服务|系统|请求)[^，,。；;\n]{0,8}(?:明确)?(?:拒绝|失败)|(?:服务)?明确拒绝|拒绝受理')
 UNKNOWN = re.compile(r'结果未知|未知结果|超时|响应丢失')
 NORMAL = re.compile(r'正常(?:成功|处理|受理|结果)?分支|成功(?:分支|场景)|正常成功(?:场景|情况下)|'
-                    r'服务(?:正常受理|已受理|受理成功|处理成功|执行成功)|已确认(?:成功|完成)')
+                    r'(?:服务|系统)(?:(?:正常受理|已受理|受理成功)(?:且|并且?)(?:已)?处理成功|处理成功|执行成功)|'
+                    r'已确认(?:成功|完成)')
 NON_ASSERTION = re.compile(r'建议|假设|待(?:澄清|核对|确认)|未采纳|尚未决定|是否|能否|不保证|'
                           r'不能[^，,。；;\n]{0,12}(?:推断|认定|断言)|并非|不代表|不意味着|不蕴含')
 SUBJECTS = re.compile(r'云资源|资源|工单|订单|记录|备注|时段|配置|文件')
@@ -32,11 +33,26 @@ def operation(text):
     return OPERATIONS[match.group()] if match else None
 
 
-def scopes(text):
+def normal_branch(text,expected_subject=None):
+    """An affirmative processing branch belongs to its own clause/object."""
+    for match in NORMAL.finditer(text):
+        start=max(text.rfind('，',0,match.start()),text.rfind(',',0,match.start()))+1
+        end=re.search(r'[，,]',text[match.end():])
+        clause=text[start:match.end()+end.start() if end else len(text)]
+        if re.search(r'(?:尚未|未|不|没有|并非|无法|未能)[^，,]{0,6}(?:受理|处理|执行|确认)[^，,]{0,4}(?:成功|完成)',clause):continue
+        if re.search(r'(?:受理|处理|执行)(?:结果)?(?:失败|未知|未完成)',clause):continue
+        if re.search(r'(?:并非|不是|不属于|未进入|没有)\s*$',text[start:match.start()]):continue
+        branch_subject=subject(clause)
+        if expected_subject and branch_subject and expected_subject!=branch_subject:continue
+        return True
+    return False
+
+
+def scopes(text,expected_subject=None):
     result=set()
     if re.search(r'同(?:一)?租户|本租户',text):result.add('same_tenant')
     for n in re.findall(r'(?:最多|不超过|至多)\s*(\d+)\s*项',text):result.add('at_most:'+n)
-    if NORMAL.search(text):result.add('normal_branch')
+    if normal_branch(text,expected_subject):result.add('normal_branch')
     return result
 
 
@@ -69,7 +85,18 @@ def facts(text, *, location, object_id=None, source_refs=(), fallback_operation=
             non_asserted=tentative or bool(NON_ASSERTION.search(part))
             if re.search(r'(?:原句|旧句|错误表述)[：:]?\s*[“「"]',prefix):continue
             negative=bool(re.search(r'(?:不|未|不得|不能|禁止|没有|拒绝|阻止)(?:再|任何)?\s*$',prefix))
-            current=dict(base,operation=OPERATIONS[effect.group()])
+            # Bind this effect to its target/local clause, not another object's
+            # successful branch mentioned before a comma.
+            target=re.split(r'[，,]',sentence[effect.end():])[0]
+            effect_subject=subject(target) or subject(part) or fallback_subject or local_subject
+            current=dict(base,operation=OPERATIONS[effect.group()],subject=effect_subject,
+                         scope=sorted(scopes(sentence,effect_subject)))
+            prohibition=re.search(r'(?:禁止|不得|不能|不可|不允许|不应)(?:再次|重新|重复|再)?\s*$',prefix)
+            new_attempt=re.match(r'\s*(?:新(?:的)?|另一个)(?:申请|请求)',target)
+            if prohibition and new_attempt:
+                result.append(dict(current,role='proposal' if non_asserted else 'action_constraint',
+                    guard=None,conditions=[],temporal='future_action',action_target='new_attempt'))
+                continue
             if rejection and not negative and not non_asserted:
                 result.append(dict(current,role='rejection_effect',guard=None,conditions=['service_rejects']))
             if unknown and not confirmed and not tentative and not NON_ASSERTION.search(prefix):
@@ -86,8 +113,8 @@ def facts(text, *, location, object_id=None, source_refs=(), fallback_operation=
                 elif not is_negative and not negative and re.search(r'只有.*才|只是必要条件',prefix):
                     result.append(dict(current,role='proposal' if non_asserted else 'necessary_condition',guard=guard,conditions=[guard+':positive']))
                 elif not is_negative and not negative and CONNECTOR.search(tail):
-                    role='proposal' if non_asserted else 'normal_branch' if NORMAL.search(prefix) else 'sufficient_condition'
-                    result.append(dict(current,role=role,guard=guard,conditions=sorted(scopes(prefix)|{guard+':positive'})))
+                    role='proposal' if non_asserted else 'normal_branch' if normal_branch(prefix,effect_subject) else 'sufficient_condition'
+                    result.append(dict(current,role=role,guard=guard,conditions=sorted(scopes(prefix,effect_subject)|{guard+':positive'})))
             if negative and rejection and not unknown:
                 result.append(dict(current,role='proposal' if non_asserted else 'rejection_exception',guard=None,conditions=['service_rejects']))
         if unknown and not confirmed and not tentative and re.search(r'(?:原|既有)(?:记录|数据|资源)[^，,。；]{0,4}不变',sentence) and not NON_ASSERTION.search(sentence):
