@@ -29,7 +29,21 @@ UNIT = re.compile(r'码点|code\s*points?|字素簇|grapheme', re.I)
 CODEPOINT = re.compile(r'(?:Unicode\s*)?码点|code\s*points?', re.I)
 ONE_EMOJI = re.compile(r'(?:emoji|表情(?:符号)?)[^。；;\n]{0,35}?(?:按|计为|算作|计作|counts?\s+as)[^。；;\n]{0,8}?(?:一个|1个|one|1)\s*(?:Unicode\s*)?(?:码点|code\s*point)', re.I)
 
-def counting_witness(text):
+def counting_quotation(sentence, match):
+    """A local correction governs only its exact quoted counting assertion."""
+    for pattern in (r'“[^”]*”', r'「[^」]*」', r'『[^』]*』', r'"[^"\n]*"'):
+        for quote in re.finditer(pattern, sentence):
+            if not (quote.start() < match.start() and match.end() < quote.end()):continue
+            prefix=re.split(r'[，,；;。\n]',sentence[:quote.start()])[-1]
+            verb=r'(?:删除|删去|去掉|移除|撤回|撤销|弃用|纠正|修正)'
+            correction=re.search(verb+r'(?:(?:或|并且|并|且)'+verb+r')?(?:原有|原文中的|原文|该)?$',prefix)
+            if not correction:continue
+            negated=re.search(r'不|未|没有|无须|无需',prefix[:correction.start()][-12:])
+            return 'retained' if negated else 'withdrawn',sentence[quote.start()+1:match.start()]
+    return None,None
+
+
+def counting_witness(text, *, alternative=False):
     if not CODEPOINT.search(text or ''): return None
     for sentence in re.split(r'[。；;\n]', text):
         matches=[]
@@ -37,6 +51,11 @@ def counting_witness(text):
             # Qualifiers/negation must govern this occurrence of the counting
             # predicate. An unrelated later emoji colour cannot waive it.
             prefix=re.split(r'[，,]|且|但是|但|并且',sentence[:match.start()])[-1][-12:]
+            if alternative:
+                quotation,quoted_prefix=counting_quotation(sentence,match)
+                if quotation=='withdrawn':continue
+                # "Do not delete <quote>" negates deletion, not the quoted rule.
+                if quotation=='retained':prefix=quoted_prefix[-12:]
             assertion=match.group()
             suffix=re.split(r'[，,]',sentence[match.end():])[0]
             if re.search(r'单码点|单个码点|single.codepoint|基本',prefix,re.I):continue
@@ -301,7 +320,7 @@ def validate_analysis(value,p,excerpts):
     items={i['id']:i for i in p.get('items',[])}
     pending=[q for q in p.get('questions',[]) if q.get('blocking') and q.get('status')!='answered' and not q.get('superseded_by') and not q.get('out_of_scope_reason')]
     questions=leaves(value['questions'])+pending
-    require(all(not counting_witness(option) for q in leaves(value['questions'])
+    require(all(not counting_witness(option,alternative=True) for q in leaves(value['questions'])
                 if counting_question(q) for option in q.get('options',[])),
             'SEMANTIC_BLOCKED','计数澄清的备选自身仍含码点与每个emoji恒为一码点的矛盾；保留开放问题或给出一致选项。')
     def bound(objects,pair):
