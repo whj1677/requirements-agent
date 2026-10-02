@@ -2,7 +2,7 @@
 import re
 from .core import require
 
-VERSION = 'semantic-quality-7'
+VERSION = 'semantic-quality-8'
 POLICY = (
     '先核对输入自身是否一致，来源引用正确和人工回答有出处不证明其含义无矛盾。'
     '对计数单位、边界包含、量词、时点与条件构造具体反例；区分Unicode码点和扩展字素簇，'
@@ -153,7 +153,7 @@ ADOPTION_PENDING = re.compile(r'建议|候选|备选|待(?:采纳|确认|决定)
     r'(?:需|须|需要).{0,12}(?:PM|产品经理).{0,8}确认|可以.{0,8}(?:按|采用)',re.I)
 ADOPTION_CONFIRMED = re.compile(r'(?:PM|产品经理|人工).{0,8}(?:已|明确)(?:确认|采纳|决定|选择)|'
     r'(?:经|由)(?:PM|产品经理|人工)(?:确认|采纳)',re.I)
-ADOPTION_REFERENT = re.compile(r'(?:上述|前述|该|此)(?:计数)?方案|计数(?:口径|单位|方式)|(?:后才?|前).{0,5}采纳')
+ADOPTION_REFERENT = re.compile(r'(?:上述|前述|该|此|这个)(?:计数)?(?:方案|建议)|计数(?:口径|单位|方式)|(?:后才?|前).{0,5}采纳')
 
 
 def counting_adoption(text,units):
@@ -164,7 +164,7 @@ def counting_adoption(text,units):
         if named:active=named & units
         if not active or not (named or ADOPTION_REFERENT.search(clause)):continue
         confirmation=ADOPTION_CONFIRMED.search(clause)
-        negated=confirmation and (re.search(r'未|没有|并非|不能|无法|尚待|待确认',clause[:confirmation.start()]) or
+        negated=confirmation and (re.search(r'未|没有|并非|不能|无法|尚待|待确认',clause[:confirmation.end()]) or
             re.search(r'不(?:采纳|采用|选择)|拒绝(?:采纳|采用)|未(?:采纳|采用)',clause[confirmation.end():]))
         if confirmation and not negated:state='confirmed'
         elif ADOPTION_PENDING.search(clause) and not re.search(r'无需|不需要|不必',clause):state='pending'

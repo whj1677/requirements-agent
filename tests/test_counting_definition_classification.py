@@ -203,3 +203,54 @@ def test_adoption_confirmation_requires_affirmative_adoption(tmp_path,confirmati
     p['sources'][0]['excerpts'][0]['text']=source
     validate_response(adoption_review(p),'review',p,p['sources'][0]['excerpts'])
     assert counting_definition(source)['decision_status']=='pending'
+
+
+@pytest.mark.parametrize('source,accepted',[
+    ('方案建议：备注可以按Unicode码点计数。',True),
+    ('方案建议：备注可以按Unicode码点计数；该方案需产品经理确认后才采纳。',True),
+    ('产品经理已确认：备注按Unicode码点计数，最多100码点，复合emoji各组成码点分别计数。',False),
+    ('方案建议：备注可以按Unicode码点计数；产品经理已明确确认采纳这个计数建议，最多100码点，复合emoji各组成码点分别计数。',False),
+])
+def test_four_fixed_adoption_cases_keep_same_text_confirmation(tmp_path,source,accepted):
+    from app.semantic_quality import counting_definition_facts
+    p=project(tmp_path,'备注最多100字符。');p['sources'][0]['excerpts'][0]['text']=source
+    value=adoption_review(p);before=copy.deepcopy((p,value))
+    if accepted:validate_response(value,'review',p,p['sources'][0]['excerpts'])
+    else:
+        with pytest.raises(Problem) as error:validate_response(value,'review',p,p['sources'][0]['excerpts'])
+        assert error.value.code=='SEMANTIC_BLOCKED'
+    fact=next(f for f in counting_definition_facts(p) if f['origin']=='source')
+    assert fact['decision_status']==('pending' if accepted else 'confirmed')
+    assert fact['quote']==source and fact['location']=='SRC-0001/EX-0001'
+    assert fact['related_refs']==['REQ-0001','RULE-0001','AC-0001'] and fact['source_refs']==p['items'][0]['source_refs']
+    assert (p,value)==before
+
+
+@pytest.mark.parametrize('confirmation',[
+    '产品经理尚未明确确认采纳这个计数建议。',
+    '产品经理已明确确认暂不采纳这个计数建议。',
+])
+def test_this_counting_suggestion_requires_affirmative_adoption(tmp_path,confirmation):
+    from app.semantic_quality import counting_definition
+    p=project(tmp_path,'备注最多100字符。')
+    source='方案建议：备注可以按Unicode码点计数；'+confirmation
+    p['sources'][0]['excerpts'][0]['text']=source
+    validate_response(adoption_review(p),'review',p,p['sources'][0]['excerpts'])
+    assert counting_definition(source)['decision_status']=='pending'
+
+
+def test_this_other_suggestion_cannot_adopt_the_counting_candidate(tmp_path):
+    p=project(tmp_path,'备注最多100字符。')
+    p['sources'][0]['excerpts'][0]['text']='方案建议：备注可以按Unicode码点计数；产品经理已明确确认采纳这个登录建议。'
+    validate_response(adoption_review(p),'review',p,p['sources'][0]['excerpts'])
+
+
+def test_later_pending_decision_remains_after_same_text_confirmation(tmp_path):
+    from app.semantic_quality import counting_definition
+    p=project(tmp_path,'备注最多100字符。')
+    source='方案建议：备注可以按Unicode码点计数；产品经理已明确确认采纳这个计数建议；这个计数建议后续仍待确认。'
+    p['sources'][0]['excerpts'][0]['text']=source;before=copy.deepcopy(p)
+    validate_response(adoption_review(p),'review',p,p['sources'][0]['excerpts'])
+    fact=counting_definition(source)
+    assert [e['decision_status'] for e in fact['decision_evidence']][-2:]==['confirmed','pending']
+    assert fact['decision_status']=='pending' and p==before
