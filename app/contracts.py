@@ -141,6 +141,8 @@ def validate_response(value, stage, project, excerpts, document_type='prd'):
     validate_analysis(value,project,excerpts)
     from .result_conditions import validate_response_conditions
     validate_response_conditions(value,project,excerpts)
+    from .source_fidelity import validate_response as validate_source_fidelity
+    validate_source_fidelity(value,project,excerpts)
     if stage in ('ingest','clarify','change','prd'):
         from .semantic_quality import validate_current_workflow
         context=project.get('product_context',{})
@@ -291,7 +293,8 @@ def review_target(p):
 
 def gate(p):
     from .product_flow import status, question_open
-    issues = []
+    from .source_fidelity import project_issues, DIMENSIONS
+    issues = [f["location"]+": "+DIMENSIONS[f["dimension"]]+" / "+f["quote"] for f in project_issues(p)]
     steps=status(p)
     first=next((s for s in steps[:5] if not s['retired'] and not s['complete']),None)
     if first:issues+=['请完成第'+str(first['display_step'])+'步「'+first['title']+'」核对']+first['missing']

@@ -756,6 +756,8 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
             require(any(i['kind']=='requirement' and i['id'] in scope and i['applies_to']=='to_be'
                         and (i['id'] in related or iid in i.get('related_refs',[]))
                         for i in p['items']), 'SCOPE_INVALID','请先关联已纳入本期范围的需求，再核对该条款',409)
+            from .source_fidelity import validate_item as validate_source_fidelity
+            validate_source_fidelity(item,p,decision_text=item['statement'])
             source=save_source(store,'人工范围决定.txt',
                 f'明确将 {iid} 纳入本期并采纳原文：{item["statement"]}\n理由：{body.reason.strip()}'.encode('utf-8'),'goal')
             p['sources'].append(source)
@@ -773,9 +775,10 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
             if body.selection_status=='selected':
                 from .requirements import require_behavior_review
                 prospective=copy.deepcopy(i)
+                if body.title is not None:prospective['title']=body.title
                 if body.statement:prospective['statement']=body.statement
                 if body.change_type is not None:prospective['change_type']=body.change_type
-                require_behavior_review(prospective)
+                require_behavior_review(prospective,p,decision_text=body.statement if body.statement and body.statement!=i['statement'] else None)
             if body.title is not None:i['title']=body.title
             if body.change_type is not None:i['change_type']=body.change_type
             if body.statement:
@@ -838,7 +841,7 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
             excerpts={(s['id'],ex['id']) for s in p['sources'] for ex in s['excerpts']}
             for iid in ids:
                 from .requirements import require_behavior_review
-                require_behavior_review(items[iid])
+                require_behavior_review(items[iid],p)
                 require(items[iid].get('source_refs') and all((r['source_id'],r['excerpt_id']) in excerpts for r in items[iid]['source_refs']) and items[iid].get('epistemic_status'),
                         'REFERENCE_INVALID','条目缺少来源或假设状态，不可批量采纳')
                 require(not items[iid].get('target_item_id'), 'REFERENCE_INVALID', '修订条目需单独核对原条目')

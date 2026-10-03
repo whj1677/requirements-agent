@@ -18,9 +18,12 @@ def behavior_review_current(item):
             item.get('behavior_review',{}).get('content_hash') == behavior_fingerprint(item))
 
 
-def require_behavior_review(item):
+def require_behavior_review(item,project=None,*,decision_text=None):
     from .result_conditions import validate_item
     validate_item(item)
+    if project is not None:
+        from .source_fidelity import validate_item as validate_source_fidelity
+        validate_source_fidelity(item,project,decision_text=decision_text)
     require(behavior_review_current(item), 'BEHAVIOR_REVIEW_REQUIRED',
             '请先在需求详情核对模型展开的行为说明及来源；无依据的流程、时点或默认规则不能直接采纳。', 409)
 

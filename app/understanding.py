@@ -332,7 +332,7 @@ def confirm_manual_answer(p,q,answer_hash,clause_hashes,review_confirmed):
     for item in targets:
         require(item['selection_status']=='selected','REVIEW_REQUIRED','请先编辑、核对并采纳 '+item['id'],409)
         require(clause_hashes[item['id']]==application_hash(item),'STALE_REVISION','条款已变化，请重新查看核对',409)
-        require_behavior_review(item)
+        require_behavior_review(item,p)
     q['answer_applications']={item['id']:dict(answer_hash=answer_hash,clause_hash=clause_hashes[item['id']],
         method='manual_review',actor='authenticated_local_user',reviewed_at=now(),
         answer_source_refs=copy.deepcopy(q.get('answer_source_refs',[]))) for item in targets}

@@ -61,14 +61,18 @@ def test_no_task_card_invents_saved_or_applicable_answer(tmp_path,change):
 
 @pytest.mark.parametrize('path,quote,unsupported,supported,dimension',FINDINGS)
 def test_fixed_source_review_pairs_preserve_exact_quote_and_legal_source(path,quote,unsupported,supported,dimension):
-    # Public schema has no general semantic entailment checker for these four
-    # dimensions. Keep the acceptance boundary visible rather than invent one.
+    # These exact historical gap cases now have a bounded source-review gate.
+    # Preserve their original quotes and verify both unsupported and legal cases.
     p,v,ex=case(NORMAL);item=v['proposals'][0]
     if path.endswith('permissions'):item['behavior']['permissions']=quote
     elif path.endswith('title'):item['title']=quote
     elif path.endswith('statement'):item['statement']=quote
     else:v['product_context_proposal']['value']=quote
-    before=copy.deepcopy(v);validate_response(v,'ingest',p,ex);assert v==before
+    before=copy.deepcopy(v)
+    from app.core import Problem
+    with pytest.raises(Problem) as error:validate_response(v,'ingest',p,ex)
+    assert error.value.code=='SEMANTIC_BLOCKED' and not error.value.model_repair_allowed
+    assert v==before
     assert unsupported!=supported
     if dimension=='exclusive_visibility':
         assert '向本租户管理员反馈' in unsupported and '仅本租户管理员' not in unsupported

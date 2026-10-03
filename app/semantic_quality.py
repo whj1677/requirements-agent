@@ -372,6 +372,8 @@ def validate_analysis(value,p,excerpts):
         '输入或候选的计数口径互相矛盾：码点与每个emoji恒为一码点不能同时覆盖复合emoji。请提出阻塞澄清和具体反例，不替PM选口径。')
 
 def validate_review(value,p):
+    from .source_fidelity import project_issues, raise_issues
+    if value['result']['assessment']=='ready_for_human_review':raise_issues(project_issues(p))
     validate_definition_claims(value,p)
     checks=current_counting_checks(p)
     result=value['result']
@@ -585,6 +587,15 @@ def explanation_issues(text,evidence,existing_evidence,scenario_evidence=None):
 def validate_explanation(text,evidence,existing_evidence,at,*,scenario_evidence=None):
     require(not explanation_issues(text,evidence,existing_evidence,scenario_evidence),'SEMANTIC_BLOCKED',at+
         ' 解释超出引用语义：核对必要/充分/正常成功分支、明确失败/未知结果、全部/部分、建议/义务与既有实现/现状操作证据；不能删规范或代定规则来过关。')
+
+    from .source_fidelity import text_issues, raise_issues, topic, support
+    hint=topic(evidence)
+    found=text_issues(text,[dict(text=evidence,ref=None)],at,hint=hint)
+    # Current-state evidence can support a same-object historical comparison,
+    # but cannot create permissions or substitute unrelated quota predicates.
+    found=[f for f in found if f['dimension']!='comparison_premise' or
+           not support(f,[dict(text=existing_evidence,ref=None)],hint)]
+    raise_issues(found)
 
 def current_document_checks(p):
     # Evaluate actual stored explanation text against the very citations it claims.
