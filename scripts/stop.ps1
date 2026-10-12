@@ -1,4 +1,4 @@
-param([switch]$Force)
+﻿param([switch]$Force)
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path $PSScriptRoot -Parent
 $pidPath = Join-Path $projectRoot 'data\server.pid'

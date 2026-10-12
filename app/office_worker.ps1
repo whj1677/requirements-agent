@@ -1,4 +1,4 @@
-param([string]$InputPath, [string]$OutputPath, [string]$OwnerPath, [string]$CleanupOwner)
+﻿param([string]$InputPath, [string]$OutputPath, [string]$OwnerPath, [string]$CleanupOwner)
 # Open only a test-owned document in a new instance; never change Trust Center settings.
 $ErrorActionPreference = 'Stop'
 if ($CleanupOwner) {

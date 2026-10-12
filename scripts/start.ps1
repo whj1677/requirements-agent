@@ -1,4 +1,4 @@
-param([ValidateSet(8765)][int]$Port = 8765, [switch]$NoAuth, [switch]$OpenBrowser)
+﻿param([ValidateSet(8765)][int]$Port = 8765, [switch]$NoAuth, [switch]$OpenBrowser)
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path $PSScriptRoot -Parent
 $pythonPath = Join-Path $projectRoot '.venv\Scripts\python.exe'
