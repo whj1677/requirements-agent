@@ -17,19 +17,21 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 from .core import DATA, ROOT, FROZEN, Problem, brief_hash, digest, hashes, ident, now, require, ui_view_hash
 from .store import Store
-from .contracts import gate, API_CAPABILITIES, PROFILES, review_target
+from .contracts import gate, gate_blockers, API_CAPABILITIES, PROFILES, review_target
 from .provider import Provider, DEFAULT, origin
 from .workflow import Workflow, confirm
 from .actions import Actions
 from .sources import MAX_BYTES, SOURCE_EXTENSIONS, save_source, webpage
 from .material_images import append_source
-from .understanding import record_answer, accept_answer_update
+from .understanding import record_answer, accept_answer_update, confirm_manual_answer, answer_targets, application_hash
 from .preview import prototype
 from .exports import document_files, handoff, zip_files
 from .document_reader import reader_document, export_readiness, filename
-from .product_flow import status as flow_status, checkpoint, INTAKE, SCOPE, BEHAVIOR, review_document, document_review_current
+from .product_flow import status as flow_status, current_stage, checkpoint, INTAKE, SCOPE, BEHAVIOR, review_document, document_review_current
 from .requirements import exchange, requirement_ref, delivery_items
+from .bulk_adoption import review as review_item_adoptions, adopt as adopt_items
 from .budgets import MODEL_OUTPUT_LIMIT
+from .scope_context import validate_context_edit, save_context_edit, scope_field_rules
 from . import business_context
 
 MODEL_TEST_TIMEOUT_SECONDS = 60
@@ -71,19 +73,27 @@ class RunInput(Revision):
     stage: str
     message: str = Field(default='',max_length=12000)
     document_type: Literal['prd','mrd'] = 'prd'
+    max_calls: int | None = Field(default=None,ge=1,strict=True)
 
 class ActionTarget(Strict):
     kind: Literal['item','question','ui','document']
     id: str = Field(min_length=1,max_length=200)
     section_id: str | None = None
 
+class BenchmarkInput(Strict):
+    target: str = Field(min_length=1,max_length=200)
+    focus: str = Field(default='',max_length=2000)
+    source_ids: list[str] = Field(min_length=1)
+
 class ActionPlan(Revision):
-    action: Literal['organize','explore','clarify','prototype','document','review','change']
+    action: Literal['interview','organize','explore','clarify','prototype','document','review','change']
     message: str = Field(default='',max_length=12000)
     document_type: Literal['prd','mrd'] = 'prd'
     option_id: str | None = None
-    max_calls: int | None = Field(default=None,ge=1)
+    max_calls: int | None = Field(default=None,ge=1,strict=True)
     target: ActionTarget | None = None
+    benchmark: BenchmarkInput | None = None
+    attachment_source_ids: list[str] = Field(default_factory=list)
 
 class ActionStart(ActionPlan):
     plan_hash: str
@@ -105,11 +115,23 @@ class DirectionDecision(Revision):
 class OptionItems(Revision):
     item_ids: list[str] = Field(min_length=1)
 
+class ItemAdoptionReview(Revision):
+    item_ids: list[str] = Field(min_length=1)
+
+class ItemAdoptions(ItemAdoptionReview):
+    content_hashes: dict[str, str]
+    review_confirmed: bool = Field(strict=True)
+
 class Answer(Revision):
     answer: str = Field(min_length=1,max_length=6000)
 
 class Answers(Revision):
     answers: dict[str,str]
+
+class ManualAnswerReview(Revision):
+    answer_hash: str
+    clause_hashes: dict[str,str]
+    review_confirmed: bool = False
 
 class Intake(Revision):
     text: str = Field(default='',max_length=12000)
@@ -128,13 +150,24 @@ class AcceptanceCandidate(Revision):
 class DocumentReview(Revision):
     document_id: str
 
+class ScopeProfile(Strict):
+    scenario: Literal['unspecified','new_product','new_module','modify_existing']
+    dependencies: Literal['unknown','independent','shared']
+
+class FieldState(Strict):
+    status: Literal['known','not_applicable','none','unknown']
+    note: str = Field(default='',max_length=2000)
+
 class ContextEdit(Revision):
     values: dict[str,str]
     scope_ids: list[str] | None = None
+    scope_profile: ScopeProfile | None = None
+    field_states: dict[str, FieldState] | None = None
 
 class BehaviorEdit(Revision):
     values: dict[str,str]
     change_type: Literal['new','modified','preserved','existing','unspecified']
+    review_confirmed: bool = False
 
 class StageCheck(Revision):
     expected_hash: str
@@ -245,11 +278,10 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
             return await asyncio.wait_for(asyncio.shield(job),180)
         except asyncio.TimeoutError:
             raise Problem('EXPORT_TIMEOUT','导出等待超时，后台仍可能在处理；其他功能可继续使用，请稍后核对导出记录再重试',503)
-    # Local session protection is independent of model credentials and material consent.
-    if access_token is None and os.environ.get('RA_ACCESS_TOKEN')=='off':
-        token=None
-    else:
-        token = access_token or os.environ.get('RA_ACCESS_TOKEN') or secrets.token_urlsafe(32)
+    # Daily local access has no password; explicit tokens remain for isolated compatibility tests.
+    # This is independent of model credentials and material consent.
+    token = access_token
+    local_csrf = secrets.token_urlsafe(32)
     sessions = {}
     app = FastAPI(title='需求 Agent', version='1.1', docs_url=None, redoc_url=None)
     app.state.store, app.state.provider, app.state.workflow = store, provider, workflow
@@ -291,10 +323,10 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
             expected_origin = str(request.base_url).rstrip('/')
             if remote_origin and remote_origin != expected_origin:
                 return JSONResponse({'code':'ORIGIN_DENIED','message':'拒绝跨站访问'},status_code=403)
-            if request.url.path != '/api/session/login' and token is not None:
-                session = sessions.get(request.cookies.get('ra_session',''))
-                if not session:
-                    return JSONResponse({'code':'SESSION_REQUIRED','message':'请输入本机访问令牌'},status_code=401)
+            if request.url.path != '/api/session/login':
+                session = sessions.get(request.cookies.get('ra_session','')) if token is not None else local_csrf
+                if token is not None and not session:
+                    return JSONResponse({'code':'SESSION_REQUIRED','message':'会话已失效，请刷新页面'},status_code=401)
                 if request.method not in ('GET','HEAD','OPTIONS'):
                     if not remote_origin or not hmac.compare_digest(request.headers.get('x-csrf-token',''),session):
                         return JSONResponse({'code':'CSRF_DENIED','message':'会话校验失败'},status_code=403)
@@ -321,7 +353,7 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
     @app.post('/api/session/login')
     async def login(body: KeyInput):
         if token is None:
-            return {'csrf':''}
+            return {'csrf':local_csrf}
         require(hmac.compare_digest(body.key,token), 'AUTH_FAILED', '本机访问令牌错误', 401)
         sid, csrf = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
         sessions[sid] = csrf
@@ -332,8 +364,16 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
     @app.get('/api/session')
     async def session(request:Request):
         # backend 为纯附加字段：旧前端忽略它，新前端据此核实接口能力。
-        return {'csrf':sessions.get(request.cookies.get('ra_session',''),''), 'mode':'live', 'version':'1.1',
+        return {'csrf':sessions.get(request.cookies.get('ra_session',''),'') if token is not None else local_csrf, 'mode':'live', 'version':'1.1',
                 'backend': app.state.runtime}
+
+    def project_summary(p, updated_at=None):
+        if updated_at is None:
+            with store.connect() as db:
+                row = db.execute('SELECT MAX(created) FROM revisions WHERE project_id=?', (p['id'],)).fetchone()
+            updated_at = row[0] if row and row[0] else p['created']
+        return dict(id=p['id'], name=p['name'], revision=p['revision'], created=p['created'],
+                    updated_at=updated_at, flow_current_title=current_stage(p)['title'])
 
     @app.get('/api/projects')
     async def projects():
@@ -341,10 +381,7 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
             updated = dict(db.execute('SELECT project_id,MAX(created) FROM revisions GROUP BY project_id'))
         result = []
         for p in store.list():
-            step = next((s for s in flow_status(p) if not s['retired'] and not s['complete']), None)
-            result.append(dict({k:p[k] for k in ('id','name','revision','created')},
-                               updated_at=updated.get(p['id'], p['created']),
-                               flow_current_title=step['title'] if step else '已确认与交接'))
+            result.append(project_summary(p, updated.get(p['id'], p['created'])))
         return result
 
     @app.post('/api/projects')
@@ -354,14 +391,33 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
     @app.get('/api/projects/{pid}')
     async def project(pid:str):
         p=store.get(pid)
+        summary = project_summary(p)
         try:
-            issues=gate(p)
+            confirmation_blockers=gate_blockers(p)
+            issues=[row['message'] for row in confirmation_blockers]
         except Problem as e:
             issues=[e.message]
+            confirmation_blockers=[dict(key='gate_error',code=e.code,title='交接条件需要核对',message=e.message,
+                actions=[dict(kind='source',label='核对参考资料'),dict(kind='document',label='核对 PRD 文档',document='prd')])]
         # Reader/source progress are response projections; keep canonical review hashes intact.
         result=copy.deepcopy(p)
-        result.update(hashes=hashes(p), confirmation_issues=issues,
+        result.update(summary, hashes=hashes(p), confirmation_issues=issues, confirmation_blockers=confirmation_blockers,
                       baselines=store.records(pid,'baseline'), exports=store.records(pid,'export'))
+        from .requirements import behavior_review_current
+        # Keep response-only UI state outside canonical items: clients may use
+        # those items to verify document hashes or round-trip an exchange.
+        result['behavior_review_statuses']={item['id']:
+            ('legacy' if not item.get('behavior_review_required') else
+             'reviewed' if behavior_review_current(item) else 'required')
+            for item in result['items'] if item['kind']=='requirement'}
+        from .decision_semantics import proposal_current
+        from .understanding import coverage_complete
+        from .domain_context import active_source_ids
+        result['active_source_ids'] = sorted(active_source_ids(p))
+        for question in result['questions']:
+            qid = question.get('decision_group_id') or question['id']
+            question['decision_review_proposal_current'] = proposal_current(p, qid)
+            question['decision_coverage_complete'] = coverage_complete(question)
         for source in result['sources']:
             if source.get('embedded_image_ids'):
                 children=[s for s in result['sources'] if s.get('container_source_id')==source['id']]
@@ -371,6 +427,7 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
             attach_document_snapshot(pid,artifact)
         result['document_export_readiness']={kind:export_readiness(p,kind) for kind in p['documents']}
         result['product_flow']=flow_status(p)
+        result['scope_field_rules']=scope_field_rules(p)
         result['confirmation_scope_ids']=[i['id'] for i in delivery_items(p)]
         result['document_review_status']={k:dict(reviewed=document_review_current(p,k),record=p.get('document_reviews',{}).get(k)) for k in ('mrd','prd')}
         result['review_status']=dict(available=bool(p.get('review')),current=bool(p.get('review') and p['review']['target_hash']==review_target(p)))
@@ -451,14 +508,32 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
 
     @app.post('/api/projects/{pid}/product-context')
     async def context_edit(pid:str,body:ContextEdit):
-        require(set(body.values)<=(INTAKE.keys()|SCOPE.keys()),'CONTEXT_INVALID','未知核对字段')
-        require(all(len(v)<=6000 for v in body.values.values()),'CONTEXT_INVALID','核对说明过长')
+        profile=body.scope_profile.model_dump() if body.scope_profile is not None else None
+        states={k:v.model_dump() for k,v in body.field_states.items()} if body.field_states is not None else None
+        validate_context_edit(body.values, profile, states)
         with store.edit(pid,body.expected_revision,'核对产品现状与增量范围') as (p,db):
             if body.scope_ids is not None:
                 valid={i['id'] for i in p['items'] if i['kind']=='requirement' and i['applies_to']=='to_be'}
                 require(set(body.scope_ids)<=valid,'REFERENCE_INVALID','本期范围只能引用实际目标需求')
-                p.setdefault('product_context',{})['scope_ids']=list(dict.fromkeys(body.scope_ids))
-            p.setdefault('product_context',{}).update(body.values)
+            save_context_edit(p,body.values,body.scope_ids,profile,states)
+        return p
+
+    @app.post('/api/projects/{pid}/intake/direct')
+    async def direct_intake(pid:str,body:ContextEdit):
+        profile=body.scope_profile.model_dump() if body.scope_profile is not None else None
+        states={k:v.model_dump() for k,v in body.field_states.items()} if body.field_states is not None else None
+        validate_context_edit(body.values, profile, states)
+        require(any(v.strip() for v in body.values.values()),'INPUT_REQUIRED','请先填写已知的需求信息')
+        require(not body.scope_ids,'REFERENCE_INVALID','直接填写入口不采纳需求条目')
+        with store.edit(pid,body.expected_revision,'保存专业用户的原始需求输入') as (p,db):
+            text='\n\n'.join(f'{({**INTAKE,**SCOPE})[k]}：{v}' for k,v in body.values.items() if v.strip())
+            source=save_source(store,'直接填写的需求.txt',text.encode('utf-8'),'goal')
+            source['origin']='direct_intake';p['sources'].append(source)
+            save_context_edit(p,body.values,profile=profile,field_states=states)
+            p['intake']=dict(text=text,platform='',preserved='',mode='direct',
+                source_ids=[s['id'] for s in p['sources'] if not s['excluded']],saved_at=now())
+            checkpoint(p,1,flow_status(p)[0]['content_hash'])
+            p['stage_checks']['1']['meaning']='人工原始输入已保存，尚非范围或业务规则确认'
         return p
 
     @app.post('/api/projects/{pid}/items/{iid}/behavior')
@@ -470,6 +545,11 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
             require(item is not None,'NOT_FOUND','需求不存在',404)
             item.setdefault('behavior',{}).update(body.values)
             item['change_type']=body.change_type
+            from .requirements import behavior_fingerprint, behavior_review_current
+            if body.review_confirmed and (not item.get('behavior_review') or not behavior_review_current(item)):
+                item['behavior_review']=dict(content_hash=behavior_fingerprint(item),
+                    actor='authenticated_local_user',reviewed_at=now(),
+                    meaning='人工核对模型行为展开，不是程序证明原文蕴含或正式业务批准')
         return p
 
     @app.post('/api/projects/{pid}/sketch-review')
@@ -595,10 +675,22 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
     async def file_source(pid:str,expected_revision:int=Form(...),purpose:str=Form('current'),file:UploadFile=File(...)):
         data=await file.read(MAX_BYTES+1)
         require(len(data)<=MAX_BYTES,'SOURCE_FAILED','文件超过 12 MiB')
-        require(purpose in ('current','goal','reference','template'),'SOURCE_FAILED','材料用途无效')
+        require(purpose in ('current','goal','reference','template','chat_attachment'),'SOURCE_FAILED','材料用途无效')
         p=store.get(pid)
         require(p['revision']==expected_revision,'STALE_REVISION','页面已过期',409)
-        s=await asyncio.to_thread(save_source,store,Path(file.filename or 'unknown').name,data,purpose)
+        if purpose=='chat_attachment':
+            require(Path(file.filename or '').suffix.lower() in
+                    ('.txt','.md','.docx','.doc','.xlsx','.xls','.pptx','.ppt','.pdf','.png','.jpg','.jpeg','.webp'),
+                    'SOURCE_FAILED','请选择支持的文档或 PNG、JPEG、WebP 图片')
+        s=await asyncio.to_thread(save_source,store,Path(file.filename or 'unknown').name,data,
+                                  'goal' if purpose=='chat_attachment' else purpose)
+        if purpose=='chat_attachment':
+            if Path(file.filename or '').suffix.lower() in ('.png','.jpg','.jpeg','.webp'):
+                require(s.get('image_mime') and s.get('parse_status')=='awaiting_vision',
+                        'SOURCE_FAILED','图片无法读取，请选择有效的 PNG、JPEG 或 WebP 图片')
+            s['origin']='interview_attachment'
+            for child in s.get('_embedded_sources',[]):
+                child['origin']='interview_attachment'
         with store.edit(pid,expected_revision,'添加文件材料') as (p,db):
             append_source(p,s)
         return s
@@ -714,6 +806,8 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
             require(any(i['kind']=='requirement' and i['id'] in scope and i['applies_to']=='to_be'
                         and (i['id'] in related or iid in i.get('related_refs',[]))
                         for i in p['items']), 'SCOPE_INVALID','请先关联已纳入本期范围的需求，再核对该条款',409)
+            from .source_fidelity import validate_item as validate_source_fidelity
+            validate_source_fidelity(item,p,decision_text=item['statement'])
             source=save_source(store,'人工范围决定.txt',
                 f'明确将 {iid} 纳入本期并采纳原文：{item["statement"]}\n理由：{body.reason.strip()}'.encode('utf-8'),'goal')
             p['sources'].append(source)
@@ -728,6 +822,13 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
         with store.edit(pid,body.expected_revision,'人工编辑或采纳条目') as (p,db):
             i=next((x for x in p['items'] if x['id']==iid),None)
             require(i is not None,'NOT_FOUND','条目不存在',404)
+            if body.selection_status=='selected':
+                from .requirements import require_behavior_review
+                prospective=copy.deepcopy(i)
+                if body.title is not None:prospective['title']=body.title
+                if body.statement:prospective['statement']=body.statement
+                if body.change_type is not None:prospective['change_type']=body.change_type
+                require_behavior_review(prospective,p,decision_text=body.statement if body.statement and body.statement!=i['statement'] else None)
             if body.title is not None:i['title']=body.title
             if body.change_type is not None:i['change_type']=body.change_type
             if body.statement:
@@ -737,14 +838,19 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
                     i['source_refs']=i.get('source_refs',[])+[dict(source_id=s['id'],excerpt_id=ex['id']) for ex in s['excerpts']]
                 i['statement']=body.statement
             if i.get('target_item_id') and body.selection_status=='selected':
-                accept_answer_update(p,i)
                 target=next(x for x in p['items'] if x['id']==i['target_item_id'])
                 # Preserve stable business identity for a selected revision.
                 for key in ('title','statement','applies_to','epistemic_status','source_refs','related_refs'):
                     target[key]=copy.deepcopy(i[key])
                 for key in ('behavior','change_type','scope_evidence','classification_reason'):
                     if key in i:target[key]=copy.deepcopy(i[key])
+                for key in ('behavior_review_required','behavior_review'):
+                    if key in i:target[key]=copy.deepcopy(i[key])
                 target['selection_status']='selected'
+                accept_answer_update(p,i)
+                for q in p['questions']:
+                    if q['id'] in i.get('answer_refs',[]):
+                        q.setdefault('answer_applications',{})[target['id']]=dict(answer_hash=digest(q.get('answer')),clause_hash=application_hash(target),method='candidate_adoption',actor='authenticated_local_user',reviewed_at=now())
                 i['selection_status']='deferred'
                 for linked in p['items']+p['questions']:
                     linked['related_refs']=[target['id'] if ref==i['id'] else ref for ref in linked['related_refs']]
@@ -752,6 +858,16 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
                     option['proposed_item_refs']=[target['id'] if ref==i['id'] else ref for ref in option['proposed_item_refs']]
             else:
                 i['selection_status']=body.selection_status
+        return p
+
+    @app.post('/api/projects/{pid}/item-adoption-review')
+    async def item_adoption_review(pid:str,body:ItemAdoptionReview):
+        return review_item_adoptions(store.get(pid),body.item_ids,body.expected_revision)
+
+    @app.post('/api/projects/{pid}/item-adoptions')
+    async def item_adoptions(pid:str,body:ItemAdoptions):
+        with store.edit(pid,body.expected_revision,'人工逐条核对并批量采纳独立需求') as (p,db):
+            adopt_items(p,body.item_ids,body.content_hashes,body.review_confirmed)
         return p
 
     @app.post('/api/projects/{pid}/options/{oid}')
@@ -784,6 +900,8 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
             require(ids <= set(items),'REFERENCE_INVALID','条目引用不存在')
             excerpts={(s['id'],ex['id']) for s in p['sources'] for ex in s['excerpts']}
             for iid in ids:
+                from .requirements import require_behavior_review
+                require_behavior_review(items[iid],p)
                 require(items[iid].get('source_refs') and all((r['source_id'],r['excerpt_id']) in excerpts for r in items[iid]['source_refs']) and items[iid].get('epistemic_status'),
                         'REFERENCE_INVALID','条目缺少来源或假设状态，不可批量采纳')
                 require(not items[iid].get('target_item_id'), 'REFERENCE_INVALID', '修订条目需单独核对原条目')
@@ -804,6 +922,23 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
             q['affected_requirements']=[requirement_ref(p,i) for i in p['items'] if i['kind']=='requirement' and
                 (i['id'] in q.get('related_refs',[]) or set(i.get('related_refs',[])) & set(q.get('related_refs',[])))]
             q['answer_effect']='待核对关联需求；回答不自动改写原条款或采纳状态'
+        return p
+
+    @app.get('/api/projects/{pid}/questions/{qid}/application-review')
+    async def answer_application_review(pid:str,qid:str):
+        from .answer_review import review_targets
+        p=store.get(pid)
+        q=next((q for q in p['questions'] if q['id']==qid),None)
+        require(q is not None,'NOT_FOUND','问题不存在',404)
+        return dict(expected_revision=p['revision'],question_id=qid,question=q.get('question'),answer=q.get('answer'),
+                    answer_hash=digest(q.get('answer')),targets=review_targets(p,q))
+
+    @app.post('/api/projects/{pid}/questions/{qid}/application-review')
+    async def apply_manual_answer(pid:str,qid:str,body:ManualAnswerReview):
+        with store.edit(pid,body.expected_revision,'人工核对已保存回答在当前条款中的落实') as (p,db):
+            q=next((q for q in p['questions'] if q['id']==qid),None)
+            require(q is not None,'NOT_FOUND','问题不存在',404)
+            confirm_manual_answer(p,q,body.answer_hash,body.clause_hashes,body.review_confirmed)
         return p
 
     @app.get('/api/models')
@@ -840,7 +975,7 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
     @app.post('/api/models/{slot}/test')
     async def test_model(slot:str):
         require(slot in ('model','vision'),'CONFIG_INVALID','未知配置槽')
-        c=store.setting(slot) or dict(DEFAULT)
+        c=dict(store.setting(slot) or DEFAULT,max_calls=None)
         content='Return {"connection":"ok"}. This is a connection test with no project material.'
         if slot=='vision':
             import base64,io
@@ -870,7 +1005,8 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
 
     @app.post('/api/projects/{pid}/runs')
     async def run(pid:str,body:RunInput):
-        return workflow.start(pid,body.expected_revision,body.stage,body.message,body.document_type)
+        config=dict(workflow.config(body.stage),max_calls=body.max_calls)
+        return workflow.start(pid,body.expected_revision,body.stage,body.message,body.document_type,config_override=config)
 
     @app.post('/api/projects/{pid}/actions/plan')
     async def action_plan(pid:str,body:ActionPlan):
@@ -886,9 +1022,18 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
     async def user_tasks(pid:str):
         store.get(pid)
         tasks=store.records(pid,'user_task')
+        recovered={row['task_id']:row for row in store.records(pid,'local_recovery')}
         for task in tasks:
             task['calls']=sum(store.get_record(pid,rid,'run')['calls'] for rid in task['run_ids'])
+            if task['id'] in recovered:
+                row=recovered[task['id']]
+                task['local_recovery']={k:row[k] for k in ('id','output_revision','candidate_ids','external_model_calls')}
         return tasks
+
+    @app.post('/api/projects/{pid}/actions/{tid}/recover-draft')
+    async def recover_draft(pid:str,tid:str,body:Revision):
+        from .ingest_recovery import recover
+        return recover(store,pid,tid,body.expected_revision)
 
     @app.post('/api/projects/{pid}/actions/{tid}/cancel')
     async def action_cancel(pid:str,tid:str):
@@ -912,6 +1057,7 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
     async def resume(pid:str,rid:str,body:Revision):
         r=store.get_record(pid,rid,'run')
         require(not r.get('user_task_id'),'TASK_REVIEW_REQUIRED','此步骤属于业务任务，请重新核对整个任务的范围和总预算',409)
+        require(r['provider'].get('max_calls') is None,'TASK_REVIEW_REQUIRED','有限额度步骤需重新核对计划并明确授权，不自动续跑',409)
         require(r['status'] in ('failed','cancelled','paused_budget'),'RUN_FINISHED','无需重跑已成功阶段')
         return workflow.start(pid,body.expected_revision,r['stage'],r['message'],r['document_type'],rid)
 
@@ -1002,6 +1148,16 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
         store.get_record(pid,eid,'export')
         return FileResponse(store.folder/'exports'/(eid+'.zip'),filename=eid+'.zip')
 
+    from .workspace_draft import register as register_workspace_draft
+    from .decision_routes import register as register_decision_routes
+    from .domain_context_routes import register as register_domain_context
+    from .refinement_preparation import register as register_refinement_preparation
+    from .refinement_confirmation import register as register_refinement_confirmation
+    register_workspace_draft(app, store)
+    register_decision_routes(app, store)
+    register_domain_context(app, store)
+    register_refinement_preparation(app, store)
+    register_refinement_confirmation(app, store)
     if (ROOT/'web/dist').exists():
         app.mount('/',StaticFiles(directory=ROOT/'web/dist',html=True),name='web')
     return app

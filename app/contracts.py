@@ -8,9 +8,11 @@ from .core import KIT, brief_hash, digest, read_json, require
 from .requirements import delivery_items
 
 API_CAPABILITIES = tuple(sorted(('actions', 'artifacts', 'confirmations', 'documents', 'exports', 'models',
-                                 'options-direction', 'options-items', 'projects', 'runs', 'session', 'sources', 'product-flow', 'five-step-workflow', 'requirements-exchange', 'business-context')))
+                                 'options-direction', 'options-items', 'projects', 'runs', 'session', 'sources', 'product-flow', 'five-step-workflow', 'requirements-exchange', 'business-context', 'conversational-intake', 'shared-draft', 'decision-review', 'domain-context')))
 
 SCHEMA = read_json(KIT / 'examples/runtime_response.schema.json')
+from .benchmark import analysis_schema
+SCHEMA['properties']['benchmark_analysis'] = analysis_schema()
 WIRE = read_json(KIT / 'examples/wireframe.schema.json')
 REGISTRY = Registry().with_resource('wireframe.schema.json', Resource.from_contents(WIRE))
 VALIDATOR = jsonschema.Draft202012Validator(SCHEMA, registry=REGISTRY)
@@ -73,16 +75,41 @@ def describe_schema_error(errors):
         flat.append(e)
         stack.extend(getattr(e, 'context', None) or [])
     best = max(flat, key=lambda e: (len(list(e.absolute_path)), len(list(e.absolute_schema_path))))
-    message = best.message
+    message = (f'{best.validator}={best.validator_value}，实际长度={len(best.instance)}'
+               if best.validator in ('maxItems','minItems','maxLength','minLength') else best.message)
     if len(message) > 160:
         message = message[:160] + '…'
     return str(list(best.absolute_path)) + ' ' + message
 
 
-def validate_response(value, stage, project, excerpts, document_type='prd'):
-    errors = sorted(VALIDATOR.iter_errors(value), key=lambda e: str(e.path))
+def validate_response(value, stage, project, excerpts, document_type='prd', *, trusted_business_draft=False):
+    if stage=='interview':
+        from .interview import validate
+        return validate(value,excerpts)
+    validator = VALIDATOR
+    if trusted_business_draft:
+        require(stage in ('ingest', 'clarify'), 'SCHEMA_INVALID', '业务草稿验证仅适用于整理和本行完善')
+        from .business_draft import SCHEMA as BUSINESS_SCHEMA
+        # This switch comes only from the server-owned request protocol. The
+        # model cannot enable it with a response field. All other gates below
+        # remain identical to the canonical protocol.
+        spec = copy.deepcopy(SCHEMA)
+        rows = BUSINESS_SCHEMA['properties']['requirements']
+        spec['properties']['questions']['maxItems'] = rows['maxItems'] * rows['items']['properties']['questions']['maxItems']
+        if stage == 'ingest':
+            # Preserve ingest.validate's additional mandatory context contract.
+            spec['required'] = [*spec['required'], 'product_context_proposal']
+            context = spec['properties']['product_context_proposal']
+            context['required'] = list(context['properties'])
+        validator = jsonschema.Draft202012Validator(spec, registry=REGISTRY)
+    errors = sorted(validator.iter_errors(value), key=lambda e: str(e.path))
     require(not errors, 'SCHEMA_INVALID', '模型响应不匹配 Schema：' + (describe_schema_error(errors) if errors else ''))
     require(value['stage'] == stage, 'SCHEMA_INVALID', '模型返回了错误阶段')
+    require('benchmark_analysis' not in value or stage=='ingest', 'SCHEMA_INVALID', '对标分析只属于材料整理阶段')
+    benchmark_sources=[s['id'] for s in project.get('sources',[]) if s.get('benchmark_reference') or s.get('origin')=='benchmark_intake']
+    if benchmark_sources:
+        from .benchmark import validate_proposal_roles
+        validate_proposal_roles(value,benchmark_sources)
     if stage=='review':
         require(not value['proposals'] and not value['questions'] and 'product_context_proposal' not in value,
                 'SEMANTIC_BLOCKED','语义审查只报告发现，不能创建候选、问题或替换产品上下文；请在澄清阶段处理修订')
@@ -128,8 +155,26 @@ def validate_response(value, stage, project, excerpts, document_type='prd'):
         require((proposal['action'] == 'add' and proposal['target_item_id'] is None) or
                 (proposal['action'] == 'revise' and proposal['target_item_id'] in item_ids),
                 'REFERENCE_INVALID', '修订目标必须存在；新增不能覆盖旧条目')
+        if proposal['action']=='revise':
+            target=next(i for i in project['items'] if i['id']==proposal['target_item_id'])
+            require(proposal['kind']==target['kind'],'REFERENCE_INVALID',
+                    proposal['temp_id']+' 修订目标 '+target['id']+' 实际 kind='+target['kind']+'；必须保持同 kind，不得改变目标、原文或新增替代修订')
     from .understanding import validate as validate_understanding
     validate_understanding(value,project,excerpts)
+    from .semantic_quality import validate_analysis, validate_review
+    validate_analysis(value,project,excerpts)
+    from .result_conditions import validate_response_conditions
+    validate_response_conditions(value,project,excerpts)
+    from .source_fidelity import validate_response as validate_source_fidelity
+    validate_source_fidelity(value,project,excerpts)
+    if stage in ('ingest','clarify','change','prd'):
+        from .semantic_quality import validate_current_workflow
+        context=project.get('product_context',{})
+        used={(r['source_id'],r['excerpt_id']) for r in value['used_source_refs']}
+        existing='\n'.join([context.get('current_state','')]+[
+            e['text'] for e in excerpts if (e['source_id'],e['id']) in used])
+        validate_current_workflow(value['summary'],existing,'summary')
+    if stage=='review':validate_review(value,project)
     if stage == 'ui':
         validate_ui(value['result']['spec'], project)
     if stage == 'prd':
@@ -228,6 +273,17 @@ def validate_document(doc, p, kind):
                         'REFERENCE_INVALID','解释性正文引用未核对或未选中的业务背景')
                 require(set(b['ref_ids'])==set(basis.get('normative_refs',[])),
                         'REFERENCE_INVALID','解释性正文的规范引用与依据不一致')
+                from .semantic_quality import validate_explanation
+                context=verified_context(p);business=verified_business_context(p)
+                evidence='\n'.join([context[r] for r in basis.get('context_refs',[])]+[items[r]['statement'] for r in basis.get('normative_refs',[])]+[business[r]['text'] for r in basis.get('business_claim_refs',[])])
+                existing='\n'.join([context[r] for r in basis.get('context_refs',[]) if r=='current_state']+[business[r]['text'] for r in basis.get('business_claim_refs',[])])
+                scenario='\n'.join([context[r] for r in basis.get('context_refs',[]) if r!='current_state']+[items[r]['statement'] for r in basis.get('normative_refs',[])])
+                validate_explanation(b['text'],evidence,existing,s['section_id'],scenario_evidence=scenario)
+            if b['kind']=='narrative' and not s['title'].startswith(('历史分析提示','附录：条目身份与历史讨论','附录：未采纳与历史讨论')):
+                from .prd import verified_context, verified_business_context
+                from .semantic_quality import validate_current_workflow
+                existing='\n'.join([verified_context(p).get('current_state','')]+[c['text'] for c in verified_business_context(p).values()])
+                validate_current_workflow(b['text'],existing,s['section_id'])
             if b['kind'] in ('requirement', 'rule', 'acceptance'):
                 unselected = sorted(r for r in b['ref_ids'] if r not in {i['id'] for i in delivery_items(p)})
                 require(not unselected, 'SEMANTIC_BLOCKED', '规范内容只能引用本期已选目标条目（' + '、'.join(unselected[:5]) + (' 等' if len(unselected) > 5 else '') + ' 未已选）')
@@ -253,47 +309,105 @@ def document_gaps(doc, p):
 
 
 def review_target(p):
-    target={'brief': brief_hash(p), 'documents': p['documents'], 'ui': p['ui']}
+    from .semantic_quality import VERSION
+    target={'brief': brief_hash(p), 'documents': p['documents'], 'ui': p['ui'], 'semantic_quality_version':VERSION}
     if p.get('requirement_relations'):target['requirement_relations']=p['requirement_relations']
     return digest(target)
 
 
-def gate(p):
+def gate_blockers(p):
     from .product_flow import status, question_open
-    issues = []
+    from .source_fidelity import project_issues, DIMENSIONS
+    rows = []
+    def add(code, title, message, actions, detail=None):
+        row = dict(key=code+':'+str(len(rows)), code=code, title=title,
+                   message=message, actions=actions)
+        if detail is not None: row['detail'] = detail
+        rows.append(row)
+    def action(kind, label, **target):
+        return dict(kind=kind, label=label, **target)
+    for finding in project_issues(p):
+        message = finding['location']+': '+DIMENSIONS[finding['dimension']]+' / '+finding['quote']
+        add('source_fidelity', '核对来源忠实度', message, [action('source', '核对参考资料')])
     steps=status(p)
     first=next((s for s in steps[:5] if not s['retired'] and not s['complete']),None)
-    if first:issues+=['请完成第'+str(first['display_step'])+'步「'+first['title']+'」核对']+first['missing']
+    if first:
+        add('stage_incomplete', first['title'], '请完成第'+str(first['display_step'])+'步「'+first['title']+'」核对',
+            [action('stage', '前往本步骤核对', step=first['step'])])
+        by_message = {row['message']: row for row in first.get('blockers', [])}
+        for message in first['missing']:
+            existing = by_message.get(message)
+            if existing:
+                rows.append(copy.deepcopy(existing))
+            else:
+                add('stage_missing', first['title'], message,
+                    [action('stage', '前往本步骤核对', step=first['step'])])
     for kind in p.get('delivery_scope',{}).get('documents',['mrd','prd']):
-        if kind not in p['documents']:issues.append('缺少 '+kind.upper()+' 评审稿')
+        if kind not in p['documents']:
+            add('document_missing', kind.upper()+' 文档', '缺少 '+kind.upper()+' 评审稿',
+                [action('document', '生成 '+kind.upper()+' 评审稿', document=kind)])
     if 'prd' not in p['documents']:
-        return issues+['缺少 PRD 内容对象；MRD 不能代替 PRD 确认']
-    for doc in p['documents'].values():
+        add('prd_content_missing', 'PRD 内容对象', '缺少 PRD 内容对象；MRD 不能代替 PRD 确认',
+            [action('document', '生成 PRD 评审稿', document='prd')])
+        return rows
+    for kind, doc in p['documents'].items():
         if doc['brief_hash'] != brief_hash(p):
-            issues.append('文档与当前底稿不一致，请重新生成')
-        issues.extend(document_gaps(doc['content'], p))
+            add('document_stale', kind.upper()+' 文档', '文档与当前底稿不一致，请重新生成',
+                [action('document', '更新 '+kind.upper()+' 评审稿', document=kind)])
+        for message in document_gaps(doc['content'], p):
+            add('document_gap', kind.upper()+' 文档', message,
+                [action('document', '核对 '+kind.upper()+' 评审稿', document=kind)])
     if p.get('document_update_needed'):
-        issues.append('页面变化后文档需要更新：'+'、'.join(p.get('stale_document_kinds',[])))
-    issues.extend(q['question'] for q in p['questions'] if q['blocking'] and question_open(q))
+        stale=p.get('stale_document_kinds',[])
+        add('document_update_needed', '文档更新', '页面变化后文档需要更新：'+'、'.join(stale),
+            [action('document', '更新 '+kind.upper()+' 评审稿', document=kind) for kind in stale] or
+            [action('document', '核对 PRD 评审稿', document='prd')])
+    for q in p['questions']:
+        if q['blocking'] and question_open(q):
+            add('question_open', '待回答的问题', q['question'],
+                [action('question', '回答问题', question_id=q['id'])])
     review = p.get('review')
     if not review or review['target_hash'] != review_target(p):
-        issues.append('需要审查当前底稿和文档')
+        add('review_missing', '当前版本内容审查', '需要审查当前底稿和文档',
+            [action('review', '查看当前版本审查')])
     else:
         result=review['response']['result']
         if result['assessment'] != 'ready_for_human_review' or any(f['severity'] == 'blocker' for f in review['response']['findings']):
-            issues.append('语义审查仍有阻塞项')
+            add('review_blocked', '当前版本内容审查', '语义审查仍有阻塞项',
+                [action('review', '查看审查意见')])
         if result.get('required_decisions'):
-            issues.append('语义审查仍有必要决定待产品处理：'+'；'.join(result['required_decisions']))
+            add('review_decisions', '当前版本内容审查', '语义审查仍有必要决定待产品处理：'+'；'.join(result['required_decisions']),
+                [action('review', '查看审查意见')])
         reviewed=set(result.get('reviewed_refs',[]))
-        uncovered=[i['id'] for i in delivery_items(p) if i['kind']=='requirement' and i['id'] not in reviewed]
+        uncovered=[i['id'] for i in delivery_items(p) if i['kind'] in ('requirement','rule','acceptance') and i['id'] not in reviewed]
         if uncovered or not result.get('perspectives'):
-            issues.append('语义审查覆盖不足：'+('未审查需求 '+ '、'.join(uncovered) if uncovered else '缺少审查视角'))
+            add('review_coverage', '当前版本内容审查', '语义审查覆盖不足：'+('未审查规范条目 '+ '、'.join(uncovered) if uncovered else '缺少审查视角'),
+                [action('review', '查看审查意见')])
     if not any(i['selection_status'] == 'selected' and i['applies_to']=='to_be' and i['kind'] == 'requirement' for i in p['items']):
-        issues.append('本期没有已选需求')
+        add('scope_empty', '本期需求范围', '本期没有已选需求', [action('scope', '核对本期需求')])
     if not any(i['selection_status'] == 'selected' and i['applies_to']=='to_be' and i['kind'] == 'acceptance' for i in p['items']):
-        issues.append('缺少已选验收条件')
+        add('acceptance_empty', '本期验收条件', '缺少已选验收条件',
+            [action('add_acceptance', '补充关联验收条件')])
     selected=delivery_items(p)
     for req in (i for i in selected if i['kind']=='requirement'):
         if not any(ac['kind']=='acceptance' and (req['id'] in ac['related_refs'] or ac['id'] in req['related_refs']) for ac in selected):
-            issues.append('需求缺少关联验收条件：'+req['id'])
-    return list(dict.fromkeys(issues))
+            candidates=[i for i in p['items'] if i['kind']=='acceptance' and i['selection_status']=='candidate'
+                        and i['applies_to']=='to_be' and
+                        (req['id'] in i['related_refs'] or i['id'] in req['related_refs'])]
+            kind='acceptance' if candidates else 'add_acceptance'
+            label='核对关联验收候选' if candidates else '补充关联验收条件'
+            add('requirement_acceptance_missing', req.get('title') or req['id'],
+                '需求缺少关联验收条件：'+req['id'], [action(kind, label, item_id=req['id'])])
+    unique=[];seen={}
+    for row in rows:
+        if row['message'] not in seen:
+            unique.append(row);seen[row['message']]=row
+        else:
+            for action in row['actions']:
+                if action not in seen[row['message']]['actions']:
+                    seen[row['message']]['actions'].append(action)
+    return unique
+
+
+def gate(p):
+    return [row['message'] for row in gate_blockers(p)]

@@ -49,7 +49,8 @@ def contract():
     return dict(version='ingest-contract-2', example=example,
                 instruction='示例仅说明结构，不是业务答案或失败回退。必须保留根节点 result，'
                 '含 understanding 字符串和 material_limits 数组。禁止 *_note、placeholder 或任何未知字段。'
-                '未知正文填空字符串；来源只使用实际 excerpts 中 source_id/id 配对，不能生成来源ID。')
+                '未知正文填空字符串；来源只使用实际 excerpts 中 source_id/id 配对，不能生成来源ID。'
+                '每个对象内字段只输出一次。新父问题为阻塞时，所有子问题继承阻塞状态与最早处理阶段。')
 
 
 def issues(value, excerpts):
@@ -79,10 +80,34 @@ def validate(value, excerpts):
             '材料分析契约不匹配：\n' + '\n'.join(errors))
 
 
+def inherit_new_question_gates(value, project):
+    """New split decisions inherit their parent's gate; never relax existing ones."""
+    result = copy.deepcopy(value)
+    changes = []
+    existing = {q['id'] for q in project['questions']}
+    for parent in result['questions']:
+        if (parent.get('target_question_id') or parent['temp_id'] in existing or
+                not parent['blocking']):
+            continue
+        for child in parent.get('decision_points', []):
+            if child['temp_id'] in existing:
+                continue
+            stage = min(child.get('blocking_stage', 3), parent.get('blocking_stage', 3))
+            if child['blocking'] and child.get('blocking_stage', 3) == stage:
+                continue
+            changes.append(dict(parent=parent['temp_id'], child=child['temp_id'],
+                before=dict(blocking=child['blocking'], blocking_stage=child.get('blocking_stage', 3)),
+                after=dict(blocking=True, blocking_stage=stage)))
+            child.update(blocking=True, blocking_stage=stage)
+    return result, changes
+
+
 def diagnostic_object(output):
     """A parseable first object is only an anchor, never a cleaned accepted response."""
     try:
-        value, _ = json.JSONDecoder().raw_decode(output.lstrip())
+        from .core import unique_json_object
+        value, _ = json.JSONDecoder(object_pairs_hook=unique_json_object,
+            parse_constant=lambda token: (_ for _ in ()).throw(ValueError(token))).raw_decode(output.lstrip())
         return value if isinstance(value, dict) else None
     except (ValueError, AttributeError):
         return None
@@ -91,7 +116,8 @@ def diagnostic_object(output):
 def complete_object(output):
     """Only a fully decoded JSON object can anchor a non-ingest format repair."""
     try:
-        value=json.loads(output,parse_constant=lambda x: (_ for _ in ()).throw(ValueError(x)))
+        from .core import strict_model_json
+        value=strict_model_json(output)
     except (ValueError,TypeError):
         return None
     return value if isinstance(value,dict) else None
@@ -101,6 +127,12 @@ def business_anchor(value, excerpts=()):
     """Lock valid business fields; missing/invalid fields may still be repaired."""
     if not isinstance(value, dict):
         return {}
+    from .source_quotes import normalize_scope_quotes
+    value, _ = normalize_scope_quotes(value, excerpts)
+    # Lock the evidence-derived label rather than a contradictory redundant label;
+    # all business text, quotes and evidence states remain protected.
+    from .understanding import normalize_classification_labels
+    value, _ = normalize_classification_labels(value, excerpts)
     spec = schema()
     locked = {}
     pairs = {(e['source_id'], e['id']) for e in excerpts}
@@ -111,6 +143,7 @@ def business_anchor(value, excerpts=()):
         for key, rule in properties.items():
             if key in ('source_refs', 'related_refs', 'target_item_id') or key not in node:
                 continue
+            if key=='decision_points' and missing_compound_points(node):continue
             validator = jsonschema.Draft202012Validator({'$defs': spec['$defs'], **rule})
             if validator.is_valid(node[key]):
                 locked[(*prefix, key)] = copy.deepcopy(node[key])
@@ -151,10 +184,35 @@ def anchor_hash(anchor):
     return digest([[list(k), v] for k, v in anchor.items()])
 
 
+def missing_compound_points(node):
+    # Match understanding.validate: [] is structurally missing for a parent
+    # with multiple questions, just like an omitted decision_points field.
+    question=node.get('question','')
+    return node.get('decision_points')==[] and isinstance(question,str) and question.count('？')+question.count('?')>1
+
+
+def compound_repair_schema(spec,value):
+    """Advertise the same immutable parent enforced by the repair guard."""
+    frozen=copy.deepcopy(spec)
+    rules=[]
+    for parent in value.get('questions',[]):
+        question=parent.get('question','')
+        if (not parent.get('decision_points') and isinstance(question,str) and
+                question.count('？')+question.count('?')>1 and isinstance(parent.get('temp_id'),str)):
+            rules.append({'if':{'properties':{'temp_id':{'const':parent['temp_id']}}},
+                'then':{'required':['decision_points'],'properties':{
+                    'question':{'const':question},'decision_points':{'minItems':2}}}})
+    if rules:frozen['$defs']['Question'].setdefault('allOf',[]).extend(rules)
+    return frozen
+
+
 def response_anchor(value, excerpts, stage, project=None):
     """Conservatively retain valid business fields in a malformed non-ingest reply."""
     if not isinstance(value, dict):
         return {}
+    if stage in ('clarify', 'change'):
+        from .source_quotes import normalize_scope_quotes
+        value, _ = normalize_scope_quotes(value, excerpts)
     definitions=SCHEMA['$defs']
     pairs={(e['source_id'],e['id']) for e in excerpts}
     locked={}
@@ -166,6 +224,7 @@ def response_anchor(value, excerpts, stage, project=None):
         if not isinstance(node,dict):return
         for key,rule in properties.items():
             if key not in node:continue
+            if key=='decision_points' and missing_compound_points(node):continue
             field=node[key]
             if key in ('source_refs','used_source_refs') and isinstance(field,list):
                 valid=[(r['source_id'],r['excerpt_id']) for r in field if isinstance(r,dict)
@@ -206,11 +265,16 @@ def response_anchor(value, excerpts, stage, project=None):
                 from .understanding import answer_target
                 # Preserve actual bindings, not invalid references that validation
                 # already rejects. This only builds the anchor; never edits output.
+                binding_row=row
+                target=next((i for i in project['items'] if i['id']==row.get('target_item_id') and not i.get('target_item_id')),None)
+                if row.get('action')=='revise' and target is not None:
+                    locked[(name,row['temp_id'],'kind')]=target['kind']
+                    binding_row=dict(row,kind=target['kind'])
                 refs = row.get('answer_refs', [])
                 questions = {q['id']: q for q in project['questions'] if q['status'] == 'answered'}
                 locked[(name, row['temp_id'], 'answer_refs')] = [
                     ref for ref in refs if isinstance(ref, str) and ref in questions
-                    and answer_target(project, questions[ref], row) is not None
+                    and answer_target(project, questions[ref], binding_row) is not None
                 ] if isinstance(refs, list) else []
     findings=value.get('findings')
     if isinstance(findings,list):
@@ -410,6 +474,11 @@ def preserve_response(anchor, value, excerpts, stage, original=None, project=Non
         normalized=reference_repair_anchor(original,value,excerpts,stage,project)
         renamed=temporary_id_repair(normalized,value,stage)
         anchor=response_anchor(renamed if renamed is not None else normalized,excerpts,stage,project)
+    if project is not None:
+        for row in value.get('proposals',[]):
+            target=next((i for i in project['items'] if i['id']==row.get('target_item_id')),None)
+            require(row.get('action')!='revise' or target is None or row.get('kind')==target['kind'],
+                    'SEMANTIC_BLOCKED','格式修复不得改变原目标的条款类型')
     current=response_anchor(value,excerpts,stage,project)
     changed=[list(path) for path,original in anchor.items() if current.get(path)!=original]
     require(not changed,'SEMANTIC_BLOCKED',

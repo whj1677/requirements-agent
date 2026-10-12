@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { activityNotice, activitySnapshot, subscribeActivity } from './activity';
 import { downloadFile } from './api';
+import { useProgressPresent } from './task-progress';
 
 export function DownloadButton({ href, filename, children }: { href: string; filename: string; children: React.ReactNode }) {
   const lock = useRef(false), [busy, setBusy] = useState(false), [error, setError] = useState('');
@@ -13,6 +14,7 @@ export function DownloadButton({ href, filename, children }: { href: string; fil
 
 // Mounted outside drawers and scroll panes so a response cannot hide behind them.
 export function RequestFeedback() {
+  const progressPresent = useProgressPresent();
   const state = useSyncExternalStore(subscribeActivity, activitySnapshot);
   const [, tick] = useState(0);
   const pending = state.active.at(-1);
@@ -27,6 +29,7 @@ export function RequestFeedback() {
     return () => clearTimeout(timer);
   }, [pending?.id, state.message, state.error]);
   if (!pending && !state.message) return null;
+  if (!pending && !state.error && progressPresent && /^(任务已提交|请求已处理)/.test(state.message)) return null;
   const seconds = pending ? Math.floor((Date.now() - pending.started) / 1000) : 0;
   return <aside className={'request-feedback' + (state.error ? ' request-feedback-error' : '')} aria-label="操作反馈">
     {pending && <div role="status" aria-live="polite"><span className="feedback-spinner" aria-hidden="true" />{pending.label}…<small>已等待 {seconds} 秒{seconds >= 10 ? '，请勿重复提交；如连接中断会显示处理建议。' : ''}</small></div>}

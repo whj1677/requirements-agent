@@ -73,6 +73,8 @@ class Store:
             yield p, db
             from .requirements import reconcile_items
             changes = reconcile_items(before, p)
+            from .understanding import invalidate_answer_applications
+            invalidate_answer_applications(p, before)
             fresh={c['requirement_id'] for c in changes if c['before'] is None}
             if fresh:
                 for row in db.execute('SELECT payload FROM projects WHERE id<>?',(pid,)):

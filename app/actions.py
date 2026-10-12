@@ -6,12 +6,13 @@ import math
 from .core import Problem, digest, dumps, execution_hash, ident, now, require
 from .provider import origin
 from .sources import save_source
-from .product_flow import execution_issues
+from .product_flow import execution_issues, question_open
 from .budgets import policy_summary
+from .request_budget import validate_limit, initial_budget, check_available
 
-LABELS = {'organize':'整理当前信息','explore':'探索可选方案','clarify':'根据回答更新理解',
+LABELS = {'interview':'聊清需求想法','organize':'整理当前信息','explore':'探索可选方案','clarify':'根据回答更新理解',
           'prototype':'生成功能草图','document':'生成评审稿','review':'审查当前内容','change':'讨论修改方案'}
-STAGES = {'explore':['brainstorm'],'clarify':['clarify'],'prototype':['ui'],
+STAGES = {'interview':['interview'],'explore':['brainstorm'],'clarify':['clarify'],'prototype':['ui'],
           'document':['prd'],'review':['review'],'change':['change']}
 ACTIVE = ('queued','running')
 
@@ -47,12 +48,27 @@ class Actions:
         p = p or self.store.get(pid)
         require(p['revision']==body['expected_revision'],'STALE_REVISION','内容版本已变化，请保留输入并重新核对',409)
         require(body['action'] in LABELS,'ACTION_INVALID','业务动作不存在')
+        benchmark=body.get('benchmark')
+        if benchmark:
+            require(body['action']=='organize' and not body.get('target'), 'BENCHMARK_INVALID', '对标请通过需求助手的草稿填充入口发起')
+            from .benchmark import validate_request
+            benchmark=validate_request(p,benchmark)
+        attachments=body.get('attachment_source_ids') or []
+        require(not attachments or body['action']=='interview', 'ATTACHMENT_INVALID','附件请通过需求助手发送')
+        require(len(attachments)==len(set(attachments)), 'ATTACHMENT_INVALID','附件重复，请核对后再发送')
+        eligible={s['id'] for s in p['sources'] if (s.get('image_mime') or s.get('origin')=='interview_attachment') and not s.get('excluded')}
+        require(set(attachments)<=eligible, 'ATTACHMENT_INVALID','附件已被排除或不属于当前项目，请重新选择',409)
+        require(body['action']!='interview' or body['message'].strip() or attachments,'INPUT_REQUIRED','请先发一条消息或添加资料，零碎的想法也可以。')
         target_label=target_context(p,body.get('target'))
         require(not target_label or body['action'] in ('clarify','change','prototype'), 'TARGET_INVALID','此动作不支持局部修改')
-        active=[s for s in p['sources'] if not s['excluded']]
+        from .domain_context import active_source_ids, attachment_source_ids
+        active=[s for s in p['sources'] if s['id'] in active_source_ids(p) | attachment_source_ids(p,attachments)]
         images=[s for s in active if s.get('image_mime') and not s.get('vision_run_id')]
         stages=STAGES.get(body['action']) or ['vision']*math.ceil(len(images)/3) + ['ingest']
-        configs={s:self.workflow.config(s) for s in stages}
+        if body['action']=='interview':
+            stages=['vision']*math.ceil(len(images)/3)+['interview']
+        limit=validate_limit(body.get('max_calls'))
+        configs={s:dict(self.workflow.config(s),max_calls=limit) for s in stages}
         if config_snapshot is not None:
             config_snapshot.update(copy.deepcopy(configs))
         blockers=[]
@@ -82,19 +98,34 @@ class Actions:
                 ids=[s['id'] for s in active]
                 prior=p['grants'].get(endpoint,{})
                 recipients.append(dict(origin=endpoint, model=c['model'], source_ids=ids,
-                    needs_authorization=bool(body['message'].strip()) or endpoint not in p['grants'] or not set(ids)<=set(prior.get('source_ids',[]))))
+                    needs_authorization=bool(body['message'].strip() or benchmark or attachments) or endpoint not in p['grants'] or not set(ids)<=set(prior.get('source_ids',[]))))
         busy=any(r['status'] in ACTIVE for kind in ('run','user_task') for r in self.store.records(pid,kind))
         if busy:
             blockers.append('当前项目任务正在执行，请等待结果或取消当前任务。')
         result=dict(action=body['action'],label=LABELS[body['action']],stages=stages,
-            expected_revision=p['revision'],max_calls=None,recipients=recipients,
+            expected_revision=p['revision'],max_calls=limit,recipients=recipients,
             sources=[dict(id=s['id'],title=s['title'],status=s['parse_status']) for s in active],
             pending_text=body['message'], context_scope='当前底稿、问题和讨论记录；排除材料不删除已经形成的讨论内容。',
             missing=list(dict.fromkeys(blockers)),generation_target=target,
-            open_questions=sum(q['status']!='answered' for q in p['questions']))
+            open_questions=sum(question_open(q) for q in p['questions']))
+        result['pending_image_count']=len(images)
         result['target_label']=target_label
+        from .requirement_recommendation import scope as recommendation_scope
+        local = recommendation_scope(p, body.get('target'), body['action'])
+        if local:
+            result.update(label='完善这条需求建议', requirement_recommendation_scope=local)
+            result['context_scope'] += ' 仅为“'+local['title']+'”整理正文、适用业务说明和验收建议；所有建议待人工确认，不改其他需求与共享条款。'
+        if p.get('workflow_mode')=='shared-draft' and any(stage in ('ingest','clarify','change') for stage in stages):
+            result['context_scope']+=' 新增或变化的问题及当前回答将额外进行一次批量覆盖复核，沿用同一接收端和总请求额度；复核仅提供待人工确认的建议。'
+            result['decision_review_policy']=dict(mode='one_batch',extra_requests_max=1,within_task_budget=True)
+        if benchmark:
+            result.update(label='对标并填充需求草稿',benchmark=benchmark,
+                context_scope=result['context_scope']+' 指定对标资料仅作为外部参考，差异及借鉴内容为待审核建议；保留已填写内容。')
         result['budget_policies']={stage:policy_summary(config) for stage,config in configs.items()}
-        result['plan_hash']=digest(dict(input=execution_hash(p),request=body,configs=configs))
+        # Even if a failed action changed no content, its approval cannot be
+        # reused for a new paid action. Idempotent replay returns the old task.
+        result['plan_hash']=digest(dict(input=execution_hash(p),request=body,configs=configs,
+            prior_task_ids=[t['id'] for t in self.store.records(pid,'user_task')]))
         return result
 
     def start(self,pid,body,plan_hash,idempotency_key,authorize):
@@ -113,27 +144,58 @@ class Actions:
             require(not plan['missing'],'ACTION_BLOCKED','；'.join(plan['missing']),409)
             require(authorize or not any(r['needs_authorization'] for r in plan['recipients']),
                     'DATA_AUTH_REQUIRED','请在当前任务中核对接收端及新增内容范围',403)
-            if body['message'].strip():
-                source=save_source(self.store,'对话输入.txt',body['message'].encode('utf-8'),'goal')
+            benchmark=plan.get('benchmark')
+            message=body['message']
+            if body['action']=='interview' and body.get('attachment_source_ids') and not message.strip():
+                image_only=all(s.get('image_mime') for s in p['sources'] if s['id'] in body['attachment_source_ids'])
+                message='请结合这些图片继续梳理需求。' if image_only else '请结合这些资料继续梳理需求。'
+            if benchmark and not message.strip():
+                message='对标对象：'+benchmark['target']+'\n参考范围：'+benchmark['focus']
+            if message.strip():
+                source=save_source(self.store,'对标任务输入.txt' if benchmark else '对话输入.txt',message.encode('utf-8'),'goal')
+                if body['action']=='interview' or benchmark:source['origin']='benchmark_intake' if benchmark else 'interview'
                 p['sources'].append(source)
+                p['current_task_source_id'] = source['id']
                 p['revision']+=1
+                if body['action']=='interview' or benchmark:
+                    from .interview import record_input
+                    record_input(p,message,tid,source['id'],body.get('attachment_source_ids'))
+                if benchmark:
+                    for s in p['sources']:
+                        if s['id'] in benchmark['source_ids']:s['benchmark_reference']=True
                 db.execute('INSERT INTO revisions VALUES(?,?,?,?,?)',(pid,p['revision'],dumps(p),'保存当前任务输入为来源',now()))
-            ids=[s['id'] for s in p['sources'] if not s['excluded']]
+            from .domain_context import active_source_ids
+            ids=sorted(active_source_ids(p))
             if authorize:
                 for r in plan['recipients']:
                     p['grants'][r['origin']]=dict(source_ids=ids,created=now(),actor='authenticated_local_user',user_task_id=tid)
             db.execute('UPDATE projects SET revision=?,payload=? WHERE id=?',(p['revision'],dumps(p),pid))
             task=dict(action=body['action'],label=plan['label'],status='queued',created=now(),
                 input_revision=p['revision'],input_state_hash=execution_hash(p),source_ids=ids,
-                stages=plan['stages'],run_ids=[],max_calls=None,calls=0,cost=None,
+                stages=plan['stages'],run_ids=[],max_calls=plan['max_calls'],calls=0,cost=None,
                 request_hash=request_hash,idempotency_key=idempotency_key,message='等待开始',
                 authorized_configs={s:{k:v for k,v in c.items() if k!='proxy'} for s,c in configs.items()},
                 approved_plan_hash=plan_hash,
-                generation_target=plan['generation_target'],completed_steps=0)
+                generation_target=plan['generation_target'],completed_steps=0,
+                step_states=[dict(stage=s,status='NOT_RUN') for s in plan['stages']])
+            if plan['max_calls'] is not None:
+                task['request_budget']=initial_budget(plan['max_calls'])
+            if body['action']=='organize' and not benchmark and not body.get('target') and not plan['generation_target']:
+                from .refinement_preparation import DRAFT_SCHEMA, input_identity
+                preparation=input_identity(self.store,p,db)
+                task.update(preparation_schema=preparation['schema'], preparation_draft_schema=DRAFT_SCHEMA,
+                    preparation_input_hash=preparation['input_hash'],
+                    preparation_source_ids=preparation['source_ids'])
+            if plan.get('requirement_recommendation_scope'):
+                task['requirement_recommendation_scope']=copy.deepcopy(plan['requirement_recommendation_scope'])
             task['retry_input'] = {k:copy.deepcopy(body[k]) for k in
-                                   ('action','message','document_type','option_id','target') if k in body}
+                                   ('action','message','document_type','option_id','target','attachment_source_ids') if k in body}
+            if benchmark:
+                task['benchmark']=copy.deepcopy(benchmark)
+                task['retry_input']['benchmark']=copy.deepcopy(benchmark)
+            if plan['max_calls'] is not None:task['retry_input']['max_calls']=plan['max_calls']
             self.store.record(pid,'user_task',task,tid,db)
-        job=asyncio.create_task(self.execute(pid,tid,body,configs))
+        job=asyncio.create_task(self.execute(pid,tid,copy.deepcopy(body),copy.deepcopy(configs)))
         self.jobs[tid]=job
         job.add_done_callback(lambda _:self.jobs.pop(tid,None))
         return dict(id=tid,**task)
@@ -144,12 +206,14 @@ class Actions:
             task=self.store.get_record(pid,tid,'user_task')
             expected=task['input_state_hash']
             completed=0
-            for stage in task['stages']:
+            for index,stage in enumerate(task['stages']):
                 current=self.store.get_record(pid,tid,'user_task')
                 require(current['status']!='cancelled','CANCELLED','已停止后续步骤；已发送请求可能计费')
                 p=self.store.get(pid)
                 require(execution_hash(p)==expected,'STALE_REVISION','任务输入发生外部变化；已完成结果保留，请重新核对',409)
-                config=dict(configs[stage],max_calls=None)
+                if current.get('request_budget'):
+                    check_available(current['request_budget'])
+                config=copy.deepcopy(configs[stage])
                 target=copy.deepcopy(task['generation_target'])
                 if target: target['input_revision']=p['revision']
                 message=body['message']
@@ -157,11 +221,15 @@ class Actions:
                     message='本次局部讨论对象：'+target_context(p,body['target'])+'\n仅围绕此对象提出候选；保留其他需求、未知和采纳状态。\n用户修改意图：'+message
                 run=self.workflow.start(pid,p['revision'],stage,message,body['document_type'],
                     user_task_id=tid,config_override=config,generation_target=target,
-                    discussion_target=body.get('target'))
+                    discussion_target=body.get('target'),**({'benchmark':task['benchmark']} if stage=='ingest' and task.get('benchmark') else {}))
                 ids=current['run_ids']+[run['id']]
-                self.store.update_record(pid,tid,'user_task',status='running',run_ids=ids,message='正在'+('分析图片' if stage=='vision' else LABELS[body['action']]))
+                step_states=copy.deepcopy(current['step_states'])
+                step_states[index].update(status='running',run_id=run['id'])
+                self.store.update_record(pid,tid,'user_task',status='running',run_ids=ids,step_states=step_states,message='正在'+('分析图片' if stage=='vision' else LABELS[body['action']]))
                 await self.workflow.tasks[run['id']]
                 result=self.store.get_record(pid,run['id'],'run')
+                step_states[index]['status']=result['status']
+                self.store.update_record(pid,tid,'user_task',step_states=step_states)
                 calls+=result['calls']
                 self.store.update_record(pid,tid,'user_task',calls=calls)
                 require(self.store.get_record(pid,tid,'user_task')['status']!='cancelled','CANCELLED','任务已取消，后续步骤未执行')
@@ -170,17 +238,28 @@ class Actions:
                 expected=result['output_state_hash']
                 self.store.update_record(pid,tid,'user_task',completed_steps=completed)
             p=self.store.get(pid)
-            problems=[s for s in p['sources'] if not s['excluded'] and s['parse_status']!='read']
+            problems=[s for s in p['sources'] if s['id'] in task['source_ids'] and not s['excluded'] and s['parse_status']!='read']
             runs=[self.store.get_record(pid,rid,'run') for rid in ids]
             partial=bool(problems) or any(r['status']=='partial' for r in runs)
             message='可用内容已处理，仍有资料或输出限制，请核对来源。' if partial else '本次内容已生成，请核对建议与未决问题。'
             if body['action'] in ('clarify','change'):
                 message+=' 本次只生成讨论或修订候选，未直接改写文档；核对采纳后，请在文档页更新讨论稿。'
+            preparation_result={}
+            if task.get('preparation_input_hash'):
+                ingest=next((r for r in reversed(runs) if r.get('stage')=='ingest' and r.get('result_applied') is True),None)
+                if ingest:
+                    preparation_result['preparation_result']=dict(schema=task['preparation_schema'],
+                        draft_schema=task.get('preparation_draft_schema'),
+                        input_hash=task['preparation_input_hash'],run_id=ingest['id'],
+                        status='partial' if partial else 'succeeded',completed=now())
             self.store.update_record(pid,tid,'user_task',status='partial' if partial else 'succeeded',completed=now(),
                 message=message,
-                cost=sum(r['cost'] for r in runs) if all(r.get('cost') is not None for r in runs) else None)
+                cost=sum(r['cost'] for r in runs) if all(r.get('cost') is not None for r in runs) else None,
+                **preparation_result)
         except Exception as error:
             error=error if isinstance(error,Problem) else Problem('INTERNAL_ERROR','任务处理失败，已有内容保留')
+            if self.store.get_record(pid,tid,'user_task').get('request_budget'):
+                calls=self.store.get_record(pid,tid,'user_task')['calls']
             self.store.update_record(pid,tid,'user_task',status='cancelled' if error.code=='CANCELLED' else 'paused_budget' if error.code=='BUDGET_EXHAUSTED' else 'failed',error=error.code,message=error.message,completed=now(),calls=calls)
 
     def cancel(self,pid,tid):

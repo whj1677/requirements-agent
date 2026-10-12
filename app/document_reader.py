@@ -6,6 +6,7 @@ from .core import brief_hash
 from .requirements import delivery_items
 
 PRESENTATION_VERSION = 'document-reading-4'
+_EMPTY_BEHAVIOR = {'未提及异常分支'}
 
 _INTERNAL_SECTIONS = {
     '历史分析提示（非当前事实）',
@@ -84,7 +85,7 @@ def reading_structure(content, items, source_snapshot=(), *, show_requirement_be
                     from .product_flow import BEHAVIOR
                     for key, label in BEHAVIOR.items():
                         value = item.get('behavior', {}).get(key)
-                        if value:
+                        if value and value.strip().rstrip('。') not in _EMPTY_BEHAVIOR:
                             nodes.append(heading(node_id+'-'+key, label, level+2, node_id))
                             nodes.append(dict(kind='paragraph', text=value, block_kind='behavior'))
         section['reading_nodes'] = nodes
@@ -102,9 +103,13 @@ def filename(artifact):
     return f'{name or "未命名需求"}_{artifact["content"]["document_type"].upper()}_v{artifact.get("document_version",artifact["draft_revision"])}_{artifact["id"]}'
 
 
-def reader_document(artifact):
+def reader_document(artifact, *, include_locations=False):
     """Return product content only; retain canonical audit evidence in the project."""
     content = copy.deepcopy(artifact['content'])
+    if include_locations:
+        for section in content.get('sections',[]):
+            for index,block in enumerate(section.get('blocks',[])):
+                block['source_location']=f"{artifact['id']}.{section['section_id']}.blocks[{index}]"
     v4_mrd = (artifact.get('assembly_version') == 'prd-plan-4'
               and content['document_type'] == 'mrd')
     original_sections = list(content.get('sections', []))
@@ -151,7 +156,9 @@ def reader_document(artifact):
                         or item.get('applies_to') != 'to_be'):
                     continue
                 line = item.get('title', '') + '\n' + item.get('statement', '')
-                business.setdefault(kind, []).append(dict(kind='narrative', ref_ids=[], text=line))
+                promoted=dict(kind='narrative', ref_ids=[], text=line)
+                if include_locations:promoted['source_location']=block['source_location']
+                business.setdefault(kind, []).append(promoted)
             for kind, product_blocks in business.items():
                 product_title = _PRODUCT_SECTION_TITLES[kind]
                 product_section = next((candidate for candidate in original_sections
@@ -187,7 +194,9 @@ def reader_document(artifact):
                 seen_questions.add(q['id'])
                 state='本期范围外，仍未决定' if q.get('out_of_scope_reason') else '本期未决'
                 text='待决事项：'+q['question']+'\n影响：'+(q.get('why') or '尚未明确')+'\n状态：'+state
-                blocks.append(dict(kind='open_question',ref_ids=[],text=text))
+                visible=dict(kind='open_question',ref_ids=[],text=text)
+                if include_locations:visible['source_location']=block['source_location']
+                blocks.append(visible)
             if blocks:
                 sections.append(dict(section, title='未决产品事项', blocks=blocks))
             continue
@@ -201,7 +210,9 @@ def reader_document(artifact):
                 text = '\n'.join(f'{r}｜{items[r]["title"]} · v{items[r].get("content_version",1)}\n{items[r]["statement"]}' if r in items else r+'：历史条款原文未保存，无法还原。' for r in refs)
                 if item and item['kind']=='requirement' and not v4_mrd:
                     from .product_flow import BEHAVIOR
-                    text += ''.join('\n'+label+'：'+item['behavior'][key] for key,label in BEHAVIOR.items() if item.get('behavior',{}).get(key))
+                    text += ''.join('\n'+label+'：'+item['behavior'][key] for key,label in BEHAVIOR.items()
+                                    if item.get('behavior',{}).get(key)
+                                    and item['behavior'][key].strip().rstrip('。') not in _EMPTY_BEHAVIOR)
             elif block['kind']=='explanation':
                 # The compiler validated these exact snapshot references. The
                 # reader shows product prose; claim IDs remain in the artifact.
@@ -303,6 +314,12 @@ def export_readiness(p, kind):
         issues.append(dict(code='NOT_FOUND', message='请先生成文档。'))
     elif artifact['brief_hash'] != brief_hash(p) or kind in p.get('stale_document_kinds',[]):
         issues.append(dict(code='STALE_REVISION', message='需求或页面已更新，请重新生成文档后下载。'))
+    from .semantic_quality import current_counting_checks, current_document_checks
+    semantic=current_counting_checks(p)+[check for check in current_document_checks(p)
+                                       if check['document_type']==kind]
+    for check in semantic:
+        issues.append(dict(code='SEMANTIC_BLOCKED',check_id=check['check_id'],location=check['location'],
+            message='当前内容存在可复现语义风险，请先核对并修订：'+check['check_id']))
     problems = []
     for q in p['questions']:
         if q.get('superseded_by'):

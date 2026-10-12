@@ -140,9 +140,13 @@ def _bounded_process(executable: Path, wire: bytes) -> tuple[int, bytes]:
     finally:
         for worker in workers:
             worker.join(timeout=1)
+    # Buffered output can establish overflow while timeout cleanup drains pipes.
+    # This known bound violation remains invalid, even at the timeout boundary.
+    if overflow.is_set():
+        raise LicenseError("LICENSE_BRIDGE_INVALID")
     if timed_out:
         raise LicenseError("LICENSE_BRIDGE_TIMEOUT")
-    if overflow.is_set() or any(worker.is_alive() for worker in workers):
+    if any(worker.is_alive() for worker in workers):
         raise LicenseError("LICENSE_BRIDGE_INVALID")
     return process.returncode, bytes(output)
 

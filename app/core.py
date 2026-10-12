@@ -31,8 +31,10 @@ def ident(prefix):
 
 
 class Problem(Exception):
-    def __init__(self, code, message, status=400):
+    def __init__(self, code, message, status=400, *, model_repair_allowed=True):
         self.code, self.message, self.status = code, message, status
+        # Internal retry eligibility; HTTP code/message/status contracts stay intact.
+        self.model_repair_allowed = model_repair_allowed
         super().__init__(message)
 
 
@@ -45,10 +47,37 @@ def read_json(path):
     return json.loads(Path(path).read_text('utf-8'))
 
 
+class DuplicateJsonMember(ValueError):
+    pass
+
+
+def unique_json_object(pairs):
+    value = {}
+    for key, item in pairs:
+        if key in value:
+            raise DuplicateJsonMember('duplicate JSON member: ' + key)
+        value[key] = item
+    return value
+
+
+def strict_model_json(content):
+    """Model JSON must preserve every member; never collapse duplicate keys."""
+    return json.loads(content, object_pairs_hook=unique_json_object,
+                      parse_constant=lambda token: (_ for _ in ()).throw(ValueError(token)))
+
+
 def brief_hash(p):
     content={k:p[k] for k in ('items','questions','options')}
+    # GET adds these two derived display flags to each question. They are not
+    # business inputs; hash the same canonical content without mutating either
+    # the stored snapshot or its response projection. Keep every other field.
+    question_view_fields = {'decision_review_proposal_current', 'decision_coverage_complete'}
+    content['questions'] = [{key: value for key, value in question.items() if key not in question_view_fields}
+                            for question in p['questions']]
     # Old snapshots retain their original hash; new scope statements are real inputs.
     if 'product_context' in p:content['product_context']=p['product_context']
+    for key in ('scope_profile','context_field_states'):
+        if key in p:content[key]=p[key]
     from .business_context import selection_identity
     business = selection_identity(p)
     if business:
@@ -58,9 +87,12 @@ def brief_hash(p):
 
 def execution_hash(p):
     """Input identity for paid work, including sources and derived artifacts."""
-    return digest({k:p.get(k) for k in ('revision','items','questions','options','sources',
+    content={k:p.get(k) for k in ('revision','items','questions','options','sources',
         'documents','ui','messages','reference_mode','mode','product_context','stage_checks',
-        'sketch_review','delivery_scope','requirement_relations')})
+        'sketch_review','delivery_scope','requirement_relations')}
+    for key in ('scope_profile','context_field_states','workspace_draft','workflow_mode','domain_context','decision_answers','current_task_source_id'):
+        if key in p:content[key]=p[key]
+    return digest(content)
 
 
 def hashes(p):

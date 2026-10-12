@@ -1,0 +1,12 @@
+.document-discussion{margin:18px 0;padding:20px;border:1px solid #bdd8ce;border-radius:12px;background:#fff;scroll-margin-top:20px}
+.document-discussion-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:20px}
+.document-discussion-heading h3{margin:0 0 8px}.document-discussion-heading p{margin:0;color:#566d68;line-height:1.6}
+.document-discussion-heading>span{flex-shrink:0;color:#166b56;background:#eaf5ef;border-radius:20px;padding:7px 12px}
+.document-discussion-list{display:grid;gap:8px;margin-top:16px;max-height:260px;overflow:auto;overscroll-behavior:contain}
+.document-discussion-list button{text-align:left;display:flex;justify-content:space-between;align-items:center;gap:20px;line-height:1.6}
+.document-discussion-list button[aria-pressed=true]{border-color:#1a765f;background:#eef8f3}
+.document-discussion-list small{white-space:nowrap;color:#557b6b}.document-discussion-answer{margin-top:18px;padding-top:12px;border-top:1px solid #e0ebe5}
+.document-discussion .answer-confirmation{max-width:none}.document-discussion-notice{padding:12px;background:#eaf5ef;border-radius:7px;color:#246d56}
+.document-discussion-candidates{margin-top:16px}.document-discussion-candidates article{padding:12px 0;border-bottom:1px solid #e5ede8}
+.document-discussion-footer{display:flex;flex-wrap:wrap;align-items:center;gap:12px;margin-top:18px}.document-discussion-footer>span{color:#647b72;font-size:14px}
+@media(max-width:720px){.document-discussion{padding:14px}.document-discussion-heading{flex-direction:column;gap:10px}.document-discussion-list button{align-items:flex-start;gap:8px;flex-direction:column}}

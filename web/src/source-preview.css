@@ -32,6 +32,21 @@
 .preview-notes .notice, .preview-notes .error { margin: 0 0 14px; font-size: 13px; line-height: 1.7; }
 .preview-reading-hint { margin-top: 0; margin-bottom: 14px; color: #5d6d63; font-size: 12px; line-height: 1.8; }
 .preview-paper { padding: 30px 44px 40px; background: white; border: 1px solid #e1e8e3; border-radius: 10px; box-shadow: 0 3px 12px #1d3c2605; }
+.preview-paper-excel { max-width: 1040px; padding: 20px; }
+.excel-preview-disclosure, .excel-preview-fallback > p { margin: 0 0 14px; color: #5d6d63; font-size: 12px; line-height: 1.7; }
+.excel-preview-sheet { margin: 0 0 22px; }
+.excel-preview-sheet h3, .excel-preview-fallback h3 { margin: 0 0 8px; color: #35483c; font-size: 14px; }
+.excel-preview-table-scroll { max-width: 100%; overflow: auto; overscroll-behavior: contain; border: 1px solid #dce5df; border-radius: 7px; background: white; }
+.excel-preview-table-scroll:focus-visible { outline: 2px solid #397653; outline-offset: 2px; }
+.excel-preview-table-scroll table { width: max-content; min-width: 100%; border-collapse: separate; border-spacing: 0; font-size: 13px; }
+.excel-preview-table-scroll th, .excel-preview-table-scroll td { min-width: 76px; max-width: 280px; padding: 8px 10px; border-right: 1px solid #e1e8e3; border-bottom: 1px solid #e1e8e3; text-align: left; vertical-align: top; white-space: pre-wrap; overflow-wrap: anywhere; }
+.excel-preview-table-scroll thead th, .excel-preview-table-scroll tbody th { min-width: 42px; background: #f1f6f2; color: #52665a; font-size: 11px; font-weight: 650; }
+.excel-preview-table-scroll .excel-cell-highlight { padding-block: 12px; background: #fff2cb; outline: 2px solid #c99327; outline-offset: -2px; scroll-margin-block: 24px; }
+.excel-preview-table-scroll tr:last-child > * { border-bottom: 0; }
+.excel-preview-table-scroll tr > *:last-child { border-right: 0; }
+.excel-preview-fallback { margin-top: 18px; }
+.excel-preview-fallback .material-excerpt { padding: 10px 0; border-top: 1px solid #e1e8e3; }
+.excel-preview-fallback .material-excerpt small { display: block; margin-bottom: 4px; color: #718075; }
 .source-preview .material-excerpt { padding: 0; scroll-margin-block: 20px; }
 .source-preview .material-excerpt + .material-excerpt { margin-top: 16px; }
 .source-preview .material-excerpt pre { margin: 0; font-family: inherit; font-size: 15px; line-height: 1.95; white-space: pre-wrap; overflow-wrap: anywhere; color: #283b30; }
@@ -73,6 +88,7 @@
   .preview-download { width: 100%; }
   .preview-reading-area { padding: 14px 10px 20px; scrollbar-gutter: auto; }
   .preview-paper { padding: 20px 18px 26px; }
+  .preview-paper-excel { padding: 14px; }
   .source-preview .material-excerpt pre { font-size: 14px; line-height: 1.9; }
   .source-preview .material-excerpt.source-highlight { margin-inline: -7px; padding-inline: 7px; }
   .preview-image-card { padding: 12px; }
