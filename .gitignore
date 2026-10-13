@@ -9,6 +9,7 @@ __pycache__/
 !.env.example
 evidence/
 /.verify-connected-build/
+/.verify-laptop-build/
 /web/.verify-detail-prd/
 /work/detail-prd-20261013/
 /work/detail-prd-agent-20261013/

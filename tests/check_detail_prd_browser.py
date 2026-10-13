@@ -140,6 +140,7 @@ async def run(args):
                     work, table = await open_refinement()
                     editor = table.locator('[data-detail-requirement="REQ-0001"]')
                     field_card = editor.locator('[data-cell-key="requirement-REQ-0001-detail_contract.fields.F1"]')
+                    await editor.locator('[data-detail-section="fields"] > summary').click()
                     await field_card.locator(':scope > summary').click()
                     meaning = editor.get_by_role('textbox', name=TITLE+' 告警级别 业务含义', exact=True)
                     await expect(meaning).to_have_value('AI 合成建议：本次派单使用的告警等级')
@@ -155,6 +156,7 @@ async def run(args):
                     work, table = await open_refinement()
                     editor = table.locator('[data-detail-requirement="REQ-0001"]')
                     field_card = editor.locator('[data-cell-key="requirement-REQ-0001-detail_contract.fields.F1"]')
+                    await editor.locator('[data-detail-section="fields"] > summary').click()
                     await field_card.locator(':scope > summary').click()
                     meaning = editor.get_by_role('textbox', name=TITLE+' 告警级别 业务含义', exact=True)
                     await expect(meaning).to_have_value('人工核对：上报等级用于派单前查看，不自动决定优先级。')
@@ -170,6 +172,7 @@ async def run(args):
                     await page.screenshot(path=str(output/'02-missing-enum-blocked.png'))
                     await enum.fill('一级\n二级')
                     edge = editor.locator('[data-cell-key="requirement-REQ-0001-detail_contract.flow.edges.E3"]')
+                    await editor.locator('[data-detail-section="flow"] > summary').click()
                     await edge.locator(':scope > summary').click()
                     condition = edge.get_by_role('textbox', name=TITLE+' E3 条件', exact=True)
                     await condition.fill('')
@@ -192,6 +195,8 @@ async def run(args):
                     await conflict.get_by_role('button',name='保留我的修改',exact=True).click()
                     await work.get_by_role('button',name='保留我的修改，继续核对',exact=True).click()
                     field_card=editor.locator('[data-cell-key="requirement-REQ-0001-detail_contract.fields.F1"]')
+                    if await editor.locator('[data-detail-section="fields"]').get_attribute('open') is None:
+                        await editor.locator('[data-detail-section="fields"] > summary').click()
                     if await field_card.get_attribute('open') is None:
                         await field_card.locator(':scope > summary').click()
                     await expect(editor.get_by_role('textbox',name=TITLE+' 告警级别 取值范围与校验',exact=True)).to_have_value('人工范围：仅一级、二级。')

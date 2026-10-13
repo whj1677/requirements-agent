@@ -62,7 +62,7 @@
 .connected-details[open] .blocker-list{overscroll-behavior-y:auto}
 
 /* Keep the refinement table usable in short desktop windows. */
-@media (min-width:1001px) and (max-height:780px){
+@media (min-width:1001px) and (max-height:900px){
   .project-workspace:has(>.connected-workspace[data-step="refine"])>.project-bar{padding:8px 18px}
   .connected-workspace[data-step="refine"]:has(.refinement-sheet){padding-top:8px;padding-bottom:8px}
   .connected-workspace[data-step="refine"]>.connected-steps,

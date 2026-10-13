@@ -2,7 +2,7 @@
 .project-workspace:has(.connected-workspace[data-step="refine"])>.connected-details{display:none}.sheet-group-reference{font-size:13px;color:#5e746a;background:#f3f6f4;padding:8px;border-radius:6px}
 
 /* Reduce surrounding chrome, while keeping one table scroll area and visible feedback. */
-@media (min-width:1001px) and (max-height:780px){
+@media (min-width:1001px) and (max-height:900px){
   .refinement-sheet-heading{gap:12px;margin:0 0 6px}
   .refinement-sheet-heading h2{font-size:20px;line-height:1.3;margin-bottom:2px}
   .refinement-sheet-heading p{font-size:13px;line-height:1.4}
@@ -31,3 +31,40 @@
 .sheet-group:focus{outline:2px solid var(--accent,#176c52);outline-offset:-2px}
 .sheet-navigation button:focus-visible{outline:2px solid var(--accent,#176c52);outline-offset:2px}
 .sheet-navigation button:disabled{opacity:.5;cursor:default}
+
+/* Laptop review: retain input sizes, reclaim space around the editable content. */
+.sheet-view-actions{display:flex;align-items:center;gap:10px;flex:none}
+.sheet-view-actions>span{background:#e6f1ec;padding:5px 10px;border-radius:18px;font-size:13px;color:#225d49}
+.sheet-view-actions button{white-space:nowrap}
+.sheet-requirement-jump{display:flex;align-items:center;gap:6px;margin-left:6px;min-width:0;font-size:13px}
+.refinement-sheet .sheet-requirement-jump select{width:clamp(145px,16vw,250px);min-width:0;min-height:32px;padding:4px 8px;font-size:13px}
+.sheet-preparation-notice{border:1px solid #dce5e0;border-radius:6px;padding:6px 10px;background:#f8fbf9;flex:none}
+.sheet-preparation-notice>summary{cursor:pointer}
+.sheet-preparation-notice>summary>span{margin-left:12px;font-size:12px;color:#536d5d}
+.sheet-preparation-notice>div{max-height:110px;overflow:auto;padding:4px 0;overscroll-behavior:contain}
+.sheet-preparation-notice p{margin:5px 0;line-height:1.5}
+.refinement-sheet .sheet-banner-error{max-height:120px;overflow:auto;flex:none;overscroll-behavior:contain}
+.refinement-sheet .sheet-toolbar>span{flex:1;min-width:0}
+.refinement-sheet .sheet-toolbar>button{flex:none}
+.refinement-sheet .answer-implementation-context{position:static}
+.refinement-sheet .sheet-requirement-jump select:focus-visible,.sheet-preparation-notice>summary:focus-visible{outline:2px solid #31876b;outline-offset:2px}
+@media(min-width:1001px) and (max-height:900px){
+ .connected-workspace[data-step="refine"]:has(.refinement-sheet){padding-left:18px;padding-right:18px}
+ .connected-workspace[data-step="refine"]>.connected-status{display:flex;align-items:center;gap:8px;margin:0 0 6px;flex:none;font-size:12px;line-height:1.4}
+ .connected-workspace[data-step="refine"]>.connected-status button{min-height:32px;padding:5px 9px}
+ .refinement-sheet-heading{align-items:center}
+ .sheet-navigation{padding:5px 0;margin-bottom:5px}
+ .sheet-view-actions{gap:7px}
+ .sheet-view-actions>span{font-size:12px}
+}
+/* Focus changes visibility only; the table and unsaved form state stay mounted. */
+.layout:has(.project-workspace:not([hidden]) .refinement-sheet[data-focus-mode="true"]){grid-template-columns:minmax(0,1fr)}
+.layout:has(.project-workspace:not([hidden]) .refinement-sheet[data-focus-mode="true"])>.sidebar{display:none}
+.project-workspace:has(.refinement-sheet[data-focus-mode="true"])>.project-bar{display:none}
+.connected-workspace:has(.refinement-sheet[data-focus-mode="true"])>.connected-steps,
+.connected-workspace:has(.refinement-sheet[data-focus-mode="true"])>.connected-status{display:none}
+.connected-workspace:has(.refinement-sheet[data-focus-mode="true"]){padding:12px 20px;min-height:0}
+.connected-workspace:has(.refinement-sheet[data-focus-mode="true"])>.refinement-sheet{max-width:none}
+@media(max-width:1100px){.sheet-view-actions{align-items:flex-end;flex-direction:column;gap:4px}.sheet-requirement-jump{margin-left:0}.sheet-pending-controls{margin-left:0}}
+
+@media(min-width:1101px){.refinement-sheet-heading>div:first-child{min-width:0;flex:1}.sheet-view-actions{flex-wrap:wrap;justify-content:flex-end;max-width:58%}.sheet-view-actions>span{flex-basis:100%;text-align:right;background:none;padding:0}}

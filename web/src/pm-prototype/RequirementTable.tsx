@@ -68,7 +68,7 @@ export function DraftPreparationNotice({missing,preparation}:{missing:{id:string
   const coverage=preparation?.draft_coverage;
   const missingFromResult=!coverage||missing.some(row=>coverage.missing_acceptance_ids.includes(row.id));
   const attempted=missingFromResult&&(preparation?.status==='ready_with_limits'||preparation?.status==='failed');
-  return <div className="sheet-notice" role="status"><strong>{missing.length} 条需求待补充验收内容</strong><p>{attempted?'本次已尝试起草，部分验收仍未形成可用建议；已有草稿和人工修改已保留。':missingFromResult?'这些内容还没有形成可核对的验收草稿，可以用上方“AI 补充建议”一次起草整表。':'这些单元格当前为空，你的本地修改已保留；请补充内容或重新核对已有建议。'}</p>{preparation?.reason&&missingFromResult&&<p>{preparation.reason}</p>}<p>待补充：{missing.slice(0,3).map(row=>row.title).join('、')}{missing.length>3?'等 '+missing.length+' 条':''}。可让 AI 一次补充后再核对，也可以自行填写；系统不会自动重复调用。</p></div>;
+  return <details className="sheet-notice sheet-preparation-notice"><summary><strong>{missing.length} 条需求待补充验收内容</strong><span>查看说明</span></summary><div><p>{attempted?'本次已尝试起草，部分验收仍未形成可用建议；已有草稿和人工修改已保留。':missingFromResult?'这些内容还没有形成可核对的验收草稿，可以用上方“AI 补充建议”一次起草整表。':'这些单元格当前为空，你的本地修改已保留；请补充内容或重新核对已有建议。'}</p>{preparation?.reason&&missingFromResult&&<p>{preparation.reason}</p>}<p>待补充：{missing.slice(0,3).map(row=>row.title).join('、')}{missing.length>3?'等 '+missing.length+' 条':''}。可让 AI 一次补充后再核对，也可以自行填写；系统不会自动重复调用。</p></div></details>;
 }
 
 export function LinkedClauseEditor({item,row,disabled,onChange}:{item:Obj;row:LinkedClause;disabled:boolean;onChange:(patch:Partial<LinkedClause>)=>void}){
@@ -86,6 +86,7 @@ export function RequirementTable(props:Props){
   const [working,setWorking]=useState(false),[loadError,setLoadError]=useState(''),[error,setError]=useState(''),[notice,setNotice]=useState(''),[issues,setIssues]=useState<Issue[]>([]),[dirty,setDirty]=useState(false);
   const [stale,setStale]=useState(false),[reload,setReload]=useState(0),[archived,setArchived]=useState(()=>!!sessionStorage.getItem(key+'-previous'));
   const [focusedAnswer,setFocusedAnswer]=useState(''),[expandedBehavior,setExpandedBehavior]=useState<Record<string,boolean>>({}),[expandedDetail,setExpandedDetail]=useState<Record<string,boolean>>({});
+  const [focusMode,setFocusMode]=useState(false),[jumpRequirement,setJumpRequirement]=useState('');
   const lock=useRef(false),root=useRef<HTMLElement>(null),current=useRef<Sheet|null>(null),baseline=useRef<Sheet|null>(null),intent=useRef({signature:'',key:''}),navigate=useNavigation();
   current.current=sheet;
   useEffect(()=>{let live=true;void api<PreparationStatus>('/projects/'+project.id+'/refinement-preparation').then(value=>{if(live)setPreparationInfo(value);}).catch(()=>{if(live)setPreparationInfo(null);});return()=>{live=false;};},[project.id,project.revision,reload]);
@@ -166,19 +167,19 @@ export function RequirementTable(props:Props){
   const updateClause=(id:string,patch:Partial<LinkedClause>)=>replace({...sheet,linked_clauses:{...sheet.linked_clauses,[id]:{...clauseRows.find(row=>row.item_id===id)!,...patch}}});
   const missingAcceptance=reqs.filter(item=>sheet.scope.includes(item.id)&&!sheet.rows[item.id]?.acceptance_items.some(ac=>ac.statement.trim()));
   const pendingAnswers=pendingSheetAnswers(project,sheet);
-  return <section ref={root} className="refinement-sheet" aria-label="表格完善需求" onFocusCapture={event=>{
+  return <section ref={root} className="refinement-sheet" data-focus-mode={focusMode} aria-label="表格完善需求" onFocusCapture={event=>{
       const key=(event.target as HTMLElement).closest('[data-cell-key^="question-"]')?.getAttribute('data-cell-key');
       if(key)setFocusedAnswer(key.slice('question-'.length));
     }}>
-    <header className="refinement-sheet-heading"><div><h2>完善需求</h2><p>核对表格与答案对应的原文位置。可以先保存；回答已落实后进入交付。</p></div><span>{sheet.scope.length} 条本期需求 · {missing.length?'还有 '+missing.length+' 项待补充':pendingAnswers.length?pendingAnswers.length+' 项回答待落实':'必填信息已填入'}</span></header>
+    <header className="refinement-sheet-heading"><div><h2>完善需求</h2><p>核对表格与答案对应的原文位置。可以先保存；回答已落实后进入交付。</p></div><div className="sheet-view-actions"><span>{sheet.scope.length} 条本期需求 · {missing.length?'还有 '+missing.length+' 项待补充':pendingAnswers.length?pendingAnswers.length+' 项回答待落实':'必填信息已填入'}</span><button type="button" className="primary" title="AI 可一次起草需求、验收和答案对应的正文；你核对后确认。" disabled={disabled} onClick={()=>void saveDraft().then(()=>navigate(()=>props.onSuggest(aiInstructions(pendingAnswers.length?'请将已填写答案起草到直接关联需求的正文、业务说明和必要验收；移除已解决的待明确占位，不替用户新增决定。':'',sheet,baseline.current))))}>AI 补充建议</button><button type="button" disabled={disabled} onClick={()=>void saveDraft().then(()=>navigate(props.onCreate))}>补充需求</button><button type="button" aria-pressed={focusMode} onClick={()=>setFocusMode(value=>!value)}>{focusMode?'退出专注核对':'专注核对'}</button></div></header>
     <nav className="sheet-navigation" aria-label="需求表定位">
       <button type="button" onClick={()=>locateSection('context')}>项目摘要</button>
       <button type="button" onClick={()=>locateSection('requirements')}>需求与验收</button>
       <button type="button" className="sheet-pending-jump" onClick={()=>pendingAnswers.length?locatePending():locateSection('answers')}>待落实回答{pendingAnswers.length?' · '+pendingAnswers.length:''}</button>
       {!!clauseItems.length&&<button type="button" onClick={()=>locateSection('clauses')}>关联规则</button>}
+      {!!reqs.length&&<label className="sheet-requirement-jump"><span>定位需求</span><select aria-label="定位到需求" value={jumpRequirement} onChange={event=>{const id=event.target.value;setJumpRequirement(id);if(id)locate({kind:'requirement',item_id:id,message:''});}}><option value="">选择需求…</option>{reqs.map((item,index)=><option key={item.id} value={item.id}>{index+1}. {item.title}{sheet.scope.includes(item.id)?'':'（本期不包含）'}</option>)}</select></label>}
       <span className="sheet-pending-controls"><button type="button" disabled={!pendingAnswers.length} onClick={()=>locatePending(-1)}>上一项待落实</button><button type="button" disabled={!pendingAnswers.length} onClick={()=>locatePending(1)}>下一项待落实</button></span>
     </nav>
-    <div className="sheet-toolbar"><span>AI 可一次起草需求、验收和答案对应的正文；你核对后确认。</span><button type="button" className="primary" disabled={disabled} onClick={()=>void saveDraft().then(()=>navigate(()=>props.onSuggest(aiInstructions(pendingAnswers.length?'请将已填写答案起草到直接关联需求的正文、业务说明和必要验收；移除已解决的待明确占位，不替用户新增决定。':'',sheet,baseline.current))))}>AI 补充建议</button><button type="button" disabled={disabled} onClick={()=>void saveDraft().then(()=>navigate(props.onCreate))}>补充需求</button></div>
     <DraftPreparationNotice missing={missingAcceptance.map(item=>({id:item.id,title:item.title}))} preparation={preparationInfo}/>
     {(error||loadError)&&<div role="alert" className="sheet-banner-error">{error||loadError}{!!issues.length&&<button type="button" onClick={()=>locate(issues[0])}>定位第一处</button>}{loadError&&<button type="button" onClick={()=>setReload(x=>x+1)}>重新读取</button>}</div>}
     {stale&&<div className="sheet-banner-error">{(sheet.merge_conflicts?.length?sheet.merge_conflicts:['项目有新内容，本地填写已保留。']).map((message,n)=><p key={n}>{message}</p>)}<button type="button" disabled={disabled} onClick={loadLatest}>保留我的修改，继续核对</button></div>}
