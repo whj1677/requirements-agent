@@ -65,6 +65,6 @@
 .connected-workspace:has(.refinement-sheet[data-focus-mode="true"])>.connected-status{display:none}
 .connected-workspace:has(.refinement-sheet[data-focus-mode="true"]){padding:12px 20px;min-height:0}
 .connected-workspace:has(.refinement-sheet[data-focus-mode="true"])>.refinement-sheet{max-width:none}
-@media(max-width:1100px){.sheet-view-actions{align-items:flex-end;flex-direction:column;gap:4px}.sheet-requirement-jump{margin-left:0}.sheet-pending-controls{margin-left:0}}
+@media(max-width:1000px){.sheet-view-actions{align-items:flex-end;flex-direction:column;gap:4px}.sheet-requirement-jump{margin-left:0}.sheet-pending-controls{margin-left:0}}
 
-@media(min-width:1101px){.refinement-sheet-heading>div:first-child{min-width:0;flex:1}.sheet-view-actions{flex-wrap:wrap;justify-content:flex-end;max-width:58%}.sheet-view-actions>span{flex-basis:100%;text-align:right;background:none;padding:0}}
+@media(min-width:1001px){.refinement-sheet-heading>div:first-child{min-width:0;flex:1}.sheet-view-actions{flex-wrap:wrap;justify-content:flex-end;max-width:58%}.sheet-view-actions>span{flex-basis:100%;text-align:right;background:none;padding:0}}

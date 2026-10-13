@@ -21,7 +21,7 @@ type Props = {
   onReturnAvailabilityChange?:(state:RefinementReturnState)=>void;
   focus?:{itemId?:string;questionId?:string;field?:string;scope?:boolean;nonce:number};
 };
-type Issue = {kind:string;field?:string;path?:string;item_id?:string;question_id?:string;message:string};
+type Issue = {kind:string;field?:string;path?:string;item_id?:string;question_id?:string;message:string;client?:boolean};
 const changeLabels={unspecified:'请选择本次改动',new:'新增功能',modified:'修改已有功能',preserved:'保持已有功能'};
 const fieldHelp:Record<string,string>={actor:'例如操作人员或系统角色。资料已说明时，直接核对即可。',entry:'说明从哪里进入，以及操作前需要什么状态；不相关可留空。',flow:'按实际操作顺序说明关键步骤；不用写代码实现。',data:'说明要查看、填写或处理的数据。未涉及可留空。',permissions:'说明谁可以查看或操作；不要凭行业惯例假定权限。',result:'说明操作完成后，用户会看到什么或数据如何变化。',exceptions:'说明已知的失败、空数据或边界情况；没有依据可留空。'};
 function allowedStates(key:string,profile:ScopeProfile){
@@ -83,10 +83,10 @@ export function RequirementTable(props:Props){
   const {project}=props,key=project.id+'-refinement-sheet';
   const [sheet,setSheet]=useState<Sheet|null>(null),[states,setStates]=useState<Obj[]>([]),[loaded,setLoaded]=useState(-1);
   const [preparationInfo,setPreparationInfo]=useState<PreparationStatus|null>(null);
-  const [working,setWorking]=useState(false),[loadError,setLoadError]=useState(''),[error,setError]=useState(''),[notice,setNotice]=useState(''),[issues,setIssues]=useState<Issue[]>([]),[dirty,setDirty]=useState(false);
+  const [working,setWorking]=useState(false),[loadError,setLoadError]=useState(''),[error,setError]=useState(''),[notice,setNotice]=useState(''),[reportedIssues,setIssues]=useState<Issue[]>([]),[dirty,setDirty]=useState(false);
   const [stale,setStale]=useState(false),[reload,setReload]=useState(0),[archived,setArchived]=useState(()=>!!sessionStorage.getItem(key+'-previous'));
   const [focusedAnswer,setFocusedAnswer]=useState(''),[expandedBehavior,setExpandedBehavior]=useState<Record<string,boolean>>({}),[expandedDetail,setExpandedDetail]=useState<Record<string,boolean>>({});
-  const [focusMode,setFocusMode]=useState(false),[jumpRequirement,setJumpRequirement]=useState('');
+  const [focusMode,setFocusMode]=useState(false);
   const lock=useRef(false),root=useRef<HTMLElement>(null),current=useRef<Sheet|null>(null),baseline=useRef<Sheet|null>(null),intent=useRef({signature:'',key:''}),navigate=useNavigation();
   current.current=sheet;
   useEffect(()=>{let live=true;void api<PreparationStatus>('/projects/'+project.id+'/refinement-preparation').then(value=>{if(live)setPreparationInfo(value);}).catch(()=>{if(live)setPreparationInfo(null);});return()=>{live=false;};},[project.id,project.revision,reload]);
@@ -113,7 +113,10 @@ export function RequirementTable(props:Props){
   const markSaved=useDirty(key,dirty,'需求确认表',saveDraft,discard);
   const canReturn=canReturnToDelivery(project,sheet,states,loaded,stale)&&!loadError&&!!sheet&&!pendingSheetAnswers(project,sheet).length;
   const pendingCount=sheet?pendingSheetAnswers(project,sheet).length:0;
-  const missingCount=sheet?requiredIssues(sheet,sheetQuestions(project).filter(q=>inScopeQuestion(project,q,sheet.scope)),project).length:0;
+  const currentMissing=sheet?requiredIssues(sheet,sheetQuestions(project).filter(q=>inScopeQuestion(project,q,sheet.scope)),project):[];
+  const missingCount=currentMissing.length;
+  // Local required-field errors follow the current draft; server issues still require rechecking.
+  const issues=reportedIssues.filter(issue=>!issue.client||currentMissing.some(current=>issueKey(current)===issueKey(issue)&&current.message===issue.message));
   const actionCopy=refinementActionCopy(canReturn,pendingCount,missingCount);
   useLayoutEffect(()=>{props.onReturnAvailabilityChange?.({projectId:project.id,revision:project.revision,canReturn,pendingAnswerCount:pendingCount,missingCount});return()=>props.onReturnAvailabilityChange?.({projectId:project.id,revision:project.revision,canReturn:false});},[project.id,project.revision,canReturn,pendingCount,missingCount,props.onReturnAvailabilityChange]);
   function locate(issue:Issue){
@@ -129,7 +132,7 @@ export function RequirementTable(props:Props){
   async function confirm(){
     if(lock.current||!sheet||props.busy||loaded!==project.revision)return;
     if(canReturn){props.onStageConfirmed();return;}
-    const missing=requiredIssues(sheet,sheetQuestions(project).filter(q=>inScopeQuestion(project,q,sheet.scope)),project);setIssues(missing);setError('');
+    const missing=requiredIssues(sheet,sheetQuestions(project).filter(q=>inScopeQuestion(project,q,sheet.scope)),project);setIssues(missing.map(issue=>({...issue,client:true})));setError('');
     if(missing.length){setError('还有 '+missing.length+' 项必填信息未完成，请处理表格中标红的内容。');locate(missing[0]);return;}
     if(stale){setError('项目版本已变化，请先载入最新内容并核对；当前草稿仍保留。');return;}
     const payload={expected_revision:sheet.revision,review_confirmed:true,
@@ -177,7 +180,7 @@ export function RequirementTable(props:Props){
       <button type="button" onClick={()=>locateSection('requirements')}>需求与验收</button>
       <button type="button" className="sheet-pending-jump" onClick={()=>pendingAnswers.length?locatePending():locateSection('answers')}>待落实回答{pendingAnswers.length?' · '+pendingAnswers.length:''}</button>
       {!!clauseItems.length&&<button type="button" onClick={()=>locateSection('clauses')}>关联规则</button>}
-      {!!reqs.length&&<label className="sheet-requirement-jump"><span>定位需求</span><select aria-label="定位到需求" value={jumpRequirement} onChange={event=>{const id=event.target.value;setJumpRequirement(id);if(id)locate({kind:'requirement',item_id:id,message:''});}}><option value="">选择需求…</option>{reqs.map((item,index)=><option key={item.id} value={item.id}>{index+1}. {item.title}{sheet.scope.includes(item.id)?'':'（本期不包含）'}</option>)}</select></label>}
+      {!!reqs.length&&<label className="sheet-requirement-jump"><span>定位需求</span><select aria-label="定位到需求" value="" onChange={event=>{const id=event.target.value;if(id)locate({kind:'requirement',item_id:id,message:''});}}><option value="">选择需求…</option>{reqs.map((item,index)=><option key={item.id} value={item.id}>{index+1}. {item.title}{sheet.scope.includes(item.id)?'':'（本期不包含）'}</option>)}</select></label>}
       <span className="sheet-pending-controls"><button type="button" disabled={!pendingAnswers.length} onClick={()=>locatePending(-1)}>上一项待落实</button><button type="button" disabled={!pendingAnswers.length} onClick={()=>locatePending(1)}>下一项待落实</button></span>
     </nav>
     <DraftPreparationNotice missing={missingAcceptance.map(item=>({id:item.id,title:item.title}))} preparation={preparationInfo}/>

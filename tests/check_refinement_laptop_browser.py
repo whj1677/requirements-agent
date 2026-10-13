@@ -15,7 +15,7 @@ sys.path.insert(0, str(ROOT))
 from tests.check_answer_implementation_browser import enter, run
 from tests.check_detail_prd_browser import seed, TITLE
 
-VIEWPORTS = ((1920, 1080), (1536, 864), (1280, 720), (1280, 640))
+VIEWPORTS = ((1920, 1080), (1536, 864), (1280, 720), (1280, 640), (1093, 614))
 
 
 def laptop_fixture(store):
@@ -71,6 +71,7 @@ async def exercise(page, store, _initial, _chapter, output, report, expect):
     initial = laptop_fixture(store)
     pid = initial['id']
     report.update(fixture='SYNTHETIC_ONLY', project_id=pid)
+    followup_failures = []
     last_note = ''
     for width, height in VIEWPORTS:
         await page.set_viewport_size(dict(width=width, height=height))
@@ -90,6 +91,8 @@ async def exercise(page, store, _initial, _chapter, output, report, expect):
         await statement.fill(last_note)
         input_handle = await statement.element_handle()
         normal = await layout_metrics(page, work, f'{width}x{height}-normal', report)
+        if (width, height) == (1093, 614):
+            assert normal['table']['visibleHeight'] >= 190, 'Laptop toolbar leaves too little room for requirement editing'
         await page.screenshot(path=str(output/f'{width}x{height}-normal.png'))
         await work.get_by_role('button', name='专注核对', exact=True).click()
         await expect(work.get_by_role('button', name='退出专注核对', exact=True)).to_have_attribute('aria-pressed', 'true')
@@ -104,9 +107,10 @@ async def exercise(page, store, _initial, _chapter, output, report, expect):
         await layout_metrics(page, work, f'{width}x{height}-restored', report)
         await work.get_by_role('button', name='保存草稿', exact=True).click()
         assert store.get(pid) == initial, 'View controls or browser draft save changed server data'
-    report['checks'].append('四种有效视口直达第六条需求；普通/专注/退出三态无横向溢出，底部按钮完整可见且命中，记录实际正文高度')
+    report['checks'].append('五种有效视口直达第六条需求；普通/专注/退出三态无横向溢出，底部按钮完整可见且命中；1093×614 普通模式正文至少190px')
     report['checks'].append('专注模式进入和退出均保持同一个输入DOM及精确人工文字；保存草稿不写后端')
 
+    await page.set_viewport_size(dict(width=1280, height=640))
     await page.reload(wait_until='networkidle')
     work, table = await enter(page, initial, expect, homepage=True)
     statement = table.locator('[data-cell-key="requirement-REQ-LAPTOP-6-statement"] textarea')
@@ -114,7 +118,32 @@ async def exercise(page, store, _initial, _chapter, output, report, expect):
     assert store.get(pid) == initial
     report['checks'].append('刷新后仍先进入需求助手，手动打开完善需求恢复已保存的精确本地草稿')
 
-    await work.get_by_role('combobox', name='定位到需求', exact=True).select_option('REQ-0001')
+    jump = work.get_by_role('combobox', name='定位到需求', exact=True)
+    await jump.select_option('REQ-0001')
+    first_statement = table.locator('[data-cell-key="requirement-REQ-0001-statement"] textarea')
+    await expect(first_statement).to_be_focused()
+    first_jump_value = await jump.input_value()
+    await work.get_by_role('button', name='项目摘要', exact=True).click()
+    await expect(table.locator('[data-section="context"]')).to_be_focused()
+    # A native select does not emit change for its already selected option.
+    # Keyboard interaction, rather than select_option, reproduces this behavior.
+    await jump.focus()
+    await jump.press('Space')
+    await jump.press('Home')
+    await jump.press('ArrowDown')
+    await jump.press('Enter')
+    try:
+        await expect(first_statement).to_be_focused(timeout=1500)
+        repeated_jump_focused = True
+    except AssertionError:
+        repeated_jump_focused = False
+    repeated_jump_value = await jump.input_value()
+    report['repeat_requirement_jump'] = dict(first_value=first_jump_value,
+        repeated_value=repeated_jump_value, repeated_statement_focused=repeated_jump_focused)
+    if first_jump_value or repeated_jump_value or not repeated_jump_focused:
+        followup_failures.append('需求定位未复位为占位项，或再次用键盘选择同一需求未定位到正文')
+    else:
+        report['checks'].append('需求定位后恢复占位项；离开需求到项目摘要后，可用原生键盘再次定位同一需求')
     editor = table.locator('[data-detail-requirement="REQ-0001"]')
     group = editor.locator('[data-detail-section="fields"]')
     await expect(group).not_to_have_attribute('open', '')
@@ -165,8 +194,25 @@ async def exercise(page, store, _initial, _chapter, output, report, expect):
     await expect(group).to_have_attribute('open', '')
     await expect(field).to_have_attribute('open', '')
     await expect(enum).to_have_value('一级\n二级')
+    enum_property = field.locator('[data-cell-key="requirement-REQ-0001-detail_contract.fields.F1.enum_values"]')
+    # Filling the field is sufficient: no second confirmation/save may be
+    # needed to clear the previous required-value error and its summary count.
+    validation_after_fix = dict(
+        invalid=await enum_property.evaluate("element => element.classList.contains('detail-property-invalid')"),
+        error_count=await enum_property.locator('.sheet-error').count(),
+        group_summary=await group.locator(':scope > summary').inner_text(),
+    )
+    report['enum_validation_after_fix'] = validation_after_fix
+    if (validation_after_fix['invalid'] or validation_after_fix['error_count']
+            or '0 项待补充' not in validation_after_fix['group_summary']):
+        followup_failures.append('枚举补齐后仍保留旧必填红框、错误文字或分组待补充数量')
+    else:
+        report['checks'].append('缺枚举校验后直接填回值，红框、旧必填错误和分组待补充数量立即清除')
+    await page.screenshot(path=str(output/'enum-validation-after-fix.png'))
     assert store.get(pid) == initial
     report['checks'].append('真实确认点击遇到缺枚举时自动展开折叠组/对象并聚焦；输入修复后仍展开；全程不发写请求且后端数据未改')
+    report['followup_failures'] = followup_failures
+    assert not followup_failures, '; '.join(followup_failures)
 
 
 if __name__ == '__main__':
