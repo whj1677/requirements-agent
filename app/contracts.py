@@ -8,9 +8,24 @@ from .core import KIT, brief_hash, digest, read_json, require
 from .requirements import delivery_items
 
 API_CAPABILITIES = tuple(sorted(('actions', 'artifacts', 'confirmations', 'documents', 'exports', 'models',
-                                 'options-direction', 'options-items', 'projects', 'runs', 'session', 'sources', 'product-flow', 'five-step-workflow', 'requirements-exchange', 'business-context', 'conversational-intake')))
+                                 'options-direction', 'options-items', 'projects', 'runs', 'session', 'sources', 'product-flow', 'five-step-workflow', 'requirements-exchange', 'business-context', 'conversational-intake', 'shared-draft', 'decision-review', 'domain-context')))
 
 SCHEMA = read_json(KIT / 'examples/runtime_response.schema.json')
+from .requirement_details import DETAIL_SCHEMA
+SCHEMA['$defs']['Proposal']['properties']['detail_contract'] = copy.deepcopy(DETAIL_SCHEMA)
+SCHEMA['$defs']['Proposal']['properties']['detail_required'] = {'type':'boolean'}
+# These blocks are compiled locally from item snapshots, never requested from
+# the model's plan schema. Historical document blocks remain byte-compatible.
+_document_blocks = SCHEMA['$defs']['prdResult']['properties']['sections']['items']['properties']['blocks']['items']['oneOf']
+_document_blocks.append(dict(type='object', additionalProperties=False,
+    required=['kind','ref_ids','text','detail_group','detail_hash'], properties={
+        'kind':{'const':'detail'},
+        'ref_ids':{'type':'array','items':{'type':'string'},'minItems':1,'maxItems':1},
+        'text':{'type':'string'},
+        'detail_group':{'enum':['fields','interactions','flow','state_transitions']},
+        'detail_hash':{'type':'string','pattern':'^[0-9a-f]{64}$'}}))
+from .benchmark import analysis_schema
+SCHEMA['properties']['benchmark_analysis'] = analysis_schema()
 WIRE = read_json(KIT / 'examples/wireframe.schema.json')
 REGISTRY = Registry().with_resource('wireframe.schema.json', Resource.from_contents(WIRE))
 VALIDATOR = jsonschema.Draft202012Validator(SCHEMA, registry=REGISTRY)
@@ -73,23 +88,47 @@ def describe_schema_error(errors):
         flat.append(e)
         stack.extend(getattr(e, 'context', None) or [])
     best = max(flat, key=lambda e: (len(list(e.absolute_path)), len(list(e.absolute_schema_path))))
-    message = best.message
+    message = (f'{best.validator}={best.validator_value}，实际长度={len(best.instance)}'
+               if best.validator in ('maxItems','minItems','maxLength','minLength') else best.message)
     if len(message) > 160:
         message = message[:160] + '…'
     return str(list(best.absolute_path)) + ' ' + message
 
 
-def validate_response(value, stage, project, excerpts, document_type='prd'):
+def validate_response(value, stage, project, excerpts, document_type='prd', *, trusted_business_draft=False):
     if stage=='interview':
         from .interview import validate
         return validate(value,excerpts)
-    errors = sorted(VALIDATOR.iter_errors(value), key=lambda e: str(e.path))
+    validator = VALIDATOR
+    if trusted_business_draft:
+        require(stage in ('ingest', 'clarify'), 'SCHEMA_INVALID', '业务草稿验证仅适用于整理和本行完善')
+        from .business_draft import SCHEMA as BUSINESS_SCHEMA
+        # This switch comes only from the server-owned request protocol. The
+        # model cannot enable it with a response field. All other gates below
+        # remain identical to the canonical protocol.
+        spec = copy.deepcopy(SCHEMA)
+        rows = BUSINESS_SCHEMA['properties']['requirements']
+        spec['properties']['questions']['maxItems'] = rows['maxItems'] * rows['items']['properties']['questions']['maxItems']
+        if stage == 'ingest':
+            # Preserve ingest.validate's additional mandatory context contract.
+            spec['required'] = [*spec['required'], 'product_context_proposal']
+            context = spec['properties']['product_context_proposal']
+            context['required'] = list(context['properties'])
+        validator = jsonschema.Draft202012Validator(spec, registry=REGISTRY)
+    errors = sorted(validator.iter_errors(value), key=lambda e: str(e.path))
     require(not errors, 'SCHEMA_INVALID', '模型响应不匹配 Schema：' + (describe_schema_error(errors) if errors else ''))
     require(value['stage'] == stage, 'SCHEMA_INVALID', '模型返回了错误阶段')
+    require('benchmark_analysis' not in value or stage=='ingest', 'SCHEMA_INVALID', '对标分析只属于材料整理阶段')
+    benchmark_sources=[s['id'] for s in project.get('sources',[]) if s.get('benchmark_reference') or s.get('origin')=='benchmark_intake']
+    if benchmark_sources:
+        from .benchmark import validate_proposal_roles
+        validate_proposal_roles(value,benchmark_sources)
     if stage=='review':
         require(not value['proposals'] and not value['questions'] and 'product_context_proposal' not in value,
                 'SEMANTIC_BLOCKED','语义审查只报告发现，不能创建候选、问题或替换产品上下文；请在澄清阶段处理修订')
     item_ids = {i['id'] for i in project['items']}
+    detail_ref_kinds = {i['id']:i['kind'] for i in project['items']}
+    detail_ref_kinds.update({i['temp_id']:i['kind'] for i in value['proposals']})
     question_ids = {q['id'] for q in project['questions']}
     temps = [i['temp_id'] for i in value['proposals']] + [q['temp_id'] for q in value['questions']] + [q['temp_id'] for parent in value['questions'] for q in parent.get('decision_points',[])]
     require(len(set(temps)) == len(temps), 'REFERENCE_INVALID', '临时 ID 重复')
@@ -128,6 +167,13 @@ def validate_response(value, stage, project, excerpts, document_type='prd'):
         message += '。上述提示仅供修复参考，程序不会自动替换引用'
         require(False, 'REFERENCE_INVALID', message)
     for proposal in value['proposals']:
+        if proposal.get('detail_contract') is not None:
+            from .requirement_details import validate_detail
+            from .detail_draft import validate_candidate_links
+            require(proposal['kind']=='requirement','SCHEMA_INVALID','详细定义仅适用于需求条目。')
+            validate_detail(proposal['detail_contract'],project)
+            validate_candidate_links(proposal['detail_contract'],detail_ref_kinds,
+                                     proposal.get('target_item_id') or proposal['temp_id'])
         require((proposal['action'] == 'add' and proposal['target_item_id'] is None) or
                 (proposal['action'] == 'revise' and proposal['target_item_id'] in item_ids),
                 'REFERENCE_INVALID', '修订目标必须存在；新增不能覆盖旧条目')
@@ -237,8 +283,15 @@ def validate_document(doc, p, kind):
         require(all(any(c['item_id'] in b['ref_ids'] for b in sections[s]['blocks']) for s in c['section_ids']), 'REFERENCE_INVALID', '虚假覆盖关系')
     for s in doc['sections']:
         for b in s['blocks']:
+            if b['kind']=='detail':
+                from .detail_rendering import detail_hash
+                ref=b['ref_ids'][0]; item=items.get(ref)
+                require(kind=='prd' and item is not None and item['kind']=='requirement'
+                        and ref in {i['id'] for i in delivery_items(p)} and item.get('detail_contract'),
+                        'REFERENCE_INVALID','详细定义只能绑定本期已选需求。')
+                require(b['detail_hash']==detail_hash(item),'STALE_REVISION','详细定义与文档绑定版本不一致：'+ref)
             if b['kind']=='explanation':
-                from .prd import verified_context, verified_business_context, plan_contract
+                from .prd import verified_context, verified_business_context, plan_contract, normative_evidence, CLOUD_PRD_SECTIONS
                 basis=b.get('evidence_refs',{})
                 require(any(basis.values()),'REFERENCE_INVALID','解释性正文必须有已核对依据')
                 require(set(basis.get('context_refs',[]))<=set(verified_context(p)),
@@ -251,9 +304,10 @@ def validate_document(doc, p, kind):
                         'REFERENCE_INVALID','解释性正文的规范引用与依据不一致')
                 from .semantic_quality import validate_explanation
                 context=verified_context(p);business=verified_business_context(p)
-                evidence='\n'.join([context[r] for r in basis.get('context_refs',[])]+[items[r]['statement'] for r in basis.get('normative_refs',[])]+[business[r]['text'] for r in basis.get('business_claim_refs',[])])
+                detail=kind=='prd' and s['title'] in CLOUD_PRD_SECTIONS.values()
+                evidence='\n'.join([context[r] for r in basis.get('context_refs',[])]+[normative_evidence(items[r],include_behavior=detail) for r in basis.get('normative_refs',[])]+[business[r]['text'] for r in basis.get('business_claim_refs',[])])
                 existing='\n'.join([context[r] for r in basis.get('context_refs',[]) if r=='current_state']+[business[r]['text'] for r in basis.get('business_claim_refs',[])])
-                scenario='\n'.join([context[r] for r in basis.get('context_refs',[]) if r!='current_state']+[items[r]['statement'] for r in basis.get('normative_refs',[])])
+                scenario='\n'.join([context[r] for r in basis.get('context_refs',[]) if r!='current_state']+[normative_evidence(items[r],include_behavior=detail) for r in basis.get('normative_refs',[])])
                 validate_explanation(b['text'],evidence,existing,s['section_id'],scenario_evidence=scenario)
             if b['kind']=='narrative' and not s['title'].startswith(('历史分析提示','附录：条目身份与历史讨论','附录：未采纳与历史讨论')):
                 from .prd import verified_context, verified_business_context
@@ -268,10 +322,25 @@ def validate_document(doc, p, kind):
 
 
 def document_gaps(doc, p):
+    from .prd import cloud_prd_gaps
     prof = profile(doc['document_type'],doc['content_profile_id'].startswith('builtin-'))
     functions = [i['id'] for i in delivery_items(p) if i['kind'] == 'requirement']
     actual = {(m['profile_section_id'], m['scope_ref']) for m in doc['reference_mapping']}
-    gaps = []
+    gaps = cloud_prd_gaps(doc,p)
+    if doc['document_type']=='prd':
+        from .requirement_details import detail_issues
+        from .detail_rendering import detail_hash, GROUP_TITLES
+        for item in delivery_items(p):
+            if item['kind']!='requirement':
+                continue
+            gaps.extend(issue['message'] for issue in detail_issues(item,p,require_confirmed=True))
+            if not item.get('detail_contract'):
+                continue
+            groups={b['detail_group'] for s in doc['sections'] for b in s['blocks']
+                    if b['kind']=='detail' and b['ref_ids']==[item['id']]
+                    and b.get('detail_hash')==detail_hash(item)}
+            for group in GROUP_TITLES.keys()-groups:
+                gaps.append(item['id']+' 的'+GROUP_TITLES[group]+'未绑定当前详细定义，请重新生成文档。')
     for d in prof['sections']:
         if d['mapping_required']:
             for scope in (functions or [None]) if d['repeat_per_function'] else [None]:
@@ -291,43 +360,105 @@ def review_target(p):
     return digest(target)
 
 
-def gate(p):
+def gate_blockers(p):
     from .product_flow import status, question_open
     from .source_fidelity import project_issues, DIMENSIONS
-    issues = [f["location"]+": "+DIMENSIONS[f["dimension"]]+" / "+f["quote"] for f in project_issues(p)]
+    rows = []
+    def add(code, title, message, actions, detail=None):
+        row = dict(key=code+':'+str(len(rows)), code=code, title=title,
+                   message=message, actions=actions)
+        if detail is not None: row['detail'] = detail
+        rows.append(row)
+    def action(kind, label, **target):
+        return dict(kind=kind, label=label, **target)
+    for finding in project_issues(p):
+        message = finding['location']+': '+DIMENSIONS[finding['dimension']]+' / '+finding['quote']
+        add('source_fidelity', '核对来源忠实度', message, [action('source', '核对参考资料')])
+    from .requirement_details import detail_issues
+    for item in delivery_items(p):
+        for issue in detail_issues(item,p,require_confirmed=True):
+            add('detail_contract', '核对详细需求', issue['message'],
+                [action('requirement','完善详细需求',item_id=item['id'])],
+                detail=issue['path']+'：'+issue['message'])
     steps=status(p)
     first=next((s for s in steps[:5] if not s['retired'] and not s['complete']),None)
-    if first:issues+=['请完成第'+str(first['display_step'])+'步「'+first['title']+'」核对']+first['missing']
+    if first:
+        add('stage_incomplete', first['title'], '请完成第'+str(first['display_step'])+'步「'+first['title']+'」核对',
+            [action('stage', '前往本步骤核对', step=first['step'])])
+        by_message = {row['message']: row for row in first.get('blockers', [])}
+        for message in first['missing']:
+            existing = by_message.get(message)
+            if existing:
+                rows.append(copy.deepcopy(existing))
+            else:
+                add('stage_missing', first['title'], message,
+                    [action('stage', '前往本步骤核对', step=first['step'])])
     for kind in p.get('delivery_scope',{}).get('documents',['mrd','prd']):
-        if kind not in p['documents']:issues.append('缺少 '+kind.upper()+' 评审稿')
+        if kind not in p['documents']:
+            add('document_missing', kind.upper()+' 文档', '缺少 '+kind.upper()+' 评审稿',
+                [action('document', '生成 '+kind.upper()+' 评审稿', document=kind)])
     if 'prd' not in p['documents']:
-        return issues+['缺少 PRD 内容对象；MRD 不能代替 PRD 确认']
-    for doc in p['documents'].values():
+        add('prd_content_missing', 'PRD 内容对象', '缺少 PRD 内容对象；MRD 不能代替 PRD 确认',
+            [action('document', '生成 PRD 评审稿', document='prd')])
+        return rows
+    for kind, doc in p['documents'].items():
         if doc['brief_hash'] != brief_hash(p):
-            issues.append('文档与当前底稿不一致，请重新生成')
-        issues.extend(document_gaps(doc['content'], p))
+            add('document_stale', kind.upper()+' 文档', '文档与当前底稿不一致，请重新生成',
+                [action('document', '更新 '+kind.upper()+' 评审稿', document=kind)])
+        for message in document_gaps(doc['content'], p):
+            add('document_gap', kind.upper()+' 文档', message,
+                [action('document', '核对 '+kind.upper()+' 评审稿', document=kind)])
     if p.get('document_update_needed'):
-        issues.append('页面变化后文档需要更新：'+'、'.join(p.get('stale_document_kinds',[])))
-    issues.extend(q['question'] for q in p['questions'] if q['blocking'] and question_open(q))
+        stale=p.get('stale_document_kinds',[])
+        add('document_update_needed', '文档更新', '页面变化后文档需要更新：'+'、'.join(stale),
+            [action('document', '更新 '+kind.upper()+' 评审稿', document=kind) for kind in stale] or
+            [action('document', '核对 PRD 评审稿', document='prd')])
+    for q in p['questions']:
+        if q['blocking'] and question_open(q):
+            add('question_open', '待回答的问题', q['question'],
+                [action('question', '回答问题', question_id=q['id'])])
     review = p.get('review')
     if not review or review['target_hash'] != review_target(p):
-        issues.append('需要审查当前底稿和文档')
+        add('review_missing', '当前版本内容审查', '需要审查当前底稿和文档',
+            [action('review', '查看当前版本审查')])
     else:
         result=review['response']['result']
         if result['assessment'] != 'ready_for_human_review' or any(f['severity'] == 'blocker' for f in review['response']['findings']):
-            issues.append('语义审查仍有阻塞项')
+            add('review_blocked', '当前版本内容审查', '语义审查仍有阻塞项',
+                [action('review', '查看审查意见')])
         if result.get('required_decisions'):
-            issues.append('语义审查仍有必要决定待产品处理：'+'；'.join(result['required_decisions']))
+            add('review_decisions', '当前版本内容审查', '语义审查仍有必要决定待产品处理：'+'；'.join(result['required_decisions']),
+                [action('review', '查看审查意见')])
         reviewed=set(result.get('reviewed_refs',[]))
         uncovered=[i['id'] for i in delivery_items(p) if i['kind'] in ('requirement','rule','acceptance') and i['id'] not in reviewed]
         if uncovered or not result.get('perspectives'):
-            issues.append('语义审查覆盖不足：'+('未审查规范条目 '+ '、'.join(uncovered) if uncovered else '缺少审查视角'))
+            add('review_coverage', '当前版本内容审查', '语义审查覆盖不足：'+('未审查规范条目 '+ '、'.join(uncovered) if uncovered else '缺少审查视角'),
+                [action('review', '查看审查意见')])
     if not any(i['selection_status'] == 'selected' and i['applies_to']=='to_be' and i['kind'] == 'requirement' for i in p['items']):
-        issues.append('本期没有已选需求')
+        add('scope_empty', '本期需求范围', '本期没有已选需求', [action('scope', '核对本期需求')])
     if not any(i['selection_status'] == 'selected' and i['applies_to']=='to_be' and i['kind'] == 'acceptance' for i in p['items']):
-        issues.append('缺少已选验收条件')
+        add('acceptance_empty', '本期验收条件', '缺少已选验收条件',
+            [action('add_acceptance', '补充关联验收条件')])
     selected=delivery_items(p)
     for req in (i for i in selected if i['kind']=='requirement'):
         if not any(ac['kind']=='acceptance' and (req['id'] in ac['related_refs'] or ac['id'] in req['related_refs']) for ac in selected):
-            issues.append('需求缺少关联验收条件：'+req['id'])
-    return list(dict.fromkeys(issues))
+            candidates=[i for i in p['items'] if i['kind']=='acceptance' and i['selection_status']=='candidate'
+                        and i['applies_to']=='to_be' and
+                        (req['id'] in i['related_refs'] or i['id'] in req['related_refs'])]
+            kind='acceptance' if candidates else 'add_acceptance'
+            label='核对关联验收候选' if candidates else '补充关联验收条件'
+            add('requirement_acceptance_missing', req.get('title') or req['id'],
+                '需求缺少关联验收条件：'+req['id'], [action(kind, label, item_id=req['id'])])
+    unique=[];seen={}
+    for row in rows:
+        if row['message'] not in seen:
+            unique.append(row);seen[row['message']]=row
+        else:
+            for action in row['actions']:
+                if action not in seen[row['message']]['actions']:
+                    seen[row['message']]['actions'].append(action)
+    return unique
+
+
+def gate(p):
+    return [row['message'] for row in gate_blockers(p)]

@@ -14,20 +14,24 @@ def test_actual_sender_checks_receiver_sources_and_reuses_receipt():
       import assert from 'node:assert/strict';
       import {build} from 'esbuild';
       const bundle=await build({entryPoints:['src/interview-request.ts'],bundle:true,write:false,format:'esm',platform:'node'});
-      const {sendInterview}=await import('data:text/javascript;base64,'+Buffer.from(bundle.outputFiles[0].text).toString('base64'));
+      const {sendInterview,interviewSourceIds}=await import('data:text/javascript;base64,'+Buffer.from(bundle.outputFiles[0].text).toString('base64'));
       const input={action:'interview',expected_revision:3,message:'我还不知道',document_type:'prd'};
       const receiver={origin:'https://example.test',model:'paid'};
-      const plan={expected_revision:3,missing:[],recipients:[receiver],sources:[{id:'S1'}],plan_hash:'approved'};
+      const plan={expected_revision:3,stages:['interview'],missing:[],recipients:[receiver],sources:[{id:'S1'}],plan_hash:'approved'};
       let calls=[],receipt;
       const request=async(path,method,body)=>{calls.push({path,body});if(path.endsWith('/plan'))return plan;return {id:'TASK1'};};
-      assert.equal((await sendInterview(request,'/p',input,receiver,['S1'],r=>receipt=r)).id,'TASK1');
+      const projected={sources:[{id:'S1'},{id:'S2'}],active_source_ids:['S1'],domain_context:{selected_source_ids:['S1']}};
+      assert.equal((await sendInterview(request,'/p',input,receiver,interviewSourceIds(projected),r=>receipt=r)).id,'TASK1');
+      assert.deepEqual(interviewSourceIds({...projected,active_source_ids:[]}),[],'empty selection must not fall back to all sources');
+      assert.throws(()=>interviewSourceIds({...projected,active_source_ids:undefined}),/资料范围尚未取得/);
+      assert.deepEqual(interviewSourceIds({sources:[{id:'legacy'},{id:'excluded',excluded:true}]}),['legacy']);
       assert.equal(calls[1].body.authorize,true);
       assert.equal(calls[1].body.message,input.message);
       const original=calls[1].body;
       calls=[];
       await sendInterview(request,'/p',{...input,expected_revision:9},receiver,[],()=>assert.fail('no replan'),receipt);
       assert.equal(calls.length,1);assert.deepEqual(calls[0].body,original);
-      for(const change of [p=>p.recipients=[{...receiver,model:'other'}],p=>p.sources=[{id:'new'}],p=>p.expected_revision=4]){
+      for(const change of [p=>p.stages=['vision','interview'],p=>p.recipients=[{...receiver,model:'other'}],p=>p.sources=[{id:'new'}],p=>p.expected_revision=4]){
         const backup=structuredClone(plan);change(plan);calls=[];
         await assert.rejects(()=>sendInterview(request,'/p',input,receiver,['S1'],()=>assert.fail('must not prepare')));
         assert.equal(calls.length,1);Object.assign(plan,backup);

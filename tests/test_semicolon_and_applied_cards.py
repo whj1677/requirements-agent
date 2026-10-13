@@ -8,7 +8,7 @@ from app.requirements import behavior_fingerprint, require_behavior_review
 from app.result_conditions import facts, issues
 from app.understanding import application_hash, confirm_manual_answer
 from tests.test_result_conditions import case
-from tests.test_answer_application_recovery import answered_project
+from tests.test_answer_application_recovery import answered_project, implementation_map
 from tests.test_offline_answer_route_design import route_case, save_answer, run_candidate, ANSWER
 
 # Frozen independent 15-case oracle; never dependent on ignored local files.
@@ -90,16 +90,18 @@ def tasks(p):return condition_layers({'facts':[]},p)['local_result_tasks']
 @pytest.mark.parametrize('state',['valid','pending_label_valid_hash','answer_changed','clause_changed','new_target','superseded','out_of_scope','legacy_valid'])
 def test_effective_application_hashes_determine_result_cards(tmp_path,state):
     p,q=answered_project(tmp_path);target=p['items'][1]
-    confirm_manual_answer(p,q,digest(q['answer']),{target['id']:application_hash(target)},True)
+    confirm_manual_answer(p,q,digest(q['answer']),{target['id']:application_hash(target)},True,
+                          answer_implementations=implementation_map(p,q))
     if state=='pending_label_valid_hash':q['understanding_status']='pending'
     elif state=='answer_changed':q['answer']+=' 合成测试改答，需重新落实。'
     elif state=='clause_changed':target['statement']+=' 条款已变更。'
     elif state=='new_target':q['related_refs'].append('AC-0001')
     elif state=='superseded':q['superseded_by']=['Q-new']
     elif state=='out_of_scope':q['out_of_scope_reason']='明确不在本期'
-    elif state=='legacy_valid':q.pop('answer_applications')
+    elif state=='legacy_valid':q.pop('answer_applications');q.pop('answer_implementation_contract')
     before=copy.deepcopy(p);cards=tasks(p)
-    expected=['RULE-0001'] if state in ('answer_changed','clause_changed') else ['AC-0001'] if state=='new_target' else []
+    # Adding a direct target changes the reviewed question scope; review both.
+    expected=['RULE-0001'] if state in ('answer_changed','clause_changed') else ['RULE-0001','AC-0001'] if state=='new_target' else []
     assert [c['target_item_id'] for c in cards]==expected
     assert all(c['question_ids']==['Q-0001'] for c in cards) and p==before
 
@@ -119,7 +121,15 @@ def test_public_pending_partial_applied_changed_answer_and_stale_adoption(route_
             assert r.status_code==200;p=r.json()
         r=post('/items/'+candidate['id'],dict(expected_revision=p['revision'],selection_status='selected'))
         assert r.status_code==200,r.text;p=r.json()
-        assert [c['target_item_id'] for c in tasks(p)]==(['RULE-0001'] if target=='REQ-0001' else [])
+        assert [c['target_item_id'] for c in tasks(p)]==['REQ-0001','RULE-0001']
+    q=p['questions'][0]
+    review=client.get(root+'/questions/'+q['id']+'/application-review').json()
+    r=post('/questions/'+q['id']+'/application-review',dict(expected_revision=p['revision'],
+        answer_hash=review['answer_hash'],review_confirmed=True,
+        clause_hashes={t['item']['id']:t['clause_hash'] for t in review['targets']},
+        answer_implementations=implementation_map(p,q)))
+    assert r.status_code==200,r.text;p=r.json()
+    assert tasks(p)==[]
     assert p['questions'][0]['understanding_status']=='applied'
     assert set(p['questions'][0]['answer_applications'])=={'REQ-0001','RULE-0001'}
     assert not p.get('active_baseline_id') and not p['documents']

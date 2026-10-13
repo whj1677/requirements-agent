@@ -64,8 +64,9 @@ class RequestBudget:
             require(execution_hash(p)==rows[0]['input_state_hash'], 'STALE_REVISION',
                     '模型发送前输入已变化；请重新核对计划', 409)
             from .provider import origin
+            from .domain_context import active_source_ids
             grant=p['grants'].get(origin(config),{})
-            require({s['id'] for s in p['sources'] if not s['excluded']} <= set(grant.get('source_ids',[]))
+            require(active_source_ids(p) <= set(grant.get('source_ids',[]))
                     and origin(config) in p['grants'], 'DATA_AUTH_REQUIRED', '模型发送前资料授权已变化', 403)
             check_available(rows[-1]['request_budget'])
             require(not any(v['call_id']==call_id for v in rows[-1]['request_budget']['reservations']),

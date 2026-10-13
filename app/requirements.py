@@ -9,8 +9,11 @@ RELATIONS = ('parent_of','refines','replaces','depends_on','implements','verifie
 
 
 def behavior_fingerprint(item):
-    return digest({key:item.get(key) for key in
-                   ('kind','statement','change_type','behavior','source_refs')})
+    content = {key:item.get(key) for key in ('kind','statement','change_type','behavior','source_refs')}
+    for key in ('detail_contract', 'detail_required'):
+        if key in item:
+            content[key] = item[key]
+    return digest(content)
 
 
 def behavior_review_current(item):
@@ -47,7 +50,12 @@ def requirement_ref(p, item):
 
 
 def item_content(item):
-    return {k:copy.deepcopy(item.get(k)) for k in CONTENT_FIELDS}
+    content = {k:copy.deepcopy(item.get(k)) for k in CONTENT_FIELDS}
+    # Do not add absent keys: legacy confirmations retain their exact old hash.
+    for key in ('detail_contract', 'detail_required'):
+        if key in item:
+            content[key] = copy.deepcopy(item[key])
+    return content
 
 
 def reconcile_items(before, p):

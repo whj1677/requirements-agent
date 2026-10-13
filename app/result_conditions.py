@@ -21,7 +21,7 @@ NON_ASSERTION = re.compile(r'建议|假设|待(?:澄清|核对|确认)|未采纳
                           r'不能[^，,。；;\n]{0,12}(?:推断|认定|断言)|并非|不代表|不意味着|不蕴含')
 SUBJECTS = re.compile(r'云资源|资源|工单|订单|记录|备注|时段|配置|文件')
 CONNECTOR = re.compile(r'则|便|就|即可|即会|即|将|会|能够|可以|可')
-ASSERTION = re.compile(r'断言|推断|认定|确认|反推|展示')
+ASSERTION = re.compile(r'断言|推断|认定|确认|反推|展示|当作|当成|视为|判定为')
 NEGATOR = r'并非|不是|没有|不能|不得|禁止|不允许|不应|不可|无法|不|未'
 ASSERTION_MODIFIER = r'据此|因此|直接|自行|轻易|作出|进行|作|做|\s'
 ASSERTION_NEGATION = re.compile(r'(?:'+NEGATOR+r')(?:(?:'+ASSERTION_MODIFIER+r')|(?:'+NEGATOR+r'))*$')
@@ -111,6 +111,20 @@ def confirmed_result(sentence):
     return match if match and not re.search(r'未|没有|尚未',sentence[:match.start()]) else None
 
 
+def uncertainty_occurrence(target):
+    """`保存时网络中断导致结果未知` names when uncertainty happened.
+
+    Inspect only the effect's own clause. A later comma/semicolon clause still
+    has its predicates checked, and an asserted result is never exempted.
+    """
+    clause = re.split(r'[，,]', target, maxsplit=1)[0]
+    # Do not use arbitrary text here: it could hide an affirmative outcome
+    # (e.g. 已经生成/处理完成) before the response was lost.
+    return bool(re.fullmatch(r'(?:请求|操作|提交)?时(?:发生)?'
+                r'(?:(?:网络|连接)(?:中断|断开)(?:导致(?:提交)?)?)?'
+                r'(?:结果未知|未知结果|超时|响应丢失)\s*', clause))
+
+
 def outcome_sentences(text,fallback_subject):
     """Semicolons end assertion scope, not the same object's unknown context.
 
@@ -171,13 +185,17 @@ def facts(text, *, location, object_id=None, source_refs=(), fallback_operation=
             effect_subject=subject(target) or subject(part) or fallback_subject or local_subject
             current=dict(base,operation=OPERATIONS[effect.group()],subject=effect_subject,
                          scope=sorted(scopes(sentence,effect_subject)))
+            if uncertainty_occurrence(target):
+                continue
             if denied:
                 result.append(dict(current,role='inference_constraint',guard=None,conditions=[],
                                    assertion_scope=inference))
                 continue
             prohibition=re.search(r'(?:禁止|不得|不能|不可|不允许|不应)(?:再次|重新|重复|再)?\s*$',prefix)
             new_attempt=re.match(r'\s*(?:新(?:的)?|另一个)(?:申请|请求)',target)
-            if prohibition and new_attempt:
+            named_retry = (re.search(r'(?:禁止|不得|不能|不可|不允许|不应)(?:再次|重新|重复|再)?(?:发出|发送|提交)\s*$',prefix)
+                           and re.match(r'\s*(?:提交|请求)(?=[，,。；;\s]|$)',target))
+            if prohibition and new_attempt or named_retry:
                 result.append(dict(current,role='proposal' if non_asserted else 'action_constraint',
                     guard=None,conditions=[],temporal='future_action',action_target='new_attempt'))
                 continue

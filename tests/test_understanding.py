@@ -137,6 +137,13 @@ def test_answer_revision_requires_explicit_acceptance_and_latest_answer(tmp_path
     annotate_candidates(p,[candidate])
     assert question['understanding_status']=='candidate_ready' and '允许相接' not in p['items'][0]['statement']
     accept_answer_update(p,candidate)
+    assert any('修订仍待核对' in s for s in missing(p,3))
+    from app.understanding import confirm_manual_answer, application_hash
+    from app.core import digest
+    target=p['items'][0]
+    target['statement']+=' 允许相接。'
+    confirm_manual_answer(p,question,digest(question['answer']),{target['id']:application_hash(target)},True,
+        answer_implementations={question['id']:[dict(item_id=target['id'],field='statement',quote='允许相接。')]})
     assert not any('修订仍待核对' in s for s in missing(p,3))
     record_answer(question);question['answer']='预先准备的修正：不允许相接。'
     with pytest.raises(Problem,match='回答已变化'):accept_answer_update(p,candidate)
@@ -150,14 +157,18 @@ def test_question_key_is_scoped_to_requirement():
 
 def test_shared_answer_requires_each_affected_requirement_update():
     from app.understanding import annotate_candidates,accept_answer_update,record_answer
-    question=dict(id='Q',related_refs=['R1','R2'],answer='合成回答',status='answered')
-    p=dict(questions=[question],items=[dict(id=r,kind='requirement') for r in ('R1','R2')])
+    question=dict(id='Q',related_refs=['R1','R2'],answer='沿原申请ID查询，未确认前不重复提交。',status='answered')
+    p=dict(questions=[question],items=[dict(id=r,kind='requirement',statement='查询流程待确认。') for r in ('R1','R2')])
     candidates=[dict(kind='requirement',action='revise',target_item_id=r,answer_refs=['Q']) for r in ('R1','R2')]
     annotate_candidates(p,candidates)
     accept_answer_update(p,candidates[0])
     assert question['understanding_status']=='candidate_ready'
+    assert question['applied_requirement_ids']==[]
+    before=copy.deepcopy(p['items'][0]);p['items'][0]['statement']=question['answer']
+    accept_answer_update(p,candidates[0],before=before)
     assert question['applied_requirement_ids']==['R1'] and 'R2' in question['answer_effect']
-    accept_answer_update(p,candidates[1])
+    before=copy.deepcopy(p['items'][1]);p['items'][1]['statement']=question['answer']
+    accept_answer_update(p,candidates[1],before=before)
     assert question['understanding_status']=='applied'
     record_answer(question)
     assert question['applied_requirement_ids']==[] and question['understanding_status']=='pending'

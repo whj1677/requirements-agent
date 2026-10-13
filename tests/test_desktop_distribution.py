@@ -42,7 +42,9 @@ def test_customer_factory_works_with_missing_or_corrupt_legacy_license(customer_
     with TestClient(app) as client:
         assert client.get('/api/session').status_code == 200
         assert client.get('/api/projects').json() == []
-        created = client.post('/api/projects', json={'name': '无设备许可项目'})
+        csrf = client.get('/api/session').json()['csrf']
+        created = client.post('/api/projects', json={'name': '无设备许可项目'},
+                              headers={'Origin': 'http://testserver', 'X-CSRF-Token': csrf})
         assert created.status_code == 200
         assert client.get('/api/projects').json()[0]['name'] == '无设备许可项目'
     assert business.exists()

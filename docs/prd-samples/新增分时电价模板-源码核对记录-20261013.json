@@ -1,0 +1,410 @@
+{
+  "sample": "新增分时电价模板",
+  "document_status": "draft_for_product_review",
+  "read_date": "2026-10-13",
+  "source_snapshot_deployment": "unknown",
+  "knowledge_bundle_locator": "energy-cloud-source-20261013-v5",
+  "evidence_files": [
+    {
+      "id": "S01",
+      "path": "D:\\99_归档\\云平台代码\\zhny-cloud-web-new\\src\\views\\electricity-price\\price-template\\index.vue",
+      "kind": "code_observation",
+      "line_ranges": [
+        [
+          1,
+          16
+        ],
+        [
+          123,
+          125
+        ]
+      ],
+      "line_count": 199,
+      "sha256": "3afd4f257bcdeefc491042ddceb9e1fe40952be8a89b17ca568f487818bdbedf"
+    },
+    {
+      "id": "S02",
+      "path": "D:\\99_归档\\云平台代码\\zhny-cloud-web-new\\src\\views\\electricity-price\\price-config\\components\\EditNormalPriceModal.vue",
+      "kind": "code_observation",
+      "line_ranges": [
+        [
+          23,
+          123
+        ],
+        [
+          156,
+          169
+        ],
+        [
+          310,
+          327
+        ],
+        [
+          345,
+          401
+        ],
+        [
+          527,
+          590
+        ]
+      ],
+      "line_count": 625,
+      "sha256": "26cf8fa27210d2b16338488df6d8b3bc56c82084293bffe65fd68636f8b1930e"
+    },
+    {
+      "id": "S03",
+      "path": "D:\\99_归档\\云平台代码\\zhny-cloud-web-new\\src\\views\\electricity-price\\price-template\\api.ts",
+      "kind": "code_observation",
+      "line_ranges": [
+        [
+          18,
+          34
+        ],
+        [
+          85,
+          119
+        ],
+        [
+          122,
+          165
+        ],
+        [
+          203,
+          212
+        ]
+      ],
+      "line_count": 293,
+      "sha256": "9bceaf144802c0013effa6770420737953c9e3e280d55963ed6c1e4ee6746aa7"
+    },
+    {
+      "id": "S04",
+      "path": "D:\\99_归档\\云平台代码\\zhny-cloud-web-new\\src\\views\\electricity-price\\price-template\\tariffTimeline.ts",
+      "kind": "code_observation",
+      "line_ranges": [
+        [
+          3,
+          16
+        ],
+        [
+          19,
+          33
+        ],
+        [
+          44,
+          95
+        ],
+        [
+          146,
+          181
+        ]
+      ],
+      "line_count": 182,
+      "sha256": "a26f442ab7207e038b64dd85cc8f815df958a39935d8cefb9912b5ed77bf342f"
+    },
+    {
+      "id": "S05",
+      "path": "D:\\99_归档\\云平台代码\\zhny-cloud-web-new\\src\\views\\electricity-price\\components\\TariffTimeline.vue",
+      "kind": "code_observation",
+      "line_ranges": [
+        [
+          97,
+          110
+        ],
+        [
+          195,
+          199
+        ],
+        [
+          283,
+          315
+        ],
+        [
+          340,
+          355
+        ],
+        [
+          398,
+          452
+        ],
+        [
+          515,
+          563
+        ],
+        [
+          575,
+          634
+        ]
+      ],
+      "line_count": 982,
+      "sha256": "32c333d603b02b5686dfb178b2cbd016d2a5afe082b39f97a0cdf472d99bcc68"
+    },
+    {
+      "id": "S06",
+      "path": "D:\\99_归档\\云平台代码\\zhny-cloud-web-new\\src\\views\\electricity-price\\components\\MonthRangeSelect.vue",
+      "kind": "code_observation",
+      "line_ranges": [
+        [
+          23,
+          42
+        ],
+        [
+          64,
+          125
+        ]
+      ],
+      "line_count": 128,
+      "sha256": "8805702cbc58f196ab7dfb43f39dc5dc57e49926a6cfe731fa5fd78ea4f4c17a"
+    },
+    {
+      "id": "S07",
+      "path": "D:\\99_归档\\云平台代码\\zhny-cloud-web-new\\src\\views\\electricity-price\\price-template\\priceTemplate.data.ts",
+      "kind": "code_observation",
+      "line_ranges": [
+        [
+          9,
+          20
+        ],
+        [
+          26,
+          69
+        ],
+        [
+          116,
+          172
+        ]
+      ],
+      "line_count": 173,
+      "sha256": "693a5cee3cf3edc42b3a8286912a72af4848dfc4334f613ac64240a6533d0c7d"
+    },
+    {
+      "id": "S08",
+      "path": "D:\\99_归档\\云平台代码\\ytp-后端\\cnzhny\\src\\main\\java\\com\\cloud\\zhny\\business\\controller\\ElectricPriceTemplateController.java",
+      "kind": "code_observation",
+      "line_ranges": [
+        [
+          32,
+          55
+        ]
+      ],
+      "line_count": 68,
+      "sha256": "186913151e428601f4f7e070bcce2a7314828c2894e46ee2b7c151b30e6510c3"
+    },
+    {
+      "id": "S08",
+      "path": "D:\\99_归档\\云平台代码\\ytp-后端\\cnzhny\\src\\main\\java\\com\\cloud\\zhny\\business\\domain\\request\\electric\\ElectricPriceTemplateRequest.java",
+      "kind": "code_observation",
+      "line_ranges": [
+        [
+          19,
+          35
+        ]
+      ],
+      "line_count": 36,
+      "sha256": "43736777aec0d475f9d84ad6d70ea814d5af19d688e5d8b42cc291c8bf8a14fe"
+    },
+    {
+      "id": "S08",
+      "path": "D:\\99_归档\\云平台代码\\ytp-后端\\cnzhny\\src\\main\\java\\com\\cloud\\zhny\\business\\domain\\request\\electric\\ElectricPriceTemplateItemRequest.java",
+      "kind": "code_observation",
+      "line_ranges": [
+        [
+          18,
+          28
+        ]
+      ],
+      "line_count": 29,
+      "sha256": "16bc180954b1e642785921954366863039ef4ce782cec88cccd0038b54b54e7c"
+    },
+    {
+      "id": "S09",
+      "path": "D:\\99_归档\\云平台代码\\ytp-后端\\cnzhny\\src\\main\\java\\com\\cloud\\zhny\\business\\service\\impl\\ElectricPriceTemplateServiceImpl.java",
+      "kind": "code_observation",
+      "line_ranges": [
+        [
+          58,
+          80
+        ],
+        [
+          93,
+          114
+        ],
+        [
+          184,
+          216
+        ],
+        [
+          219,
+          303
+        ],
+        [
+          315,
+          329
+        ]
+      ],
+      "line_count": 330,
+      "sha256": "fb9759cec2e24bde933908bcf2725e2c06429b670d90b8b091b330b4ec9d2185"
+    },
+    {
+      "id": "S10",
+      "path": "D:\\99_归档\\云平台代码\\ytp-后端\\cnzhny\\src\\main\\java\\com\\cloud\\zhny\\business\\common\\enums\\PeriodTypeEnum.java",
+      "kind": "code_observation",
+      "line_ranges": [
+        [
+          8,
+          12
+        ],
+        [
+          30,
+          39
+        ]
+      ],
+      "line_count": 41,
+      "sha256": "9ef993ba01ba7d2f622f0435a92c844af44ee7bd490084d4d4f7245493dce5bf"
+    },
+    {
+      "id": "S10",
+      "path": "D:\\99_归档\\云平台代码\\ytp-后端\\cnzhny\\src\\main\\java\\com\\cloud\\zhny\\business\\domain\\entity\\ElectricPriceTemplate.java",
+      "kind": "code_observation",
+      "line_ranges": [
+        [
+          29,
+          99
+        ]
+      ],
+      "line_count": 104,
+      "sha256": "a6aba268ac465107e1f2325e97f655b68b11f802b1ad90191708802f6e57da43"
+    },
+    {
+      "id": "S10",
+      "path": "D:\\99_归档\\云平台代码\\ytp-后端\\cnzhny\\src\\main\\java\\com\\cloud\\zhny\\business\\domain\\entity\\ElectricPriceTemplateItem.java",
+      "kind": "code_observation",
+      "line_ranges": [
+        [
+          27,
+          53
+        ]
+      ],
+      "line_count": 54,
+      "sha256": "3263606541b5ca041485bede666448387c8d766bf66f8ecc829fa36a9b4ffced"
+    },
+    {
+      "id": "S11",
+      "path": "D:\\99_归档\\云平台代码\\ytp-后端\\cnzhny\\docs\\requirements\\REQ-0030-electricity-price-template\\02_design.md",
+      "kind": "archived_design",
+      "line_ranges": [
+        [
+          3,
+          3
+        ],
+        [
+          27,
+          45
+        ],
+        [
+          51,
+          83
+        ]
+      ],
+      "line_count": 118,
+      "sha256": "8fb0fd1c5f68bc547def0a834c960fdcf67c00347b5415188d75fc3dd03c3f6f"
+    },
+    {
+      "id": "S12",
+      "path": "D:\\99_归档\\云平台代码\\ytp-后端\\cnzhny\\docs\\requirements\\REQ-0034-electricity-price-template-user-name\\02_design.md",
+      "kind": "archived_design",
+      "line_ranges": [
+        [
+          23,
+          24
+        ],
+        [
+          29,
+          31
+        ],
+        [
+          40,
+          42
+        ]
+      ],
+      "line_count": 46,
+      "sha256": "475ca5cdc61d088dc26a8d33d4902710525c4f022b1e2a908bfffe9cb0b17cb2"
+    },
+    {
+      "id": "S12",
+      "path": "D:\\99_归档\\云平台代码\\ytp-后端\\cnzhny\\src\\main\\java\\com\\cloud\\zhny\\business\\utils\\SessionUtils.java",
+      "kind": "code_observation",
+      "line_ranges": [
+        [
+          9,
+          32
+        ]
+      ],
+      "line_count": 34,
+      "sha256": "87f806a045182fd432d8c39605921a8a0be19ee72a48fb6a0677e1b31e777852"
+    },
+    {
+      "id": "S13",
+      "path": "D:\\99_归档\\云平台代码\\zhny-cloud-web-new\\src\\router\\routes\\modules\\electricity-price.ts",
+      "kind": "code_observation",
+      "line_ranges": [
+        [
+          19,
+          26
+        ]
+      ],
+      "line_count": 40,
+      "sha256": "1065952af44578cb9b04de7d9ba5be89cc37262c2096cf72824eb84306bd7251"
+    },
+    {
+      "id": "S13",
+      "path": "D:\\99_归档\\云平台代码\\zhny-cloud-web-new\\src\\router\\routes\\modules\\control-strategy.ts",
+      "kind": "code_observation",
+      "line_ranges": [
+        [
+          83,
+          90
+        ]
+      ],
+      "line_count": 104,
+      "sha256": "92947202ba066001ef20e485b589e6531d493758f173b2e61d824f7444ed8387"
+    },
+    {
+      "id": "S14",
+      "path": "D:\\99_归档\\云平台代码\\zhny-cloud-web-new\\src\\components\\Table\\src\\hooks\\useDataSource.ts",
+      "kind": "code_observation",
+      "line_ranges": [
+        [
+          226,
+          245
+        ],
+        [
+          312,
+          313
+        ]
+      ],
+      "line_count": 338,
+      "sha256": "e6cd7e8fe0394ace0e13f81bdada5c87b3a6463cef6948e9951b7a5eeb4d2fbf"
+    }
+  ],
+  "business_decisions": {
+    "D01": "pending",
+    "D02": "pending",
+    "D03": "pending",
+    "D04": "pending",
+    "D05": "pending",
+    "D06": "pending",
+    "D07": "pending",
+    "D08": "pending",
+    "D09": "pending",
+    "D10": "pending",
+    "D11": "pending"
+  },
+  "verification": {
+    "source_ranges_and_hashes": "checked",
+    "source_runtime": "NOT_RUN",
+    "database_schema": "NOT_RUN",
+    "ui_and_api_e2e": "NOT_RUN",
+    "business_acceptance": "pending",
+    "application_code_changes": "none_by_this_task"
+  }
+}

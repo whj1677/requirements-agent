@@ -1,0 +1,18 @@
+{
+  "source_call": "evidence/shared-draft-live-20261008-02/data/evidence/model-calls/CALL-db387d8177f046b3.json",
+  "original_question": "历史电量补传或更正后，日报使用哪个数据版本、是否自动重算、若人工重算由谁触发？",
+  "answer_text": "不要自动重算。",
+  "review": {
+    "question_id": "Q-07fc8791729e464d",
+    "decisions": [
+      {
+        "id": "Q-07fc8791729e464d",
+        "question": "历史电量补传或更正后，日报是否自动重算？",
+        "coverage": "clear",
+        "answer_quote": "不要自动重算。",
+        "related_refs": ["REQ-12c00e23cf6f438f", "REQ-bc4d962c0b534135", "ITEM-6f7023deae0c452f"],
+        "why": "当前原话“不要自动重算。”明确回答是否自动重算这一项，因此该决定为已答；其余数据版本选择与人工重算触发人未回答，另在对应目标保持待定。"
+      }
+    ]
+  }
+}

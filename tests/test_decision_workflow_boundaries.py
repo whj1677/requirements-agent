@@ -83,7 +83,8 @@ def test_answer_application_only_uses_current_answer_and_original_target(tmp_pat
         assert p['questions'][0]['answer'] == before['questions'][0]['answer']
         assert p['questions'][0]['understanding_status'] != 'applied'
         accept_answer_update(p, candidate)
-        assert 'AC-0001' in p['questions'][0]['applied_item_ids']
+        assert not p['questions'][0]['applied_item_ids']
+        assert p['questions'][0]['understanding_status']=='candidate_ready'
 
 
 @pytest.mark.parametrize('stage', ['ingest', 'clarify', 'change'])

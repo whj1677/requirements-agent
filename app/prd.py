@@ -3,7 +3,7 @@ import copy
 import re
 import jsonschema
 from .core import digest, dumps, require
-from .contracts import profile
+from .contracts import SCHEMA, profile
 from .document_mapping import build_reference_mapping
 from .requirements import delivery_items, item_content
 from .product_flow import INTAKE, SCOPE, status as flow_status
@@ -17,6 +17,7 @@ SECTION_TITLES = {
     'users':'使用者与权限', 'function':'功能需求', 'rules':'业务规则',
     'acceptance':'验收条件', 'discussion':'待核对内容', 'limits':'资料限制与未决事项',
 }
+CLOUD_PRD_SECTIONS = {'interaction':'交互逻辑', 'business_flow':'业务流程说明'}
 MRD_SECTION_TITLES_V4 = {
     **SECTION_TITLES,
     'priority':'优先级与决策依据',
@@ -67,12 +68,65 @@ PLAN_SCHEMA_V3['properties']['sections']['items']['properties']['explanations'] 
 PLAN_SCHEMA_V4 = copy.deepcopy(PLAN_SCHEMA_V3)
 PLAN_SCHEMA_V4['properties']['plan_version'] = {'const':'4'}
 PLAN_SCHEMA_V4['properties']['sections']['items']['properties']['section_key'] = {
-    'enum':list(MRD_SECTION_TITLES_V4)}
+    'enum':list(MRD_SECTION_TITLES_V4)+list(CLOUD_PRD_SECTIONS)}
 PLAN_SCHEMA_V4['properties']['sections']['items']['properties']['explanations']['items']['properties']['text']['description'] = (
     '直接交付读者的成稿正文，不是写作计划、作者指令或组装过程说明；无来源信息增量时 explanations 使用空数组。')
 WRITING_INSTRUCTION = re.compile(
     r'(?:^|[。！？\n])\s*(?:本期)?(?:PRD|MRD|文档正文|规则层|验收层|功能层)\s*(?:需要|应当?|不应|必须|须)'
     r'|(?:值班人员|用户|操作者)需要在文档中')
+
+
+def cloud_prd_required(p, kind):
+    if kind != 'prd':
+        return False
+    # Current product identity takes precedence over an old project title.
+    product = str(p.get('product_context',{}).get('product') or p.get('name','')).lower()
+    return (not any(word in product for word in ('不是云平台','非云平台','与云平台无关','not a cloud platform','not cloud platform'))
+            and any(word in product for word in ('云平台','cloud platform')))
+
+
+def cloud_prd_requirements(p):
+    # Structured requirements are rendered locally; only legacy requirements
+    # need model-authored explanations of the seven behavior fields.
+    return [i['id'] for i in delivery_items(p) if allowed(i,p) and i['kind']=='requirement'
+            and not i.get('detail_contract')]
+
+
+def normative_evidence(item, *, include_behavior=False):
+    text = item['statement']
+    if include_behavior and item['kind']=='requirement':
+        text += '\n'+'\n'.join(str(value) for value in item.get('behavior',{}).values() if value)
+    return text
+
+
+def cloud_prd_gaps(doc, p):
+    if not cloud_prd_required(p, doc['document_type']):
+        return []
+    required = set(cloud_prd_requirements(p))
+    if not required:
+        return []
+    gaps = []
+    for title in CLOUD_PRD_SECTIONS.values():
+        blocks = [b for s in doc['sections'] if s['title']==title for b in s['blocks']]
+        covered = {r for b in blocks if b['kind']=='explanation' and (b.get('text') or '').strip()
+                   for r in b.get('evidence_refs',{}).get('normative_refs',[])}
+        missing = required-covered
+        if missing:
+            gaps.append('云平台 PRD 缺少'+title+'：'+'、'.join(sorted(missing)))
+        if any('【资料待确认】' in (b.get('text') or '') for b in blocks):
+            gaps.append('云平台 PRD 的'+title+'仍有具名资料待确认，须核对后再交付。')
+    from .product_flow import BEHAVIOR
+    for item in delivery_items(p):
+        if item['id'] not in required:
+            continue
+        missing=[label for key,label in BEHAVIOR.items()
+                 if not str(item.get('behavior',{}).get(key,'')).strip()
+                 or str(item.get('behavior',{}).get(key,'')).strip().rstrip('。')
+                 in ('未知','待确认','资料未说明','未提及异常分支','不适用')]
+        if missing:
+            gaps.append('云平台 PRD 的 '+item['id']+' 缺少已核对行为：'+'、'.join(missing)+
+                        '；按资料补充交互与流程，确实不适用须说明依据。')
+    return gaps
 
 
 def verified_business_context(p):
@@ -103,8 +157,10 @@ def verified_context(p):
     if len(steps)<2 or not steps[1]['complete']:
         return {}
     current=p.get('product_context',{})
+    states=p.get('context_field_states') or {}
     return {key:copy.deepcopy(current[key]) for key in CONTEXT_LABELS
-            if isinstance(current.get(key),str) and current[key].strip()}
+            if isinstance(current.get(key),str) and current[key].strip()
+            and (states.get(key) or {}).get('status') not in ('unknown','not_applicable','none')}
 
 
 def sourced_acceptance_ids(p):
@@ -158,9 +214,10 @@ def plan_contract(p, kind=None):
         discussion_ids=[i['id'] for i in discussion_items(p) if not allowed(i,p)]
         claim_ids=list(verified_business_context(p))
         validation_acceptance_ids=sourced_acceptance_ids(p) if kind=='mrd' else set()
+        cloud_required = cloud_prd_required(p,kind) and bool(cloud_prd_requirements(p))
         required_analysis_sections=(['priority'] if kind=='mrd' and 'priority' in context_ids else [])+(
             ['validation'] if kind=='mrd' and {'value','intent'} & set(context_ids)
-            and validation_acceptance_ids else [])
+            and validation_acceptance_ids else [])+(list(CLOUD_PRD_SECTIONS) if cloud_required else [])
         section_key=('goal' if kind=='mrd' else 'function')
         example=None
         if context_ids or normative_ids or claim_ids:
@@ -171,6 +228,12 @@ def plan_contract(p, kind=None):
                     evidence_refs=dict(context_refs=[],normative_refs=[],
                                        business_claim_refs=claim_ids[:1]))]
             example=dict(plan_version='4',sections=[sample])
+            if cloud_required:
+                for key in CLOUD_PRD_SECTIONS:
+                    example['sections'].append(dict(section_key=key,context_refs=[],
+                        normative_refs=[],discussion_refs=[],explanations=[dict(
+                            text='仅演示引用结构，不是项目结论。',evidence_refs=dict(
+                                context_refs=[],normative_refs=cloud_prd_requirements(p)[:1],business_claim_refs=[]))]))
             jsonschema.Draft202012Validator(PLAN_SCHEMA_V4).validate(example)
         elif discussion_ids:
             example=dict(plan_version='4',sections=[dict(section_key='discussion',context_refs=[],
@@ -178,12 +241,16 @@ def plan_contract(p, kind=None):
         focus=('MRD 解释问题、使用者、价值依据、目标、衡量方式和业务影响；没有数据时只写具名待决。'
                if kind=='mrd' else
                'PRD 解释场景、操作流程、状态、数据、权限、异常和可观察验收；未知行为只写具名待决。')
-        return dict(version='prd-plan-contract-10',plan_version='4',document_type=kind,
+        return dict(version='prd-plan-contract-11',plan_version='4',document_type=kind,
             example=example,can_generate=example is not None,
             example_notice='仅演示合法引用结构，不是项目答案。' if example else '没有可引用的已核对事实或条目，不可生成。',
             section_keys=([key for key in ('background','users','goal','scope','priority','validation','risks')] if kind=='mrd' else
-                          [key for key in SECTION_TITLES if key not in ('limits','discussion')]),
+                          [key for key in SECTION_TITLES if key not in ('limits','discussion')]+
+                          (list(CLOUD_PRD_SECTIONS) if cloud_required else [])),
             required_analysis_sections=required_analysis_sections,
+            required_detail_requirement_ids=cloud_prd_requirements(p) if cloud_required else [],
+            program_rendered_detail_ids=[i['id'] for i in delivery_items(p)
+                                         if kind=='prd' and i['kind']=='requirement' and i.get('detail_contract')],
             validation_acceptance_ids=sorted(validation_acceptance_ids),
             context_ref_ids=context_ids,normative_item_ids=normative_ids,
             discussion_item_ids=discussion_ids,business_claim_ref_ids=claim_ids,
@@ -197,11 +264,18 @@ def plan_contract(p, kind=None):
                    if kind=='mrd' else 'PRD的requirement、rule、acceptance原文固定分别进入功能需求、业务规则、验收条件；行为字段同步展示。单条规范解释紧随该条目；有来源的多条规范解释进入独立关联说明章节，避免在最后一条需求下复述整套功能。')+
                   'context_refs、normative_refs 所列原文及 PRD 行为字段会自动展示；explanations 没有新的有用关系或业务影响时用 []，不得换词复述或写组装过程。'
                   '解释只可归纳引用的已核对事实，不能发明数字、目标、权限、状态转换、默认行为或新规则；未知交还澄清候选。工程快照中的现有技术只证明快照现状；未经有权决策采纳，不得写成新功能已确定采用的技术选型或业务规范。'
+                  'program_rendered_detail_ids中的详细定义由程序生成字段表、交互表、流程图、分支表和状态表；不得在explanations重新写这些字段属性、约束值或流程关系。相关条目只需列入normative_refs。'
                   'MRD的required_analysis_sections必须分别有至少一段explanations，不能仅列引用或空数组；priority解释为什么先做，validation说明如何观察验收，各自引用对应依据。这些必需分析不适用普通章节可以不解释的规则。'
                   '本期决定的数量边界、冲突拒绝及原子处理等规则仍是本期要求；只有current_state或肯定工程证据明确同一规则已经存在，才可称为既有约束/现行规则。不根据沿用、保持或验收前提推断已经实现。'
                   '已选规范由程序逐字回填，解释不能更改其含义；验收条款的“已有”前提可能指部署后的验收环境，不据此声称当前生产已经实现。候选条款、推断及冲突观察不能成为无标签正文事实。'
                   'context_refs、normative_refs、discussion_refs 的权限和附录规则沿用 v2。'+focus+
-                  '本文为待人工核对草稿；模型解释无法由机器保证语义保真，须继续语义审查和人工评审。')
+                  '本文为待人工核对草稿；模型解释无法由机器保证语义保真，须继续语义审查和人工评审。'+
+                  ('云平台 PRD 必须独立输出 interaction（交互逻辑）和 business_flow（业务流程说明），各自用 explanations 覆盖 required_detail_requirement_ids 中每项需求；这两节的正文保留在独立章节，不移入功能条目说明。'
+                   '正文用需求名称或业务对象识别对应功能，不使用内部编号代替业务说明。'
+                   '交互逻辑解释入口与前置、用户操作、输入校验、页面或操作反馈，以及有依据的权限、取消和失败分支；业务流程说明触发条件、参与角色、业务处理顺序、对象及状态变化、结果和异常分支。'
+                   '可以引用已选需求的已保存 behavior 字段，但不能据平台通用背景补造操作、状态或控制成功。后台或纯数据需求没有页面交互时，按资料解释其接口/任务触发与结果，不强行新增页面。'
+                   '未说明的具体内容用“【资料待确认】”标明缺项及影响，保留已知流程；不写成已确认规则，也不能用“已说明/按要求”占位代替正文。'
+                   if cloud_required else ''))
     context_ids=list(verified_context(p))
     normative_ids=[i['id'] for i in p['items'] if allowed(i,p)]
     discussion_ids=[i['id'] for i in discussion_items(p) if not allowed(i,p)]
@@ -254,6 +328,13 @@ def plan_schema(p,kind):
         basis[field]=copy.deepcopy(basis[field])
         restrict(basis[field],ids)
     schema['properties']['sections']['items']['properties']['section_key']={'enum':keys}
+    if kind=='prd' and contract['required_detail_requirement_ids']:
+        required_keys=list(CLOUD_PRD_SECTIONS)
+        schema['properties']['sections']['allOf']=[{'contains':{'properties':{
+            'section_key':{'const':key}},'required':['section_key']}} for key in required_keys]
+        schema['properties']['sections']['items']['allOf']=[
+            {'if':{'properties':{'section_key':{'enum':required_keys}}},
+             'then':{'properties':{'explanations':{'minItems':1}}}}]
     if kind=='mrd':
         required=[]
         for key in contract['required_analysis_sections']:
@@ -361,7 +442,7 @@ def compile_plan(plan, p, kind, omitted=(), *, include_sketch=True):
                     if value and value.strip() in explanation['text']:
                         covered_context.add(key)
     sections=[]; coverage={}; discussed=set(); discussion_order=[]; placed={}; context_placed={}; discussion_locations={}
-    prd_order=[]; prd_seen=set(); prd_explanations={}; prd_context_explanations={}; prd_associations={}
+    prd_order=[]; prd_seen=set(); prd_explanations={}; prd_context_explanations={}; prd_associations={}; prd_details={}
     def section(title,blocks):
         sid=kind.upper()+'-'+digest(dict(title=title,index=len(sections)))[:12]
         # The model chooses only a neutral section key and item order.
@@ -380,7 +461,7 @@ def compile_plan(plan, p, kind, omitted=(), *, include_sketch=True):
                 (explained and s['explanations']) for s in plan['sections']),
             'OUTPUT_EMPTY','章节建议没有任何当前有效引用；不能将结构示例当作项目文档')
     for n,s in enumerate(plan['sections']):
-        title=(MRD_SECTION_TITLES_V4 if v4 else SECTION_TITLES)[s['section_key']]
+        title=({**MRD_SECTION_TITLES_V4,**CLOUD_PRD_SECTIONS} if v4 else SECTION_TITLES)[s['section_key']]
         blocks=[]
         for j,key in enumerate(s['context_refs']):
             at=f'sections[{n}].context_refs[{j}]'
@@ -431,15 +512,21 @@ def compile_plan(plan, p, kind, omitted=(), *, include_sketch=True):
                         require(ref in allowed_refs,'REFERENCE_INVALID',
                                 f'{at}.{group}[{k}] {ref} 不在当前已核对依据白名单')
                 from .semantic_quality import validate_explanation
-                evidence='\n'.join([current_context[r] for r in basis['context_refs']]+[items[r]['statement'] for r in basis['normative_refs']]+[verified_business_context(p)[r]['text'] for r in basis['business_claim_refs']])
+                structured_refs=[r for r in basis['normative_refs'] if items[r].get('detail_contract')]
+                require(not (kind=='prd' and structured_refs),'SEMANTIC_BLOCKED',
+                        '已结构化详细定义由程序直接成文，不接受模型重复解释规范值：'+'、'.join(structured_refs))
+                detail = v4 and kind=='prd' and s['section_key'] in CLOUD_PRD_SECTIONS
+                evidence='\n'.join([current_context[r] for r in basis['context_refs']]+[normative_evidence(items[r],include_behavior=detail) for r in basis['normative_refs']]+[verified_business_context(p)[r]['text'] for r in basis['business_claim_refs']])
                 existing='\n'.join([current_context[r] for r in basis['context_refs'] if r=='current_state']+[verified_business_context(p)[r]['text'] for r in basis['business_claim_refs']])
-                scenario='\n'.join([current_context[r] for r in basis['context_refs'] if r!='current_state']+[items[r]['statement'] for r in basis['normative_refs']])
+                scenario='\n'.join([current_context[r] for r in basis['context_refs'] if r!='current_state']+[normative_evidence(items[r],include_behavior=detail) for r in basis['normative_refs']])
                 validate_explanation(explanation['text'],evidence,existing,at.replace('.evidence_refs','.text'),scenario_evidence=scenario)
                 block=dict(kind='explanation',ref_ids=basis['normative_refs'],
                            evidence_refs=copy.deepcopy(basis),text=explanation['text'])
                 if v4 and kind=='prd':
                     normative=basis['normative_refs']
-                    if len(normative)==1:
+                    if detail:
+                        prd_details.setdefault(s['section_key'],[]).append(block)
+                    elif len(normative)==1:
                         prd_explanations.setdefault(normative[0],[]).append(block)
                     elif normative:
                         kinds={items[ref]['kind'] for ref in normative}
@@ -490,6 +577,11 @@ def compile_plan(plan, p, kind, omitted=(), *, include_sketch=True):
                     {'value','intent'}.intersection(e['evidence_refs']['context_refs'])
                     for e in s['explanations']) for s in plan['sections']),
                     'SEMANTIC_BLOCKED','MRD 缺少引用已选验收或已核对价值/目标的独立试点验证分析')
+    if v4 and kind=='prd':
+        for key in contract['required_analysis_sections']:
+            covered={ref for block in prd_details.get(key,[]) for ref in block['evidence_refs']['normative_refs']}
+            missing=set(contract['required_detail_requirement_ids'])-covered
+            require(not missing,'SEMANTIC_BLOCKED','云平台 PRD 缺少'+CLOUD_PRD_SECTIONS[key]+'：'+'、'.join(sorted(missing)))
     # Preserve all verified context and current normative clauses even if the plan omits them.
     missing_context=[key for key in current_context if key not in context_placed and key not in covered_context]
     missing_normative=[] if v4 else [i for i in p['items'] if allowed(i,p) and i['id'] not in coverage]
@@ -527,6 +619,8 @@ def compile_plan(plan, p, kind, omitted=(), *, include_sketch=True):
         sid=section('补列的已核对事实与规范条款',blocks)
         for item in missing_normative:coverage[item['id']]=[sid]
     if v4 and kind=='prd':
+        for key,blocks in prd_details.items():
+            section(CLOUD_PRD_SECTIONS[key],blocks)
         prd_order.extend(i['id'] for i in p['items'] if allowed(i,p) and i['id'] not in prd_seen)
         for item_kind,title in (('requirement',SECTION_TITLES['function']),
                                 ('rule',SECTION_TITLES['rules']),
@@ -553,17 +647,34 @@ def compile_plan(plan, p, kind, omitted=(), *, include_sketch=True):
                 blocks.append(text('关联条款：'+'、'.join(explanation['ref_ids'])))
                 blocks.append(explanation)
             section(PRD_ASSOCIATION_TITLES[association_kind],blocks)
-    # The MRD keeps every selected clause, after the product body, in one annex.
+    if kind=='prd':
+        from .detail_rendering import detail_block, GROUP_TITLES
+        structured=[i for i in delivery_items(p) if i['kind']=='requirement' and i.get('detail_contract')]
+        for group,title in GROUP_TITLES.items():
+            if not structured:
+                break
+            target=next((s for s in sections if s['title']==title),None)
+            blocks=[detail_block(item,group) for item in structured]
+            if target is None:
+                section(title,blocks)
+            else:
+                target['blocks'].extend(blocks)
+    # The MRD keeps every selected clause after the product body. Split the
+    # annex at clause boundaries to respect the compiled document contract.
     # PRD and historical plan versions retain their original clause placement.
     if v4 and kind=='mrd':
         normative=[i for i in p['items'] if allowed(i,p)]
-        if normative:
+        block_limit=SCHEMA['$defs']['prdResult']['properties']['sections']['items']['properties']['blocks']['maxItems']
+        items_per_section=block_limit//2  # Keep each clause and its provenance together.
+        for offset in range(0,len(normative),items_per_section):
+            batch=normative[offset:offset+items_per_section]
             blocks=[]
-            for item in normative:
+            for item in batch:
                 blocks.append(dict(kind=item['kind'],ref_ids=[item['id']],text=None))
                 blocks.append(text(f'{item["id"]}：{item["epistemic_status"]}；草稿采纳不代表业务负责人批准'+provenance(item),[item['id']]))
-            sid=section(MRD_NORMATIVE_APPENDIX_TITLE,blocks)
-            for item in normative:coverage[item['id']]=[sid]
+            title=MRD_NORMATIVE_APPENDIX_TITLE+(f'（续 {offset//items_per_section+1}）' if offset else '')
+            sid=section(title,blocks)
+            for item in batch:coverage[item['id']]=[sid]
     # Discussion is never interleaved with current normative body sections.
     # Keep model-selected order first, then retain other non-normative items
     # with their own selection/scope identity, including selected goals.

@@ -27,6 +27,8 @@ assert item_id not in {item['id'] for item in delivery_items(p)}
 
 async def exercise():
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://testserver') as client:
+        session = await client.get('/api/session')
+        client.headers.update({'Origin': 'http://testserver', 'X-CSRF-Token': session.json()['csrf']})
         response = await client.post('/api/projects/' + p['id'] + '/items/' + item_id + '/include-scope',
             json={'expected_revision': p['revision'], 'reason': 'Explicit synthetic business scope decision'})
         assert response.status_code == 200, response.text

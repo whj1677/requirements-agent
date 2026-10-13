@@ -23,9 +23,15 @@ def answered_project(tmp_path):
     store=Store(tmp_path)
     p=prepared(store)
     q=p['questions'][0]
-    q.update(status='answered',answer='合成决策：权限沿用，不放宽。',understanding_status='pending',
+    q.update(question='保存时段重叠时怎样处理？', status='answered',
+             answer=p['items'][1]['statement'],understanding_status='pending',
              related_refs=['RULE-0001'],answer_source_refs=copy.deepcopy(p['items'][1]['source_refs']))
     return p,q
+
+
+def implementation_map(p, q):
+    return {q['id']: [dict(item_id=i['id'], field='statement', quote=i['statement'])
+                     for i in answer_targets(p, q)]}
 
 
 def test_constraint_has_typed_binding_and_wrong_kind_still_rejected(tmp_path):
@@ -98,7 +104,8 @@ def test_manual_recovery_rejects_missing_review_and_stale_or_wrong_identity(tmp_
 def test_manual_recovery_retains_business_truth_and_invalidates_after_clause_edit(tmp_path):
     p,q=answered_project(tmp_path);item=answer_targets(p,q)[0]
     before=copy.deepcopy(item)
-    confirm_manual_answer(p,q,digest(q['answer']),{item['id']:application_hash(item)},True)
+    confirm_manual_answer(p,q,digest(q['answer']),{item['id']:application_hash(item)},True,
+                          answer_implementations=implementation_map(p,q))
     assert q['understanding_status']=='applied' and item==before
     assert q['answer_applications'][item['id']]['method']=='manual_review'
     item['statement']='新版本条款，需要重新核对是否仍包含回答'
@@ -113,14 +120,17 @@ def test_http_manual_recovery_no_model_and_stale_page_conflicts(tmp_path):
     pid=p['id']
     with app.state.store.edit(pid,p['revision'],'合成已保存回答') as (draft,_):
         q=draft['questions'][0]
-        q.update(status='answered',answer='合成只读规则',understanding_status='pending',related_refs=['RULE-0001'])
+        q.update(question='保存时段重叠时怎样处理？',status='answered',
+                 answer=draft['items'][1]['statement'],understanding_status='pending',related_refs=['RULE-0001'])
     qid=app.state.store.get(pid)['questions'][0]['id'];path=f'/api/projects/{pid}/questions/{qid}/application-review'
     with TestClient(app) as c:
         csrf=c.post('/api/session/login',json={'key':'synthetic-login'}).json()['csrf']
         c.headers.update({'Origin':'http://testserver','X-CSRF-Token':csrf})
         review=c.get(path).json()
         body=dict(expected_revision=review['expected_revision'],answer_hash=review['answer_hash'],
-                  clause_hashes={t['item']['id']:t['clause_hash'] for t in review['targets']},review_confirmed=True)
+                  clause_hashes={t['item']['id']:t['clause_hash'] for t in review['targets']},review_confirmed=True,
+                  answer_implementations={qid:[dict(item_id=t['item']['id'],field='statement',
+                                                   quote=t['item']['statement']) for t in review['targets']]})
         assert c.post(path,json={**body,'review_confirmed':False}).status_code==409
         result=c.post(path,json=body)
         assert result.status_code==200,result.text
@@ -144,7 +154,8 @@ def test_legacy_application_invalidates_when_original_clause_changes(tmp_path):
 
 def test_new_direct_target_does_not_inherit_previous_application(tmp_path):
     p,q=answered_project(tmp_path)
-    confirm_manual_answer(p,q,digest(q['answer']),{i['id']:application_hash(i) for i in answer_targets(p,q)},True)
+    confirm_manual_answer(p,q,digest(q['answer']),{i['id']:application_hash(i) for i in answer_targets(p,q)},True,
+                          answer_implementations=implementation_map(p,q))
     q['related_refs'].append('AC-0001')
     invalidate_answer_applications(p)
     assert q['understanding_status']=='pending'
@@ -154,7 +165,8 @@ def test_new_direct_target_does_not_inherit_previous_application(tmp_path):
 def test_current_explicit_review_survives_its_own_clause_revision_transaction(tmp_path):
     p,q=answered_project(tmp_path);before=copy.deepcopy(p)
     item=answer_targets(p,q)[0]
-    item['statement']='人工修订并核对后的只读规则'
-    confirm_manual_answer(p,q,digest(q['answer']),{item['id']:application_hash(item)},True)
+    item['statement']=q['answer']+' 人工修订并核对。'
+    confirm_manual_answer(p,q,digest(q['answer']),{item['id']:application_hash(item)},True,
+                          answer_implementations=implementation_map(p,q))
     invalidate_answer_applications(p,before)
     assert q['understanding_status']=='applied'

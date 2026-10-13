@@ -208,6 +208,10 @@ def test_semantic_conflict_is_not_a_paid_format_repair(tmp_path,monkeypatch,cap)
     transport=httpx.MockTransport(respond)
     monkeypatch.setattr('app.provider.httpx.AsyncClient',lambda **kw:real_client(**kw,transport=transport))
     app=create_app(tmp_path,access_token='offline-condition-login',env_path=tmp_path/'absent.env');app.state.provider.set_key(DEFAULT,'synthetic-condition-key')
+    # This frozen HTTP response is the legacy canonical contract. Keep this
+    # isolated Provider on that protocol so the test reaches semantic checking;
+    # the real Provider class/default still uses the business draft protocol.
+    monkeypatch.setattr(app.state.provider,'business_draft_protocol',None)
     real=app.state.store.create('纯合成公开条件拦截')
     with app.state.store.edit(real['id'],real['revision'],'offline fixture sources') as (real,_):
         real['sources']=[dict(id='SRC-condition',title='纯合成',purpose='goal',excluded=False,parse_status='read',failure_reason='',image_mime=None,excerpts=ex)]

@@ -1,0 +1,543 @@
+{
+  "schema_version": "domain-knowledge-index-draft-1",
+  "package_id": "energy-storage-cloud",
+  "package_version": "0.1.0",
+  "title": "储能云平台基础业务知识评审稿",
+  "date": "2026-10-12",
+  "timezone": "Asia/Shanghai",
+  "publication_status": "draft",
+  "runtime_activation": false,
+  "content_file": "knowledge-v1.md",
+  "content_sha256": "0bfb0d88d050f642b2c311879d33534515514087edfc799db4b71845d2b92f77",
+  "evidence_role": "industry_reference_not_product_decision",
+  "scope": {
+    "primary_domain": "电化学储能云平台",
+    "audience": "大型储能集成商云平台产品经理",
+    "company_specific": false,
+    "covers_all_storage_technologies": false
+  },
+  "retrieval_status": "catalog_only_not_implemented",
+  "overview_card_id": "ESC-OVERVIEW",
+  "proposed_retrieval": {
+    "method": "topic_phrase_alias_match",
+    "max_topic_cards_excluding_overview": 4,
+    "related_expansion_depth": 1,
+    "deduplicate": true,
+    "no_match": "overview_and_coverage_notice",
+    "ambiguous_route": "overview_and_explicit_topic_hits_only",
+    "unrelated_route": "no_injection",
+    "budget_priority": "current_project_input_and_evidence_before_domain_knowledge"
+  },
+  "sources": [
+    {
+      "id": "SRC-EMS",
+      "title": "Sandia DOE 手册第 15 章 Energy Storage Management Systems",
+      "url": "https://www.sandia.gov/app/uploads/sites/163/2023/01/ESHB2020_Ch15_ESMS_Nguyen.pdf",
+      "locator": "纸面第 2 至 5 页",
+      "reading_status": "relevant_passages_reviewed",
+      "checked_at": "2026-10-12",
+      "support_limit": "仅支持架构、设备信息和估算概念，不证明公司实现"
+    },
+    {
+      "id": "SRC-PCS",
+      "title": "Sandia DOE 手册第 13 章 Power Conversion Systems",
+      "url": "https://www.sandia.gov/app/uploads/sites/163/2021/09/ESHB_Ch13_PCS_Mueller.pdf",
+      "locator": "纸面第 1 至 3 页",
+      "reading_status": "relevant_passages_reviewed",
+      "checked_at": "2026-10-12",
+      "support_limit": "仅支持 PCS 职责概念"
+    },
+    {
+      "id": "SRC-TEST",
+      "title": "Sandia DOE 手册第 16 章 Energy Storage Performance Testing",
+      "url": "https://www.sandia.gov/app/uploads/sites/163/2021/09/ESHB_Ch16_Testing_Rosewater.pdf",
+      "locator": "纸面第 5、12 至 13 页",
+      "reading_status": "relevant_passages_reviewed",
+      "checked_at": "2026-10-12",
+      "support_limit": "仅支持容量、能量和系统效率概念，不指定产品统计公式"
+    },
+    {
+      "id": "SRC-SECURITY",
+      "title": "Sandia DOE 手册第 18 章 Physical Security and Cybersecurity of Energy Storage Systems",
+      "url": "https://www.sandia.gov/app/uploads/sites/163/2021/09/ESHB_Ch18_Physical-Security_Johnson.pdf",
+      "locator": "纸面第 11 至 13、17 至 18 页",
+      "reading_status": "relevant_passages_reviewed",
+      "checked_at": "2026-10-12",
+      "support_limit": "通信与访问控制参考，美国制度要求不移植"
+    },
+    {
+      "id": "SRC-APPLICATIONS",
+      "title": "Sandia DOE 手册第 23 章 Applications and Grid Services",
+      "url": "https://www.sandia.gov/app/uploads/sites/163/2021/09/ESHB_Ch23_Applications_Nguyen.pdf",
+      "locator": "纸面第 1 至 3 页",
+      "reading_status": "relevant_passages_reviewed",
+      "checked_at": "2026-10-12",
+      "support_limit": "应用概念参考，不指定中国电价、合同或结算规则"
+    },
+    {
+      "id": "SRC-IEC-VOCAB",
+      "title": "IEC 62933-1:2024 官方介绍",
+      "url": "https://webstore.iec.ch/en/publication/64642",
+      "locator": "官方介绍与版本信息",
+      "reading_status": "metadata_only",
+      "checked_at": "2026-10-12",
+      "support_limit": "未阅读全文，不支持具体术语或规范条款"
+    },
+    {
+      "id": "SRC-CN-MONITOR",
+      "title": "GB/T 42726-2023 官方条目",
+      "url": "https://std.samr.gov.cn/gb/search/gbDetailed?id=FC816D04FE8B62EBE05397BE0A0AD5FA",
+      "locator": "标准名称、版本及状态",
+      "reading_status": "metadata_only",
+      "checked_at": "2026-10-12",
+      "support_limit": "未阅读全文，不支持监控系统具体条款"
+    }
+  ],
+  "cards": [
+    {
+      "id": "ESC-OVERVIEW",
+      "heading": "云平台怎样形成业务闭环",
+      "section_sha256": "a809e4d94d34563f3e9709d496f985fddccf4f1d6ca978d9de5d2a81a08b2450",
+      "knowledge_kind": "mixed",
+      "review_status": "draft",
+      "keywords": [
+        "储能云平台",
+        "储能运营平台",
+        "储能监控平台",
+        "电站平台",
+        "平台职责",
+        "运行链路",
+        "业务闭环"
+      ],
+      "related_card_ids": [],
+      "source_ids": [
+        "SRC-EMS"
+      ]
+    },
+    {
+      "id": "ESC-SCENARIOS",
+      "heading": "场景怎样影响业务目标",
+      "section_sha256": "121a4f4768b0e43060089a80ba42d1e3b78bb117b2857b8c629adeddd0d4b9f8",
+      "knowledge_kind": "industry_reference",
+      "review_status": "draft",
+      "keywords": [
+        "业务场景",
+        "应用场景",
+        "削峰",
+        "备用",
+        "调频",
+        "辅助服务",
+        "能量时移",
+        "工商储",
+        "大储"
+      ],
+      "related_card_ids": [],
+      "source_ids": [
+        "SRC-APPLICATIONS"
+      ]
+    },
+    {
+      "id": "ESC-ROLES",
+      "heading": "使用者怎样围绕平台协作",
+      "section_sha256": "e90acf92fa0e942a5a2c21f6d3df8acb10cf7622c238f1766d4579ef883cd670",
+      "knowledge_kind": "analysis_framework",
+      "review_status": "draft",
+      "keywords": [
+        "使用者",
+        "岗位",
+        "运营人员",
+        "运维人员",
+        "业务角色",
+        "资产拥有者"
+      ],
+      "related_card_ids": [
+        "ESC-ACCESS"
+      ],
+      "source_ids": []
+    },
+    {
+      "id": "ESC-ASSETS",
+      "heading": "业务对象怎样建立关系",
+      "section_sha256": "221ef51d187d64caed41c23db0a1864adfb289fc5595ed9b0ac63ea64fd0a6ee",
+      "knowledge_kind": "analysis_framework",
+      "review_status": "draft",
+      "keywords": [
+        "资产",
+        "电站",
+        "站点",
+        "设备",
+        "测点",
+        "计量点",
+        "分组",
+        "设备管理",
+        "资产层级",
+        "储能舱",
+        "电池簇",
+        "模组"
+      ],
+      "related_card_ids": [],
+      "source_ids": []
+    },
+    {
+      "id": "ESC-BMS",
+      "heading": "BMS 提供什么业务信息",
+      "section_sha256": "78564b5b88f4a861c6ebcf351af3656963ca7f300d5e47a3ae05e74111cb593c",
+      "knowledge_kind": "industry_reference",
+      "review_status": "draft",
+      "keywords": [
+        "BMS",
+        "电池管理系统",
+        "电池信息",
+        "保护状态",
+        "电池温度"
+      ],
+      "related_card_ids": [
+        "ESC-BATTERY-STATE"
+      ],
+      "source_ids": [
+        "SRC-EMS"
+      ]
+    },
+    {
+      "id": "ESC-PCS",
+      "heading": "PCS 怎样关联充放电",
+      "section_sha256": "305f9cf0d9d3bd8ffe651f9e0947a4a73f21bfe01ec2db6939b2c268a50c31aa",
+      "knowledge_kind": "industry_reference",
+      "review_status": "draft",
+      "keywords": [
+        "PCS",
+        "储能变流器",
+        "功率转换系统",
+        "充放电方向",
+        "功率正负"
+      ],
+      "related_card_ids": [
+        "ESC-POWER-ENERGY"
+      ],
+      "source_ids": [
+        "SRC-PCS"
+      ]
+    },
+    {
+      "id": "ESC-EMS",
+      "heading": "EMS 和云平台怎样分工",
+      "section_sha256": "9277b697631e47c1b4c2550ba20f2f7244eb644a09ec370707f2fb7388dc42cd",
+      "knowledge_kind": "industry_reference",
+      "review_status": "draft",
+      "keywords": [
+        "EMS",
+        "能量管理系统",
+        "站端",
+        "云端",
+        "本地控制",
+        "控制权",
+        "控制优先级",
+        "调度职责"
+      ],
+      "related_card_ids": [],
+      "source_ids": [
+        "SRC-EMS"
+      ]
+    },
+    {
+      "id": "ESC-INGEST",
+      "heading": "数据怎样从现场进入平台",
+      "section_sha256": "d25d4786f9ddd2ea4de42e3ccf7534b5251b44aa79fc9aaceee107eb33c5265c",
+      "knowledge_kind": "mixed",
+      "review_status": "draft",
+      "keywords": [
+        "数据接入",
+        "数据采集",
+        "网关",
+        "协议",
+        "设备接入",
+        "测点映射",
+        "数据来源"
+      ],
+      "related_card_ids": [
+        "ESC-ASSETS",
+        "ESC-QUALITY"
+      ],
+      "source_ids": [
+        "SRC-SECURITY"
+      ]
+    },
+    {
+      "id": "ESC-QUALITY",
+      "heading": "数据质量怎样影响业务判断",
+      "section_sha256": "80f006506e84984864e08981a7648191ad6cc240a3cc9d53cdaabfc39ff1c3f2",
+      "knowledge_kind": "analysis_framework",
+      "review_status": "draft",
+      "keywords": [
+        "数据质量",
+        "缺失",
+        "延迟",
+        "重复",
+        "乱序",
+        "异常值",
+        "补传",
+        "补数",
+        "离线",
+        "断网",
+        "数据新鲜",
+        "时间戳"
+      ],
+      "related_card_ids": [],
+      "source_ids": []
+    },
+    {
+      "id": "ESC-MONITORING",
+      "heading": "实时监测与历史分析怎样关联",
+      "section_sha256": "2897323a18fa0fa1ae1f41a4b90605e8d03cf51ad0fadf8e95517f66859b8cbb",
+      "knowledge_kind": "analysis_framework",
+      "review_status": "draft",
+      "keywords": [
+        "实时",
+        "监测",
+        "监控",
+        "趋势",
+        "历史曲线",
+        "历史数据",
+        "采样",
+        "刷新",
+        "聚合"
+      ],
+      "related_card_ids": [
+        "ESC-QUALITY"
+      ],
+      "source_ids": []
+    },
+    {
+      "id": "ESC-ALARMS",
+      "heading": "告警怎样进入处理流程",
+      "section_sha256": "4ca922c1597a964cb9139b1cee382434773bc602fb5f572ca15e2387ccb6dd5d",
+      "knowledge_kind": "analysis_framework",
+      "review_status": "draft",
+      "keywords": [
+        "告警",
+        "报警",
+        "告警恢复",
+        "告警关闭",
+        "告警确认",
+        "告警屏蔽",
+        "告警通知",
+        "重复告警"
+      ],
+      "related_card_ids": [
+        "ESC-MONITORING",
+        "ESC-QUALITY"
+      ],
+      "source_ids": []
+    },
+    {
+      "id": "ESC-OPERATIONS",
+      "heading": "运维怎样记录问题和处理结果",
+      "section_sha256": "e968d9e9138be7aa2d81e7b050bd15d24cf1af6693cc7b85f92f009eb035c5f3",
+      "knowledge_kind": "analysis_framework",
+      "review_status": "draft",
+      "keywords": [
+        "运维",
+        "巡检",
+        "工单",
+        "派单",
+        "处理意见",
+        "处理措施",
+        "维护"
+      ],
+      "related_card_ids": [
+        "ESC-ALARMS"
+      ],
+      "source_ids": []
+    },
+    {
+      "id": "ESC-COMMAND",
+      "heading": "控制动作怎样确认结果",
+      "section_sha256": "8c8493a58f8dff8ae25b380954eba08442a13d109737c76eaac16ccf62963b97",
+      "knowledge_kind": "analysis_framework",
+      "review_status": "draft",
+      "keywords": [
+        "远程控制",
+        "遥控",
+        "指令",
+        "指令下发",
+        "控制执行",
+        "执行反馈",
+        "超时",
+        "重试",
+        "手动操作"
+      ],
+      "related_card_ids": [
+        "ESC-EMS",
+        "ESC-QUALITY"
+      ],
+      "source_ids": []
+    },
+    {
+      "id": "ESC-STRATEGY",
+      "heading": "策略怎样从配置走到执行",
+      "section_sha256": "a3c66e7f64b3d312848e286a5889f2eb06d42d76d22d2b22ee3062aeb0197dff",
+      "knowledge_kind": "analysis_framework",
+      "review_status": "draft",
+      "keywords": [
+        "策略",
+        "充放电计划",
+        "策略配置",
+        "策略启停",
+        "策略生效",
+        "策略版本",
+        "自动运行",
+        "排程"
+      ],
+      "related_card_ids": [
+        "ESC-EMS",
+        "ESC-COMMAND"
+      ],
+      "source_ids": []
+    },
+    {
+      "id": "ESC-POWER-ENERGY",
+      "heading": "功率和电量怎样区分",
+      "section_sha256": "765fdb6f1b9133ff1b3598953e693d42b16687bb152633a38fafbed7f14123c5",
+      "knowledge_kind": "industry_reference",
+      "review_status": "draft",
+      "keywords": [
+        "功率",
+        "电量",
+        "电能",
+        "容量",
+        "kW",
+        "MW",
+        "kWh",
+        "MWh",
+        "Ah",
+        "Wh",
+        "计量",
+        "累计读数",
+        "电表"
+      ],
+      "related_card_ids": [],
+      "source_ids": [
+        "SRC-TEST"
+      ]
+    },
+    {
+      "id": "ESC-BATTERY-STATE",
+      "heading": "SOC 和 SOH 应怎样理解",
+      "section_sha256": "f61a2b1a48b7f6bd68ead074b3726bc4f8d43f350e01eacf9c086be25e8a4fd3",
+      "knowledge_kind": "industry_reference",
+      "review_status": "draft",
+      "keywords": [
+        "SOC",
+        "SOH",
+        "荷电状态",
+        "健康状态",
+        "站级SOC",
+        "电池状态",
+        "剩余电量"
+      ],
+      "related_card_ids": [
+        "ESC-ASSETS",
+        "ESC-QUALITY"
+      ],
+      "source_ids": [
+        "SRC-EMS"
+      ]
+    },
+    {
+      "id": "ESC-EFFICIENCY",
+      "heading": "效率和运行指标怎样确定口径",
+      "section_sha256": "c9e11619b0f6cf43446a61f28a492b3b108e20e9ba1ce6d11e4e57e484c64dec",
+      "knowledge_kind": "industry_reference",
+      "review_status": "draft",
+      "keywords": [
+        "效率",
+        "运行指标",
+        "往返效率",
+        "充放电效率",
+        "辅助用电",
+        "可用率",
+        "利用率",
+        "循环次数"
+      ],
+      "related_card_ids": [
+        "ESC-POWER-ENERGY",
+        "ESC-QUALITY"
+      ],
+      "source_ids": [
+        "SRC-TEST"
+      ]
+    },
+    {
+      "id": "ESC-ECONOMICS",
+      "heading": "收益分析怎样关联运行数据",
+      "section_sha256": "89dff2000a0402a1ce4178e56b6742e8e4f5b6162a95ee2f0ef39014739049bf",
+      "knowledge_kind": "mixed",
+      "review_status": "draft",
+      "keywords": [
+        "收益",
+        "电价",
+        "成本",
+        "结算",
+        "预测收益",
+        "重算",
+        "账单",
+        "峰谷",
+        "套利",
+        "节省"
+      ],
+      "related_card_ids": [
+        "ESC-SCENARIOS",
+        "ESC-POWER-ENERGY"
+      ],
+      "source_ids": [
+        "SRC-APPLICATIONS"
+      ]
+    },
+    {
+      "id": "ESC-ACCESS",
+      "heading": "访问权限怎样关联业务对象",
+      "section_sha256": "a2556997e2562bf6e0833f733859ff8d4e88ab602e2c10c13fd2384816028f69",
+      "knowledge_kind": "mixed",
+      "review_status": "draft",
+      "keywords": [
+        "权限",
+        "数据范围",
+        "授权",
+        "租户",
+        "组织权限",
+        "客户权限",
+        "角色权限",
+        "导出权限",
+        "资产转移"
+      ],
+      "related_card_ids": [
+        "ESC-ASSETS"
+      ],
+      "source_ids": [
+        "SRC-SECURITY"
+      ]
+    },
+    {
+      "id": "ESC-REPORTS",
+      "heading": "报表怎样形成可解释的结果",
+      "section_sha256": "f611782cb12594be083c3f30e4063dddbbf5694a559b71425a5e586ed6f2c0af",
+      "knowledge_kind": "analysis_framework",
+      "review_status": "draft",
+      "keywords": [
+        "报表",
+        "报告",
+        "日报",
+        "月报",
+        "统计",
+        "汇总",
+        "导出",
+        "对账",
+        "报表版本"
+      ],
+      "related_card_ids": [
+        "ESC-QUALITY"
+      ],
+      "source_ids": []
+    }
+  ]
+}

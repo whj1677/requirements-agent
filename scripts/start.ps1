@@ -33,17 +33,8 @@ try {
         if (Get-Process -Id $priorPid -ErrorAction SilentlyContinue) { throw 'PID 记录仍指向运行中的进程，请先运行 scripts\stop.ps1。' }
     }
     $savedEnvironment = @{}
-    foreach ($name in @('RA_ACCESS_TOKEN','RA_PORT','RA_DATA_DIR','PYTHONUTF8')) { $savedEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
+    foreach ($name in @('RA_PORT','RA_DATA_DIR','PYTHONUTF8')) { $savedEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
     try {
-        if ($NoAuth) {
-            $env:RA_ACCESS_TOKEN = 'off'
-        } else {
-            $tokenBytes = New-Object byte[] 32
-            $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
-            try { $rng.GetBytes($tokenBytes) } finally { $rng.Dispose() }
-            $accessToken = [Convert]::ToBase64String($tokenBytes)
-            $env:RA_ACCESS_TOKEN = $accessToken
-        }
         $env:RA_PORT = '8765'
         $env:RA_DATA_DIR = $dataPath
         $env:PYTHONUTF8 = '1'
@@ -66,8 +57,7 @@ try {
         foreach ($name in $savedEnvironment.Keys) { [Environment]::SetEnvironmentVariable($name, $savedEnvironment[$name], 'Process') }
     }
     Write-Host "唯一工作台入口：$url"
-    if ($NoAuth) { Write-Host '本机无令牌模式，仅监听 127.0.0.1。' }
-    else { Write-Host "本机访问令牌：$accessToken" }
+    Write-Host '本机直接进入工作台，仅监听 127.0.0.1。'
     if ($OpenBrowser) { Start-Process $url }
 } finally {
     if ($locked) { $mutex.ReleaseMutex() }

@@ -1,7 +1,7 @@
 """Model expansion is a proposal until a version-bound human check."""
 import copy
 
-from app.core import brief_hash
+from app.core import brief_hash, digest
 from app.requirements import behavior_review_current
 from app.workflow import apply_response
 from tests.helpers import prepared
@@ -90,3 +90,29 @@ def test_legacy_selected_facts_are_not_migrated_by_read_projection(tmp_path):
     assert app.state.store.get(p['id'])==before
     assert brief_hash(app.state.store.get(p['id']))==brief_hash(before)
     assert brief_hash(shown)==brief_hash(before)==shown['hashes']['brief_hash']
+
+
+def test_brief_hash_ignores_only_question_view_flags_without_mutation():
+    raw = dict(items=[dict(statement='管理员维护电价时段。')],
+               questions=[dict(question='相接时段是否允许保存？', answer='允许相接。',
+                               decision_coverage='clear',
+                               decision_review_proposal={'decision_coverage_complete': '保留嵌套业务内容'})],
+               options=[], product_context={'module': '储能站电价'},
+               scope_profile={'scenario': 'new_module', 'dependencies': 'independent'},
+               context_field_states={'users': {'status': 'known'}})
+    frozen = copy.deepcopy(raw)
+    # This is the pre-fix algorithm's exact input for a stored snapshot.
+    original_hash = digest({key: raw[key] for key in ('items', 'questions', 'options',
+        'product_context', 'scope_profile', 'context_field_states')})
+    assert brief_hash(raw) == original_hash
+    projected = copy.deepcopy(raw)
+    projected['questions'][0].update(decision_review_proposal_current=True, decision_coverage_complete=True)
+    projected_before = copy.deepcopy(projected)
+    assert brief_hash(projected) == original_hash
+    assert raw == frozen and projected == projected_before
+    for field, changed in [('question', '跨午夜时段如何处理？'), ('answer', '不允许相接。'),
+                           ('decision_coverage', 'pending'),
+                           ('decision_review_proposal', {'decision_coverage_complete': '变更后的嵌套业务内容'})]:
+        edited = copy.deepcopy(projected)
+        edited['questions'][0][field] = changed
+        assert brief_hash(edited) != original_hash, field

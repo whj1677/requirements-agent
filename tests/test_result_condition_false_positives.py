@@ -96,3 +96,52 @@ def test_public_isolated_adoption_requires_exact_human_review(tmp_path,text):
     assert selected['selection_status']=='selected' and selected['behavior']['result']==text
     assert selected['source_refs']==value['proposals'][0]['source_refs']
     assert not app.state.store.records(p['id'],'run')
+
+
+@pytest.mark.parametrize('text',[
+    '前提：提交保存时网络中断导致提交结果未知；此时应先查询原提交是否完成，未确认结果前不得再次发出保存提交，也不得当作保存失败处理。',
+    '结果未知，不得当作保存成功或保存失败；先查询原提交。',
+    '结果未知，禁止重新发送保存请求，先查询原提交。',
+    '保存时响应丢失；不能视为保存成功。',
+    '结果未知，不得判定为保存失败。',
+])
+def test_unknown_occurrence_and_local_negated_inference_are_not_results(text):
+    from app.result_conditions import facts, issues
+    before=str(text)
+    found=facts(text,location='synthetic',fallback_operation='write',fallback_subject='记录')
+    assert not issues(found),found
+    assert any(f['role']=='unknown_result' for f in found)
+    assert text==before
+
+
+@pytest.mark.parametrize('text',[
+    '结果未知，当作保存成功处理。',
+    '结果未知，当作保存失败处理。',
+    '结果未知，不得不当作保存失败。',
+    '结果未知，不得当作保存失败，但本次保存成功。',
+    '结果未知，不得当作保存失败；本次未保存。',
+    '结果未知，禁止重新发送保存请求，但原记录不变。',
+    '保存时响应丢失，仍保存成功。',
+    '保存时结果未知；本次没有保存。',
+    '结果未知，已发送保存请求。',
+    '结果未知，禁止再次发出保存提交；原记录不变。',
+    '保存时业务已处理完成却响应丢失。',
+    '保存时工单已经生成但结果未知。',
+])
+def test_retry_prohibition_cannot_hide_a_later_or_positive_result(text):
+    from app.result_conditions import facts, issues
+    found=facts(text,location='synthetic',fallback_operation='write',fallback_subject='记录')
+    assert any(i['reason']=='unknown_result_asserted' for i in issues(found)),found
+
+
+def test_live_phrase_passes_full_protocol_and_preserves_source_and_text():
+    text=('前提：提交保存时网络中断导致提交结果未知；此时应先查询原提交是否完成，'
+          '未确认结果前不得再次发出保存提交，也不得当作保存失败处理。')
+    source='本期新增记录保存功能。超时结果未知，先查询原提交，状态确认前不重复提交。'
+    p,v,ex=case(text,source=source,field='statement')
+    v['proposals'][0]['title']='记录保存'
+    v['proposals'][0]['behavior']={}
+    v['proposals'][0]['scope_evidence'][0]['quote']='本期新增记录保存功能。'
+    before=copy.deepcopy((p,v,ex))
+    assert validate_response(v,'ingest',p,ex)==v
+    assert (p,v,ex)==before

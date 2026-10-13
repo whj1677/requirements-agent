@@ -191,7 +191,17 @@ def test_public_saved_answer_to_mock_candidates_and_explicit_each_adoption(route
         prior=next(x for x in before['items'] if x['id']==target)
         assert old['selection_status']=='selected' and old['content_version']==prior['content_version']+1
         assert next(x for x in p['items'] if x['id']==i['id'])['selection_status']=='deferred'
-        assert p['questions'][0]['understanding_status']==('candidate_ready' if index==0 else 'applied')
+        assert p['questions'][0]['understanding_status']=='candidate_ready'
+        assert not p['questions'][0]['applied_item_ids']
+    q=p['questions'][0]
+    review=client.get(root+'/questions/'+q['id']+'/application-review').json()
+    r=post('/questions/'+q['id']+'/application-review',dict(expected_revision=p['revision'],
+        answer_hash=review['answer_hash'],review_confirmed=True,
+        clause_hashes={t['item']['id']:t['clause_hash'] for t in review['targets']},
+        answer_implementations={q['id']:[dict(item_id=t['item']['id'],field='statement',
+                                           quote=t['item']['statement']) for t in review['targets']]}))
+    assert r.status_code==200,r.text;p=r.json()
+    assert p['questions'][0]['understanding_status']=='applied'
     assert not p.get('active_baseline_id') and not p['documents']
 
 

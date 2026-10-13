@@ -49,7 +49,8 @@ def contract():
     return dict(version='ingest-contract-2', example=example,
                 instruction='示例仅说明结构，不是业务答案或失败回退。必须保留根节点 result，'
                 '含 understanding 字符串和 material_limits 数组。禁止 *_note、placeholder 或任何未知字段。'
-                '未知正文填空字符串；来源只使用实际 excerpts 中 source_id/id 配对，不能生成来源ID。')
+                '未知正文填空字符串；来源只使用实际 excerpts 中 source_id/id 配对，不能生成来源ID。'
+                '每个对象内字段只输出一次。新父问题为阻塞时，所有子问题继承阻塞状态与最早处理阶段。')
 
 
 def issues(value, excerpts):
@@ -79,6 +80,28 @@ def validate(value, excerpts):
             '材料分析契约不匹配：\n' + '\n'.join(errors))
 
 
+def inherit_new_question_gates(value, project):
+    """New split decisions inherit their parent's gate; never relax existing ones."""
+    result = copy.deepcopy(value)
+    changes = []
+    existing = {q['id'] for q in project['questions']}
+    for parent in result['questions']:
+        if (parent.get('target_question_id') or parent['temp_id'] in existing or
+                not parent['blocking']):
+            continue
+        for child in parent.get('decision_points', []):
+            if child['temp_id'] in existing:
+                continue
+            stage = min(child.get('blocking_stage', 3), parent.get('blocking_stage', 3))
+            if child['blocking'] and child.get('blocking_stage', 3) == stage:
+                continue
+            changes.append(dict(parent=parent['temp_id'], child=child['temp_id'],
+                before=dict(blocking=child['blocking'], blocking_stage=child.get('blocking_stage', 3)),
+                after=dict(blocking=True, blocking_stage=stage)))
+            child.update(blocking=True, blocking_stage=stage)
+    return result, changes
+
+
 def diagnostic_object(output):
     """A parseable first object is only an anchor, never a cleaned accepted response."""
     try:
@@ -104,6 +127,8 @@ def business_anchor(value, excerpts=()):
     """Lock valid business fields; missing/invalid fields may still be repaired."""
     if not isinstance(value, dict):
         return {}
+    from .source_quotes import normalize_scope_quotes
+    value, _ = normalize_scope_quotes(value, excerpts)
     # Lock the evidence-derived label rather than a contradictory redundant label;
     # all business text, quotes and evidence states remain protected.
     from .understanding import normalize_classification_labels
@@ -185,6 +210,9 @@ def response_anchor(value, excerpts, stage, project=None):
     """Conservatively retain valid business fields in a malformed non-ingest reply."""
     if not isinstance(value, dict):
         return {}
+    if stage in ('clarify', 'change'):
+        from .source_quotes import normalize_scope_quotes
+        value, _ = normalize_scope_quotes(value, excerpts)
     definitions=SCHEMA['$defs']
     pairs={(e['source_id'],e['id']) for e in excerpts}
     locked={}

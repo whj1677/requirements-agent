@@ -3,16 +3,25 @@ import copy
 
 import pytest
 
-from app.core import Problem
-from app.understanding import accept_answer_update, annotate_candidates, record_answer, validate
+from app.core import Problem, digest
+from app.understanding import (accept_answer_update, annotate_candidates, application_hash,
+    applied_targets, confirm_manual_answer, record_answer, validate)
 from tests.test_runtime import empty_ingest
 
 
 def answered_project(kinds=('rule',)):
-    items=[dict(id=kind.upper()+'-original',kind=kind) for kind in kinds]
+    items=[dict(id=kind.upper()+'-original',kind=kind,selection_status='selected') for kind in kinds]
     question=dict(id='Q-rule',status='answered',answer='明确选择仅导出已勾选的任务。',
                   related_refs=[item['id'] for item in items],understanding_status='pending')
-    return dict(items=items,questions=[question])
+    return dict(items=items,questions=[question],sources=[])
+
+
+def confirm_written_answers(p):
+    q=p['questions'][0]
+    confirm_manual_answer(p,q,digest(q['answer']),
+        {item['id']:application_hash(item) for item in p['items']},True,
+        answer_implementations={q['id']:[dict(item_id=item['id'],field='statement',quote=item['statement'])
+                                       for item in p['items']]})
 
 
 def revision(item):
@@ -30,6 +39,9 @@ def test_rule_or_acceptance_only_answer_requires_explicit_current_revision(kind)
     annotate_candidates(p,[candidate])
     assert q['understanding_status']=='candidate_ready' and p['items']==before
     accept_answer_update(p,candidate)
+    assert q['understanding_status']=='candidate_ready' and p['items']==before
+    p['items'][0]['statement']=candidate['statement']
+    confirm_written_answers(p)
     assert q['understanding_status']=='applied'
     assert q['applied_item_ids']==[p['items'][0]['id']]
     assert q['applied_requirement_ids']==[]
@@ -45,9 +57,13 @@ def test_mixed_question_waits_until_each_directly_related_item_is_adopted():
     candidates=[revision(item) for item in p['items']]
     annotate_candidates(p,candidates)
     for candidate in candidates[:-1]:
+        next(item for item in p['items'] if item['id']==candidate['target_item_id'])['statement']=candidate['statement']
         accept_answer_update(p,candidate)
         assert q['understanding_status']=='candidate_ready'
+    p['items'][-1]['statement']=candidates[-1]['statement']
     accept_answer_update(p,candidates[-1])
+    assert q['understanding_status']=='candidate_ready'
+    confirm_written_answers(p)
     assert q['understanding_status']=='applied'
     assert q['applied_item_ids']==sorted(item['id'] for item in p['items'])
     assert q['applied_requirement_ids']==['REQUIREMENT-original']
@@ -117,6 +133,19 @@ def test_rule_answer_api_candidate_acceptance_updates_stable_rule_and_document(t
         assert p['items'][1]['id']=='RULE-0001' and p['items'][1]['statement']==q['answer']
         assert p['items'][1]['source_refs']==q['answer_source_refs']
         assert p['items'][-1]['selection_status']=='deferred'
+        assert q['understanding_status']=='candidate_ready' and q['applied_item_ids']==[]
+        view=c.get(root+'/questions/Q-0001/application-review').json()
+        body=dict(expected_revision=p['revision'],answer_hash=view['answer_hash'],
+                  clause_hashes={target['item']['id']:target['clause_hash'] for target in view['targets']},
+                  review_confirmed=True)
+        missing_witness=c.post(root+'/questions/Q-0001/application-review',json=body)
+        assert missing_witness.status_code==409
+        assert missing_witness.json()['code']=='ANSWER_IMPLEMENTATION_REQUIRED'
+        assert store.get(p['id'])==p
+        body['answer_implementations']={q['id']:[dict(item_id='RULE-0001',field='statement',quote=q['answer'])]}
+        reviewed=c.post(root+'/questions/Q-0001/application-review',json=body)
+        assert reviewed.status_code==200,reviewed.text
+        p=store.get(p['id']);q=p['questions'][0]
         assert q['understanding_status']=='applied' and q['applied_item_ids']==['RULE-0001']
         assert not any('修订仍待核对' in issue for issue in missing(p,3))
 
@@ -135,10 +164,16 @@ def test_rule_answer_api_candidate_acceptance_updates_stable_rule_and_document(t
         assert q['answer'] in product_text
 
 
-def test_legacy_applied_requirement_ids_are_retained_when_adopting_related_rule():
+def test_legacy_application_is_retained_on_read_but_new_review_requires_all_locations():
     p=answered_project(('requirement','rule'));q=p['questions'][0]
     q.update(understanding_status='applied',applied_requirement_ids=['REQUIREMENT-original'])
+    before=copy.deepcopy(p)
+    assert applied_targets(p,q)=={'REQUIREMENT-original'} and p==before
     candidate=revision(p['items'][1]);annotate_candidates(p,[candidate]);accept_answer_update(p,candidate)
+    assert q['understanding_status']=='candidate_ready' and not applied_targets(p,q)
+    for item in p['items']:
+        item['statement']='仅导出已勾选的任务。'
+    confirm_written_answers(p)
     assert q['understanding_status']=='applied'
     assert q['applied_item_ids']==['REQUIREMENT-original','RULE-original']
 

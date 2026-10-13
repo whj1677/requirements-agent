@@ -196,7 +196,7 @@ def test_shutdown_security_sends_wrong_origin_and_csrf_without_stopping(monkeypa
                      ('/desktop/api/shutdown', 'POST', 'invalid-csrf', verifier.ORIGIN)]
 
 
-def test_desktop_request_carries_origin_csrf_and_project_payload(monkeypatch):
+def test_business_request_carries_origin_csrf_and_project_payload(monkeypatch):
     captured = []
 
     class Response:
@@ -223,7 +223,7 @@ def test_desktop_request_carries_origin_csrf_and_project_payload(monkeypatch):
     assert timeout == 3
     assert request.get_method() == 'POST'
     assert request.get_header('Origin') == verifier.ORIGIN
-    assert request.get_header('X-desktop-csrf') == 'synthetic-csrf'
+    assert request.get_header('X-csrf-token') == 'synthetic-csrf'
     assert json.loads(request.data) == {'name': 'synthetic'}
 
 
@@ -311,3 +311,31 @@ def test_output_parent_junction_is_rejected_before_resolving_or_creating_directo
         assert junction.lstat().st_file_attributes & 0x400
         junction.rmdir()
     assert target.is_dir()
+
+@pytest.mark.parametrize('path,expected_header,other_header', [
+    ('/api/projects', 'x-csrf-token', 'x-desktop-csrf'),
+    ('/desktop/api/shutdown', 'x-desktop-csrf', 'x-csrf-token'),
+])
+def test_verifier_routes_business_and_desktop_csrf_without_network(monkeypatch, path,
+                                                                  expected_header, other_header):
+    import io
+    from types import SimpleNamespace
+    observed = {}
+
+    def open_request(request, timeout):
+        observed.update(headers={key.lower(): value for key, value in request.header_items()},
+                        url=request.full_url, timeout=timeout)
+        response = io.BytesIO(b'{}')
+        response.status = 200
+        response.headers = {'Content-Type': 'application/json'}
+        return response
+
+    monkeypatch.setattr(verifier.urllib.request, 'build_opener',
+                        lambda *_args: SimpleNamespace(open=open_request))
+    status, value = verifier.request_json(path, 'POST', 'selected-session-token',
+                                         payload={'name': 'synthetic'})
+    assert status == 200 and value == {}
+    assert observed['headers'][expected_header] == 'selected-session-token'
+    assert other_header not in observed['headers']
+    assert observed['headers']['origin'] == verifier.ORIGIN
+    assert observed['url'] == verifier.ORIGIN + path

@@ -68,7 +68,6 @@ def main():
             print('前端构建：' + '、'.join(assets), flush=True)
         print('唯一数据目录：' + str(ROOT / 'data'), flush=True)
         print('代码更新后用 stop.ps1、start.ps1 重启同一入口；不自动重放模型任务。', flush=True)
-        # Tokens are shown only by the interactive launcher, never in server logs.
         uvicorn.Server(uvicorn.Config(app, host='127.0.0.1', port=PORT, access_log=False)).run(sockets=[listener])
     finally:
         listener.close()

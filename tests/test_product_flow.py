@@ -34,6 +34,20 @@ def test_scope_and_rule_checks_use_actual_content_not_selected_count(tmp_path):
     with pytest.raises(Problem):advance(p,3)
 
 
+def test_scope_must_be_adopted_before_rules_unlock_but_details_can_follow(tmp_path):
+    p=setup(tmp_path);advance(p,1)
+    req=p['items'][0];req['selection_status']='candidate';req['behavior']={}
+    assert any(row['code']=='scope_unadopted' for row in status(p)[1]['blockers'])
+    assert not status(p)[2]['available']
+    with pytest.raises(Problem):advance(p,2)
+    req['selection_status']='selected'
+    advance(p,2)
+    assert status(p)[2]['available']
+    assert any(row['code']=='behavior_fields_missing' for row in status(p)[2]['blockers'])
+    req['selection_status']='candidate'
+    assert status(p)[1]['needs_recheck'] and not status(p)[2]['available']
+
+
 def test_checkpoints_bind_content_and_retired_sketch_is_not_required(tmp_path):
     p=setup(tmp_path)
     for n in (1,2,3):advance(p,n)

@@ -284,7 +284,7 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 def request(path, method='GET', csrf=None, payload=None, origin=ORIGIN):
     headers = {'Origin': origin} if origin is not None else {}
     if csrf is not None:
-        headers['X-Desktop-CSRF'] = csrf
+        headers['X-Desktop-CSRF' if path.startswith('/desktop/') else 'X-CSRF-Token'] = csrf
     if payload is not None:
         headers['Content-Type'] = 'application/json'
     req = urllib.request.Request(ORIGIN + path, method=method,
@@ -457,7 +457,11 @@ def verify(installer, output):
         verify_shutdown_security(desktop['csrf'])
         report['checks']['direct_business_http_and_shutdown_security'] = True
         project_name = '离线安装验收合成项目'
-        status, project = request_json('/api/projects', 'POST', payload={'name': project_name})
+        status, business_session = request_json('/api/session')
+        require(status == 200 and isinstance(business_session.get('csrf'), str) and
+                business_session['csrf'], 'BUSINESS_SESSION_UNAVAILABLE')
+        status, project = request_json('/api/projects', 'POST', business_session['csrf'],
+                                      payload={'name': project_name})
         require(status == 200 and isinstance(project, dict) and isinstance(project.get('id'), str),
                 'SYNTHETIC_PROJECT_CREATE_FAILED')
         project_id = project['id']

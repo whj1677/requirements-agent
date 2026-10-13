@@ -8,5 +8,24 @@ __pycache__/
 .env.*
 !.env.example
 evidence/
+/.verify-connected-build/
+/web/.verify-detail-prd/
+/work/detail-prd-20261013/
+/work/detail-prd-agent-20261013/
+/work/prd-presentation-20261013/
 # Duplicate delivery archive; the expanded design source is versioned.
 /docs/requirements-agent-ui-handoff-v0.9.zip
+
+/work/chat-prd-real-20261013/
+
+/work/chat-prd-harness-smoke-20261013/
+
+/output/真实对话生成PRD_20261013/
+
+# Local runs, generated deliveries, and historical model/design evidence.
+/work/
+/tmp/
+/output/
+/.impeccable/
+/workpydantic-check.log
+/docs/ux-redesign-20261007/

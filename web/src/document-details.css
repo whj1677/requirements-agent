@@ -1,0 +1,18 @@
+.document-detail-table{margin:20px 0;max-width:100%}
+.document-table-scroll{overflow-x:auto;border:1px solid #d5e0e4;border-radius:8px}
+.document-detail-table table{border-collapse:collapse;width:100%;font-size:13px;line-height:1.6;table-layout:auto}
+.document-detail-table caption{text-align:left;padding:12px 14px;background:#edf4f6;font-weight:700;color:#254550}
+.document-detail-table th,.document-detail-table td{border:1px solid #dbe5e8;padding:10px 12px;vertical-align:top;white-space:pre-wrap;overflow-wrap:anywhere;min-width:95px}
+.document-detail-table th{background:#f3f7f8;text-align:left;color:#34545f}
+.document-detail-table tbody tr:nth-child(even){background:#f9fbfc}
+.document-detail-diagram{margin:22px 0;padding:14px;border:1px solid #cfdde2;border-radius:9px;background:white}
+.document-detail-diagram figcaption{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}
+.document-diagram-thumbnail{border:0!important;padding:0!important;background:white!important;width:100%;cursor:zoom-in!important;display:flex;justify-content:center}
+.document-diagram-thumbnail img{max-height:650px;max-width:100%;object-fit:contain;display:block}
+.document-image-backdrop{position:fixed;inset:0;background:#10252cbb;z-index:500;display:flex;align-items:center;justify-content:center;padding:18px}
+.document-image-dialog{background:white;border-radius:12px;box-shadow:0 15px 80px #0005;width:min(1450px,96vw);height:92vh;display:flex;flex-direction:column;overflow:hidden}
+.document-image-dialog header{padding:14px 18px;border-bottom:1px solid #d6e1e5;display:flex;gap:16px;align-items:center;justify-content:space-between;flex-wrap:wrap}
+.document-image-dialog .toolbar{display:flex;align-items:center;gap:8px;margin:0}
+.document-image-scroll{overflow:auto;flex:1;padding:20px;background:#edf2f4}
+.document-image-scroll img{display:block;background:white;min-width:300px}
+@media(max-width:650px){.document-image-backdrop{padding:6px}.document-image-dialog{width:100%;height:96vh}.document-detail-table th,.document-detail-table td{padding:8px}.document-detail-diagram figcaption{align-items:flex-start;flex-direction:column}}

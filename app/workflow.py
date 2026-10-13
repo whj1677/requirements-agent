@@ -34,15 +34,41 @@ def replace_refs(value, mapping):
     return value
 
 
-def apply_response(p, response):
+def replace_business_ids(value, mapping):
+    """Map program-owned identities, never arbitrary words in business text."""
+    scalar = {'temp_id', 'target_item_id', 'target_question_id', 'requirement_id',
+              'candidate_temp_id', 'existing_item_id', 'existing_question_id'}
+    plural = {'related_refs', 'answer_refs', 'candidate_temp_ids', 'question_temp_ids',
+              'depends_on', 'rule_refs', 'acceptance_refs'}
+    if isinstance(value, list):
+        return [replace_business_ids(child, mapping) for child in value]
+    if not isinstance(value, dict):
+        return value
+    result = {}
+    for key, child in value.items():
+        if key in ('raw', 'raw_summary'):
+            result[key] = copy.deepcopy(child)
+        elif key in scalar and isinstance(child, str):
+            result[key] = mapping.get(child, child)
+        elif key in plural and isinstance(child, list):
+            result[key] = [mapping.get(item, item) if isinstance(item, str) else item for item in child]
+        else:
+            result[key] = replace_business_ids(child, mapping)
+    return result
+
+
+def apply_response(p, response, *, identity_only=False, preserve_context_proposal=False):
     mapping = {x['temp_id']:ident(PREFIX.get(x['kind'], 'ITEM')) for x in response['proposals']}
     mapping.update(question_ids(p,response['questions'],mapping))
-    r = replace_refs(response, mapping)
+    r = (replace_business_ids if identity_only else replace_refs)(response, mapping)
+    if 'benchmark_analysis' in r:p['benchmark_analysis']=r['benchmark_analysis']
     valid={x['id'] for x in p['items']}|{q['id'] for q in p['questions']}|set(mapping.values())
     for row in r['proposals']+[child for parent in r['questions'] for child in (parent.get('decision_points') or [parent])]:
         require(set(row.get('related_refs',[]))<=valid,'REFERENCE_INVALID','问题或候选存在未落地关联')
-    if r.get('product_context_proposal'):
+    if r.get('product_context_proposal') and not preserve_context_proposal:
         p['product_context_proposal']=r['product_context_proposal']
+        # Old field citations must not be attached to a later unrelated summary.
+        p.pop('product_context_proposal_evidence', None)
     for item in r['proposals']:
         # A proposed revision is a separate candidate, never an overwrite.
         identity=dict(content_version=1,source_namespace=namespace(p)) if item['kind'] in TRACKED else {}
@@ -78,7 +104,7 @@ def apply_response(p, response):
         kind = r['result']['document_type']
         document_version=p['documents'].get(kind,{}).get('document_version',0)+1
         p['documents'][kind] = dict(id=ident('DOC'), content=r['result'], requirement_name=p['name'], question_snapshot=copy.deepcopy(p['questions']), brief_hash=brief_hash(p), draft_revision=p['revision'], item_snapshot=copy.deepcopy(p['items']), created=now(), style_version='1', generator_version='1.1', reference_hashes={s['reference_id']:s['sha256'] for s in PROFILES['sources']} if p.get('reference_mode')!='builtin' else {}, limitations=r['limitations'])
-        p['documents'][kind]['source_snapshot']=[{k:s.get(k) for k in ('id','title','purpose','parse_status','failure_reason')} for s in p['sources']]
+        p['documents'][kind]['source_snapshot']=[{k:s.get(k) for k in ('id','title','purpose','parse_status','failure_reason','sha256')} for s in p['sources']]
         p['documents'][kind]['product_context_snapshot']=copy.deepcopy(p.get('product_context',{}))
         from .business_context import model_context
         if model_context(p):p['documents'][kind]['business_context_snapshot']=copy.deepcopy(model_context(p))
@@ -94,6 +120,7 @@ def apply_response(p, response):
     if stage == 'review':
         p['review'] = dict(target_hash=review_target(p), response=r, created=now())
     p['messages'].append(dict(role='assistant', stage=stage, text=r['summary'], response=r, created=now()))
+    return mapping
 
 
 class Workflow:
@@ -103,6 +130,8 @@ class Workflow:
 
     def config(self, stage):
         settings=dict(DEFAULT, **(self.store.setting('vision' if stage == 'vision' else 'model') or {}))
+        if origin(settings) == 'https://api.deepseek.com':
+            settings.setdefault('business_draft_protocol', getattr(self.provider, 'business_draft_protocol', None))
         # Old installations may retain fixed/function-first quota settings.
         # New work always follows the current uncapped execution policy.
         settings.update(budget_mode='unlimited', max_calls=None)
@@ -112,7 +141,7 @@ class Workflow:
             config['thinking_disabled']=not config.get('review_thinking',True)
         return config
 
-    def start(self, pid, revision, stage, message, kind='prd', resumed_from=None, *, user_task_id=None, config_override=None, generation_target=None, discussion_target=None):
+    def start(self, pid, revision, stage, message, kind='prd', resumed_from=None, *, user_task_id=None, config_override=None, generation_target=None, discussion_target=None, benchmark=None):
         require(stage in STAGES and stage != 'handoff', 'STAGE_INVALID', '请选择支持的分析阶段')
         require(stage!='interview' or user_task_id,'STAGE_INVALID','需求访谈请通过聊天任务入口保存原话并核对接收端')
         config = copy.deepcopy(config_override or self.config(stage))
@@ -122,16 +151,31 @@ class Workflow:
             approved=self.store.get_record(pid,user_task_id,'user_task')
             require(approved['authorized_configs'][stage]=={k:v for k,v in config.items() if k!='proxy'},
                     'BUDGET_AUTH_CHANGED','步骤配置与已批准计划不一致',409)
+            require(not benchmark or benchmark==approved.get('benchmark'),'BENCHMARK_INVALID','对标范围与已批准计划不同',409)
+        require(not benchmark or (stage=='ingest' and user_task_id),'BENCHMARK_INVALID','对标分析须使用已核对的任务入口')
         require(not any(t['status'] in ('queued','running') and t['id'] != user_task_id for t in self.store.records(pid,'user_task')), 'PROJECT_BUSY','当前项目任务正在执行，请等待或取消',409)
         require(not any(t['status'] in ('queued','running') for t in self.store.records(pid,'run')), 'PROJECT_BUSY','当前项目已有模型任务',409)
         p = self.store.get(pid)
         require(p['revision'] == revision, 'STALE_REVISION', '页面已过期', 409)
+        if discussion_target:
+            from .actions import target_context
+            target_context(p, discussion_target)
+        from .requirement_recommendation import scope as recommendation_scope
+        local = recommendation_scope(p, discussion_target, stage)
+        if local and user_task_id:
+            require(local == approved.get('requirement_recommendation_scope'),
+                    'STALE_PLAN', '本条需求范围与已核对计划不一致，请重新核对', 409)
         issues=execution_issues(p,stage,kind,discussion_target)
         require(not issues,'STAGE_BLOCKED','；'.join(issues),409)
         run = dict(stage=stage, status='queued', revision=revision, message=message, document_type=kind, max_calls=limit, calls=0, attempts=[], events=[], created=now(), error=None, resumed_from=resumed_from, provider={k:v for k,v in config.items() if k not in ('proxy',)}, prompt_version='1.1', cost=None)
+        if stage=='vision' and user_task_id and approved.get('action')=='interview':
+            run['vision_for_interview']=True
         if limit is not None:run['request_budget']=initial_budget(limit)
         rid = self.store.record(pid, 'run', run)
-        self.store.update_run(pid,rid,user_task_id=user_task_id,generation_target=generation_target,input_state_hash=execution_hash(p))
+        self.store.update_run(pid,rid,user_task_id=user_task_id,generation_target=generation_target,input_state_hash=execution_hash(p),
+            **({'requirement_recommendation_scope':local} if local else {}),
+            **({'discussion_target':copy.deepcopy(discussion_target)} if discussion_target else {}),
+            **({'benchmark':benchmark} if benchmark else {}))
         task = asyncio.create_task(self.execute(pid, rid, p, config))
         self.tasks[rid] = task
         task.add_done_callback(lambda _: self.tasks.pop(rid, None))
@@ -147,6 +191,8 @@ class Workflow:
         repair_anchor = None
         repair_original = None
         interview_anchor = None
+        interview_context_review = None
+        business_draft_review = None
         failed_outputs = set()
         # Both initial output and the one permitted escalation are frozen in the plan.
         out_budget = config['max_tokens']
@@ -155,17 +201,25 @@ class Workflow:
         try:
             require(self.provider.key(config), 'CONFIG_MISSING', '请先在模型设置中配置此接收端的 Key')
             require(origin(config) in p['grants'], 'DATA_AUTH_REQUIRED', '请先确认该接收端和项目材料的发送授权')
-            current_sources = {s['id'] for s in p['sources'] if not s['excluded']}
+            from .domain_context import active_source_ids, source_snapshot
+            current_sources = active_source_ids(p)
             require(current_sources <= set(p['grants'][origin(config)]['source_ids']), 'DATA_AUTH_REQUIRED', '新增材料尚未授权发送，请检查材料范围')
-            messages, excerpts, omitted = assemble(p, run['stage'], run['message'], config, self.store.folder, run['document_type'], run.get('generation_target'), pending_images_only=bool(run.get('user_task_id')))
+            messages, excerpts, omitted = assemble(p, run['stage'], run['message'], config, self.store.folder, run['document_type'], run.get('generation_target'), pending_images_only=bool(run.get('user_task_id')),vision_for_interview=run.get('vision_for_interview',False),
+                requirement_recommendation_scope=run.get('requirement_recommendation_scope'),**({'benchmark':run['benchmark']} if run.get('benchmark') else {}))
             import json
             header=json.loads(messages[0]['content'].split('可信任务头：',1)[1])
+            business_protocol = header.get('response_protocol') == 'business-draft-v1'
+            assembled_context=json.loads(messages[1]['content'][0]['text'])
+            platform_background=assembled_context.get('platform_knowledge')
             authorization=dict(user_task_id=run.get('user_task_id'),run_id=rid,approved_max_tokens=output_ceiling(config),
                 initial_max_tokens=out_budget,budget_policy=policy_summary(config),
                 approved_max_calls=config['max_calls'],config_hash=digest(run['provider']),
                 prompt_hash=digest(messages[0]['content'].split('可信任务头：',1)[0]),schema_hash=digest(header['schema']),
-                profile_hash=digest(header.get('content_profile')),input_revision=p['revision'],assembly_version='prd-plan-4' if run['stage']=='prd' else 'runtime-1.1')
-            self.store.update_run(pid, rid, status='running', sent_excerpt_ids=[x['id'] for x in excerpts], omitted_excerpt_ids=omitted, input_hash=digest(messages),authorization=authorization,input_metrics=input_metrics(messages))
+                profile_hash=digest(header.get('content_profile')),input_revision=p['revision'],assembly_version=header.get('response_protocol') or ('prd-plan-4' if run['stage']=='prd' else 'runtime-1.1'))
+            if platform_background:
+                authorization['platform_knowledge']={k:platform_background[k]
+                    for k in ('bundle_id','sha256','generated_at','classification','retrieval')}
+            self.store.update_run(pid, rid, status='running', sent_excerpt_ids=[x['id'] for x in excerpts], omitted_excerpt_ids=omitted, input_hash=digest(messages),authorization=authorization,input_metrics=input_metrics(messages),source_snapshot=source_snapshot(p,excerpts))
             while True:
                 state = self.store.get_record(pid, rid, 'run')
                 require(state['status'] != 'cancelled', 'CANCELLED', '任务已取消；已发请求仍可能计费')
@@ -193,24 +247,92 @@ class Workflow:
                         calls=self.store.get_record(pid,rid,'run')['calls']
                     attempt.update(meta)
                     require(self.store.get_record(pid, rid, 'run')['status'] != 'cancelled', 'CANCELLED', '已取消，结果未采纳')
+                    if business_protocol:
+                        from .business_draft import adapt
+                        raw_hash = digest(value)
+                        value, business_draft_review = adapt(value, p, excerpts, run['stage'], run.get('requirement_recommendation_scope'))
+                        business_draft_review.update(run_id=rid, input_revision=p['revision'], raw_response_hash=raw_hash)
+                        evidence.value['business_draft_review'] = copy.deepcopy(business_draft_review)
+                        evidence.save()
+                        self.store.update_run(pid, rid, business_draft_review=business_draft_review)
+                    if run['stage'] in ('ingest', 'clarify', 'change'):
+                        from .source_quotes import normalize_scope_quotes
+                        original_hash = digest(value)
+                        value, quote_changes = normalize_scope_quotes(value, excerpts)
+                        if quote_changes:
+                            normalization = dict(rule='source-verified-scope-quote-2',
+                                input_hash=original_hash, output_hash=digest(value),
+                                count=len(quote_changes), changes=quote_changes)
+                            evidence.value.setdefault('response_normalizations', []).append(normalization)
+                            evidence.save()
+                            attempt.setdefault('response_normalizations', []).append(normalization)
+                            events.append(dict(time=now(), phase='已按同一来源原文恢复引用格式，需求内容仍待人工核对', call=calls))
+                            self.store.update_run(pid, rid, events=events)
                     if run['stage']=='prd':
                         document_plan_version = value.get('plan_version')
                         value=compile_plan(value,p,run['document_type'],omitted,include_sketch=False)
                     if run['stage']=='ingest':
-                        ingest.validate(value, excerpts)
+                        if not run.get('benchmark'):
+                            from .benchmark import ordinary_response
+                            original_hash=digest(value)
+                            value,empty_benchmark=ordinary_response(value)
+                            if empty_benchmark:
+                                normalization=dict(rule='omit-empty-unrequested-benchmark-1',
+                                    field='benchmark_analysis',input_hash=original_hash,output_hash=digest(value))
+                                evidence.value.setdefault('response_normalizations',[]).append(normalization)
+                                evidence.save()
+                                attempt.setdefault('response_normalizations',[]).append(normalization)
+                                events.append(dict(time=now(),phase='移除普通整理中无内容的对标空栏；需求原文与来源保持不变',call=calls))
+                                self.store.update_run(pid,rid,events=events)
+                        if not business_protocol:
+                            ingest.validate(value, excerpts)
+                        value, inherited_gates = ingest.inherit_new_question_gates(value, p)
+                        if inherited_gates:
+                            attempt['inherited_question_gates'] = inherited_gates
+                            evidence.value['inherited_question_gates'] = inherited_gates
+                            evidence.save()
+                        if run.get('benchmark'):
+                            from .benchmark import validate_analysis
+                            validate_analysis(value,run['benchmark'],excerpts,p)
                         value, classifications = normalize_classification_labels(value, excerpts)
                         if classifications:
                             events.append(dict(time=now(), phase='按已引用的现状与改动证据统一变化分类；业务原文与来源保持不变', call=calls))
                             self.store.update_run(pid,rid,classification_corrections=classifications,events=events)
                         if repair_anchor is not None:
                             ingest.preserve(repair_anchor, value, excerpts)
-                    validate_response(value, run['stage'], p, excerpts, run['document_type'])
+                            if run.get('benchmark'):
+                                from .benchmark import preserve_analysis
+                                preserve_analysis(repair_original,value,p,excerpts)
+                    try:
+                        validate_response(value, run['stage'], p, excerpts, run['document_type'],
+                                          trusted_business_draft=business_protocol)
+                    except Problem as validation_error:
+                        if run['stage']=='prd' and validation_error.code=='SCHEMA_INVALID':
+                            # The model's plan was already validated by compile_plan.
+                            # It cannot repair a shape error in our generated document.
+                            raise Problem('DOCUMENT_ASSEMBLY_INVALID',
+                                '文档本地组装未通过格式检查，已有内容保留；未追加模型请求。详情：'+validation_error.message,
+                                model_repair_allowed=False) from validation_error
+                        raise
+                    if run.get('requirement_recommendation_scope'):
+                        from .requirement_recommendation import validate_response as validate_recommendation
+                        validate_recommendation(value, p, run['requirement_recommendation_scope'])
+                    if run.get('vision_for_interview'):
+                        require(not any(value.get(key) for key in ('proposals','questions','findings'))
+                                and 'product_context_proposal' not in value,
+                                'SEMANTIC_BLOCKED','聊天图片识别只能保存视觉观察，不能创建正式问题、条款或产品上下文')
                     if interview_anchor is not None:
                         from .interview import format_atoms
                         require(format_atoms(json.dumps(value,ensure_ascii=False))==interview_anchor,
                                 'SEMANTIC_BLOCKED','访谈格式修复改变了原有字面内容或顺序；原始回复保留，未保存改写后的聊天。')
                     if repair_anchor is not None and run['stage'] in ('clarify','change','brainstorm','review'):
                         ingest.preserve_response(repair_anchor,value,excerpts,run['stage'],original=repair_original,project=p)
+                    if run['stage']=='interview' and 'context_draft' in value:
+                        from .interview_context import assess
+                        interview_context_review=assess(value['context_draft'],p,excerpts)
+                        evidence.value['interview_context_review']=copy.deepcopy(interview_context_review)
+                        attempt['interview_context_review']=copy.deepcopy(interview_context_review)
+                        evidence.save()
                     evidence.finish('accepted', round(time.monotonic()-call_started, 3))
                     attempt['validation_result']='accepted'
                     attempt['evidence_limitations']=evidence.limitations[:]
@@ -226,6 +348,10 @@ class Workflow:
                                    evidence_limitations=evidence.limitations[:])
                     attempts.append(attempt)
                     self.store.update_run(pid, rid, attempts=attempts)
+                    if business_protocol:
+                        # A business package is never rewritten through the legacy
+                        # database-schema repair prompt. Raw evidence stays intact.
+                        raise e
                     require(not evidence.value.get('json_integrity_failure'),'SEMANTIC_BLOCKED',
                             '模型 JSON 有重复键，无法证明格式修复保持原义；原始证据保留，未追加修复请求')
                     if not e.model_repair_allowed:
@@ -288,9 +414,20 @@ class Workflow:
                         repair=(KIT/'prompts/10_repair.md').read_text('utf-8') if run['stage']!='prd' else repair_instruction(e,p,run['document_type'])
                         if run['stage']=='ingest':
                             if repair_anchor is None:
-                                repair_anchor=ingest.business_anchor(value if value is not None else ingest.diagnostic_object(failed_output), excerpts)
+                                anchor_value=value if value is not None else ingest.diagnostic_object(failed_output)
+                                if run.get('benchmark'):
+                                    require(isinstance(value,dict),'SEMANTIC_BLOCKED',
+                                        '对标回复不是可完整读取的对象，不能保证格式修复保留全部观察；原始回复保留，请重新生成草稿')
+                                    from .benchmark import validate_repair_anchor
+                                    validate_repair_anchor(value)
+                                    repair_original=copy.deepcopy(value)
+                                repair_anchor=ingest.business_anchor(anchor_value, excerpts)
                                 self.store.update_run(pid,rid,repair_anchor_hash=ingest.anchor_hash(repair_anchor))
                             repair+='\n沿用可信任务头 ingest_contract 和 Schema。完整输出单一 JSON 对象；根节点 result 必填，包含 understanding 与 material_limits。不得新增、删除、替换问题或条目；保留 temp_id、问题原文、选项、blocking 和规则原文。只修改报错字段；summary 和 limitations 原文保持，不写修复过程或上次失败说明。未知来源不得伪造替代。不能通过改方向、改变新增/保持身份或放宽权限来修复格式。业务变化会被拒绝。'
+                            if run.get('benchmark'):
+                                repair+='\n完整保留 benchmark_analysis 的 summary、limitations、每条观察的标题、引文、差异、建议、顺序和有效来源。proposal_refs 中的问题 ID 或不存在的候选 ID 只能删除，related_refs 中不存在的 ID 只能删除；保留有效关联及顺序，禁止添加猜测关联或新条目来消除错误。'
+                            else:
+                                repair+='\n本轮普通整理的 Schema 不含 benchmark_analysis。原输出如带有全空的对标占位对象，仅删除该空对象；不要补写“无竞品资料”等摘要或限制说明，不要求用户添加对标资料。所有需求、问题、引用与其它业务内容必须保留。'
                             if '含多个独立问句' in e.message:
                                 system,raw_header=messages[0]['content'].split('可信任务头：',1)
                                 header=json.loads(raw_header)
@@ -328,20 +465,88 @@ class Workflow:
                     raise
             # Keep the validated result tied to its actual input even if activation conflicts.
             self.store.update_run(pid,rid,response=value,result_applied=False)
-            with self.store.edit(pid, p['revision'], '模型：' + run['stage'], bump=bool(value['proposals'] or value['questions'])) as (current, db):
+            staged = None
+            decision_review = None
+            # Section-local discussion may propose clauses and questions, but
+            # cannot replace a separately reviewed whole-project summary.
+            preserve_context_proposal = run['stage'] in ('clarify', 'change') and bool(run.get('discussion_target'))
+            if p.get('workflow_mode') == 'shared-draft' and run['stage'] in ('ingest','clarify','change'):
+                staged = copy.deepcopy(p)
+                if run['message'].strip() and not run.get('benchmark'):
+                    staged['messages'].append(dict(role='user',stage=run['stage'],text=run['message'],created=now()))
+                draft_mapping = apply_response(staged, value, identity_only=business_protocol,
+                    preserve_context_proposal=preserve_context_proposal)
+                if not business_protocol:
+                    from .decision_run import review_generated_draft
+                    calls, decision_review = await review_generated_draft(self.store,self.provider,p,staged,
+                        run,config,excerpts,budget,attempts,events,calls)
+            has_context_fields = bool(interview_context_review and interview_context_review['fields'])
+            with self.store.edit(pid, p['revision'], '模型：' + run['stage'], bump=bool(staged or value['proposals'] or value['questions'] or has_context_fields)) as (current, db):
                 state=next(x for x in self.store.records(pid,'run',db) if x['id']==rid)
                 require(state['status']!='cancelled','CANCELLED','已取消，结果未采纳')
                 require(execution_hash(current)==execution_hash(p),'STALE_REVISION','任务执行期间输入或产物发生变化；结果已保留在调用证据，未激活',409)
                 if run['stage']=='review':
                     require(review_target(current)==review_target(p),'STALE_REVISION','审查期间文档或页面已改变，请重新审查',409)
-                if run['message'].strip() and not (run['stage']=='interview' and run.get('user_task_id')):
+                if staged is None and run['message'].strip() and not run.get('benchmark') and not (run['stage']=='interview' and run.get('user_task_id')):
                     current['messages'].append(dict(role='user', stage=run['stage'], text=run['message'], created=now()))
                 candidate_count=len(current.get('ui_candidates', []))
-                apply_response(current, value)
+                if staged is None:
+                    draft_mapping = apply_response(current, value, identity_only=business_protocol,
+                        preserve_context_proposal=preserve_context_proposal)
+                else:
+                    current.clear()
+                    current.update(staged)
+                if business_draft_review is not None:
+                    # Keep rejected rows inspectable; they never enter items or
+                    # any confirmation request. Accepted rows remain candidates.
+                    saved_review = replace_business_ids(business_draft_review, draft_mapping)
+                    current.setdefault('business_draft_reviews', []).append(saved_review)
+                    if run['stage'] == 'ingest':
+                        # Empty protocol fields and rejected/unknown suggestions
+                        # cannot erase prior drafts or borrow their citations.
+                        summaries = copy.deepcopy(p.get('product_context_proposal') or {})
+                        summary_evidence = copy.deepcopy(p.get('product_context_proposal_evidence') or {})
+                        for field, row in saved_review.get('summary_fields', {}).items():
+                            if row['basis'] == 'unknown':
+                                continue
+                            text = value.get('product_context_proposal', {}).get(field, '')
+                            summaries[field] = text
+                            saved = str((p.get('product_context') or {}).get(field, ''))
+                            state = (p.get('context_field_states') or {}).get(field, {}).get('status')
+                            summary_evidence[field] = dict(copy.deepcopy(row), text=text,
+                                run_id=rid, input_revision=p['revision'], evidence_status='unreviewed',
+                                uncertain=row['basis'] != 'fact',
+                                conflicts_with_saved=bool(saved.strip()) and saved != text or state in ('none', 'not_applicable'))
+                        current['product_context_proposal'] = summaries
+                        current['product_context_proposal_evidence'] = summary_evidence
+                # Bind each new candidate to this run's actual input evidence.
+                # Background and source selection alone are not business proof.
+                from .domain_context import source_snapshot
+                sent_snapshot = source_snapshot(p, excerpts)
+                previous_ids = {item['id'] for item in p['items']}
+                from .requirement_recommendation import annotate as annotate_recommendation
+                annotate_recommendation(current, previous_ids, run.get('requirement_recommendation_scope'))
+                for item in current['items']:
+                    if item['id'] in previous_ids:
+                        continue
+                    cited = {(ref['source_id'],ref['excerpt_id']) for ref in item.get('source_refs',[])}
+                    item['generation_evidence'] = dict(project_id=pid,run_id=rid,input_revision=p['revision'],
+                        references=[copy.deepcopy(ref) for ref in sent_snapshot['references']
+                                    if (ref['source_id'],ref['excerpt_id']) in cited])
+                if run.get('benchmark'):
+                    current['benchmark_analysis'].update(request=copy.deepcopy(run['benchmark']),run_id=rid,
+                        created=now(),input_revision=p['revision'],
+                        source_versions=[{k:s.get(k) for k in ('id','version','sha256')} for s in p['sources'] if s['id'] in run['benchmark']['source_ids']])
+                    for observation in current['benchmark_analysis']['observations']:
+                        source=next(s for s in p['sources'] if s['id']==observation['source_ref']['source_id'])
+                        observation['evidence_kind']='visual_observation' if source.get('image_mime') else 'text_quote'
                 if run['stage']=='interview':
                     current['messages'][-1]['user_task_id']=run.get('user_task_id')
                     current['messages'][-1]['run_id']=rid
                     current['interview_state']=dict(can_organize=value['result']['can_organize'],run_id=rid)
+                    if interview_context_review is not None:
+                        from .interview_context import apply as apply_interview_context
+                        apply_interview_context(current,interview_context_review,rid,p['revision'])
                 if run['stage']=='prd':
                     artifact=current['documents'][run['document_type']]
                     artifact['sketch_policy']='excluded'
@@ -358,22 +563,56 @@ class Workflow:
                 elif run['stage']=='review':
                     self.store.record(pid,'review',current['review'],db=db)
                 if run['stage']=='vision':
+                    current['messages'][-1]['run_id']=rid
                     sent_sources={x['source_id'] for x in excerpts}
                     for s in current['sources']:
                         if s['image_mime'] and s['id'] in sent_sources:
                             observed=any(o['source_ref']['source_id']==s['id'] for o in value['result']['observations'])
                             limited=bool(value['result']['unreadable']) or not observed
                             s['parse_status']='partial' if limited else 'read'
-                            s['failure_reason']='图像内容存在不可辨认部分或没有可靠观察，请核对' if limited else ''
+                            s['failure_reason']=('本批图片存在部分不可辨认区域，已保留此图可见内容的观察，请核对局部限制'
+                                if observed else '此图未取得可靠视觉观察，请核对图片或补充说明') if limited else ''
                             s['vision_run_id']=rid
             # Store.edit finalizes requirement versions and project revision before hashing.
             output_state=copy.deepcopy(current)
+            if run.get('discussion_target'):
+                # Keep the exact applied identities with their originating
+                # section, including existing questions reused by this output.
+                # Batch-review IDs can also contain unrelated old questions.
+                old_items = {item['id'] for item in p['items']}
+                output_question_ids = {draft_mapping[question['temp_id']]
+                    for parent in value['questions']
+                    for question in (parent.get('decision_points') or [parent])}
+                output_question_ids.update(parent['target_question_id'] for parent in value['questions']
+                                           if parent.get('target_question_id'))
+                previous = set()
+                while previous != output_question_ids:
+                    previous = set(output_question_ids)
+                    groups = {q.get('decision_group_id') for q in output_state['questions']
+                              if q['id'] in output_question_ids and q.get('decision_group_id')}
+                    for question in output_state['questions']:
+                        if question['id'] in output_question_ids:
+                            output_question_ids.update(question.get('superseded_by') or [])
+                        if (question.get('prior_question_id') in output_question_ids
+                                or question.get('decision_group_id') in groups):
+                            output_question_ids.add(question['id'])
+                self.store.update_run(pid, rid, discussion_result=dict(
+                    item_ids=[item['id'] for item in output_state['items'] if item['id'] not in old_items],
+                    question_ids=[question['id'] for question in output_state['questions']
+                                  if question['id'] in output_question_ids]))
             cost=None
             if config.get('input_price') is not None and config.get('output_price') is not None:
                 usages=[a.get('usage') for a in attempts if a.get('usage')]
                 if usages and len(usages)==len(attempts) and all(u and 'prompt_tokens' in u and 'completion_tokens' in u for u in usages):
                     cost=sum((u['prompt_tokens']*config['input_price']+u['completion_tokens']*config['output_price'])/1000000 for u in usages)
             status = 'partial' if omitted or value['limitations'] or any(s['parse_status'] in ('failed','partial','office_required','permission_denied') for s in p['sources'] if not s['excluded']) else ('awaiting_user' if value['questions'] else 'succeeded')
+            if decision_review and decision_review['status'] == 'pending_manual_review':
+                status = 'partial'
+            if interview_context_review is not None:
+                self.store.update_run(pid,rid,interview_context_review=interview_context_review)
+                if interview_context_review['rejected_fields']:
+                    status='partial'
+                    events.append(dict(time=now(),phase=interview_context_review['limitations'][0]))
             self.store.update_run(pid, rid, status=status, calls=calls, attempts=attempts, completed=now(), response=value, result_applied=True, cost=cost, repair_count=repair_count, output_state_hash=execution_hash(output_state), events=events + [dict(time=now(),phase='校验并保存')])
         except asyncio.CancelledError:
             if budget:calls=self.store.get_record(pid,rid,'run')['calls']

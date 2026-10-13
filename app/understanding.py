@@ -5,11 +5,11 @@ import re
 from .core import Problem, require, now, digest
 from .requirements import TRACKED
 
-ANSWER_TARGET_KINDS = (*TRACKED, "constraint")
+ANSWER_TARGET_KINDS = (*TRACKED, "constraint", "goal")
 
 
 def contract():
-    return dict(version='understanding-2',
+    return dict(version='understanding-3',
         classification_separation_example=dict(
             instruction='同项同时含本期变化和既有保持时不能混写change/preserve。可分离的变化及保持约束分别引用各自原句；变更原条目继续revise原ID。未知现状留未知，不把新要求编成current。示例仅演示分类，不能作为业务来源或新增交付。',
             change=dict(kind='requirement',change_type='new',scope_states=['change']),
@@ -21,6 +21,10 @@ def contract():
         question_self_check='输出前检查每个可回答问题只包含一个决定、至多一个问号。'
             '例如“在哪里编辑？只读用户如何展示？”是两个决定，必须从首轮就分别写成两个完整questions项，'
             '或保留父问题并用decision_points放两个完整子项；不能把两个决定混入同一组选项。'
+            '判断依据是可以独立回答的决定数量，不是问号、逗号或“和”的数量。'
+            '单问号的“版本能否追溯生效，迟到数据如何选择版本并重算？”也含独立决定：'
+            '能否追溯生效、迟到数据选择哪个版本、迟到数据怎样触发重算，须分别表达。'
+            '反例：“站点总览和设备详情统一使用哪个刷新周期？”若已确定两处必须一致，只问一个共同刷新值，不应按两个页面拆问。'
             '示例只解释结构，不得复制到项目问题。材料已经说明的编辑入口或权限不得重复追问。',
         single_question_example=dict(temp_id='QTMP-example',topic_key='example',question='一个待决定的问题？',why='影响实现或验收',
             options=[],blocking=True,related_refs=['实际需求ID'],source_refs=[],decision_points=[]),
@@ -58,15 +62,82 @@ def current_answer(q):
     return active_question(q) and q.get('status')=='answered' and q.get('answer') is not None
 
 
+def current_decision_answer(p,q):
+    """Current saved QG sentence for candidate binding, not leaf coverage."""
+    if (p.get('workflow_mode')!='shared-draft' or not active_question(q)
+            or not q.get('decision_group_id') or not q.get('decision_answer_id')):
+        return None
+    group=q['decision_group_id']
+    leaves=[part for part in p['questions'] if active_question(part)
+            and part.get('decision_group_id')==group]
+    if not leaves or any(part.get('decision_answer_id')!=q['decision_answer_id']
+                         for part in leaves):
+        return None
+    rows=[row for row in p.get('decision_answers',[])
+          if row.get('id')==q['decision_answer_id'] and row.get('question_id')==group]
+    if len(rows)!=1:return None
+    row=rows[0]
+    if (not isinstance(row.get('text'),str) or not row['text'].strip()
+            or row.get('answer_hash')!=digest(row['text'])
+            or set(row.get('decision_ids') or [])!={part['id'] for part in leaves}):
+        return None
+    return row
+
+
+def answer_bindable(p,q):
+    return bool(current_decision_answer(p,q)) if q.get('decision_group_id') else current_answer(q)
+
+
+def candidate_answer_binding_current(p,q,candidate):
+    if q.get('decision_group_id'):
+        row=current_decision_answer(p,q)
+        return bool(row and (candidate.get('decision_answer_bindings') or {}).get(q['id'])
+                    ==dict(answer_id=row['id'],answer_hash=row['answer_hash']))
+    return bool(current_answer(q) and (candidate.get('answer_versions') or {}).get(q['id'])
+                ==digest(q['answer']))
+
+
+def question_fingerprint(q):
+    """Meaning-bearing question identity, independent of answer and UI state."""
+    value={key:q.get(key) for key in ('id','topic_key','question','why','options',
+        'blocking','blocking_stage','related_refs','source_refs','decision_group_id')}
+    # Preserve historical fingerprints unless the question has explicit anchors.
+    if 'unresolved_locations' in q:
+        value['unresolved_locations']=q['unresolved_locations']
+    return digest(value)
+
+
+def coverage_complete(q):
+    """Do not promote a newly saved sentence to a reviewed decision.
+
+    Unmarked historical single questions keep their existing behavior; a
+    marked question needs an explicit current human coverage review.
+    """
+    if not current_answer(q):return False
+    if 'decision_coverage' not in q:
+        proposal=q.get('decision_review_proposal') or {}
+        if (len(proposal.get('decisions') or [])>1
+                and proposal.get('question_hash')==digest([question_fingerprint(q)])
+                and proposal.get('answer_hash')==digest(q['answer'])):
+            return False
+        return True
+    review=q.get('decision_coverage_review') or {}
+    return (q['decision_coverage']=='clear' and review.get('answer_hash')==digest(q['answer'])
+            and review.get('question_hash')==question_fingerprint(q))
+
+
 def question_action_contract(p):
     """Derived action permissions; never discard historical questions or answers."""
     return dict(
         answered_decision_ids=[q['id'] for q in p['questions'] if current_answer(q)],
+        saved_group_answer_decision_ids=[q['id'] for q in p['questions']
+                                         if current_decision_answer(p,q)],
         splittable_question_ids=[q['id'] for q in p['questions'] if active_question(q)
+                                 and not q.get('decision_group_id')
                                  and q.get('status')!='answered' and q.get('answer') is None],
         inactive_question_ids=[q['id'] for q in p['questions'] if not active_question(q)
                                or (q.get('status')=='answered')!=(q.get('answer') is not None)],
-        instruction='已答决定保留身份与原回答，通过同kind revise/answer_refs提出待人工采纳的落实候选；target_question_id只允许splittable_question_ids中的未答问题且须有decision_points。新的独立未知用null目标；失效记录仅供历史核对，不恢复或采纳。')
+        instruction='已答决定保留身份与原回答；saved_group_answer_decision_ids仅表示决定组原话已保存，子决定仍待逐项核对。两类当前原话均可通过同kind revise/answer_refs提出待人工核对候选，但不自动采纳或把组内全部决定标为已答；target_question_id只允许splittable_question_ids中的未答单题且须有decision_points。新的独立未知用null目标；失效记录仅供历史核对，不恢复或采纳。')
 
 
 def leaves(questions):
@@ -104,8 +175,8 @@ def question_ids(p, questions, item_mapping):
             mapping[child['temp_id']]=stable
             if not prior:
                 planned.append(dict(candidate,id=stable))
-        if parent.get('decision_points'):
-            mapping[parent['temp_id']]=mapping[children[0]['temp_id']]
+        # A grouping prompt has no answer identity. In particular it must never
+        # silently inherit the first child's identity in answer_refs.
     return mapping
 
 
@@ -183,7 +254,7 @@ def validate(value,p,excerpts):
             allowed='、'.join(q.get('related_refs',[])) if q else '无（问题不存在）'
             advice='；answer_refs仅用于该问题related_refs中原requirement/rule/acceptance/constraint的同kind revise候选；新增条目使用真实回答片段的source_refs，不能以新增条目代替原条款修订'
             advice+='；已存在的间接关联条款仍保留 action=revise 和原 target_item_id，删除不适用的 answer_refs，保留真实回答 source_refs 作为依据；不要把修订改成新增。'
-            if q is None or not current_answer(q):
+            if q is None or not answer_bindable(p,q):
                 raise Problem('REFERENCE_INVALID',identity+' 的 answer_refs='+qid+
                     ' 没有当前有效的已保存回答；允许目标='+allowed+advice,model_repair_allowed=False)
             expected_kind=next((t['kind'] for t in answer_targets(p,q) if t['id']==i.get('target_item_id')),None)
@@ -196,13 +267,15 @@ def validate(value,p,excerpts):
         target=parent.get('target_question_id')
         old=next((q for q in p['questions'] if q['id']==target),None) if target else None
         if target:
-            if (old is None or not active_question(old) or old['status']=='answered'
+            if (old is None or not active_question(old) or old.get('decision_group_id')
+                    or old['status']=='answered'
                     or old.get('answer') is not None or not parent.get('decision_points')):
                 raise Problem('REFERENCE_INVALID','只能明确拆分尚未回答的现有问题；已有回答必须保留',
                               model_repair_allowed=False)
         for q in parent.get('decision_points') or [parent]:
-            require(q['question'].count('？')+q['question'].count('?')<=1,'SCHEMA_INVALID',
-                    q['temp_id']+' 含多个独立问句，请用decision_points分别表达')
+            if p.get('workflow_mode') != 'shared-draft':
+                require(q['question'].count('？')+q['question'].count('?')<=1,'SCHEMA_INVALID',
+                        q['temp_id']+' 含多个独立问句，请用decision_points分别表达')
             require(q['temp_id'] not in seen,'REFERENCE_INVALID','拆分问题temp_id重复');seen.add(q['temp_id'])
             # Existing unbound historical questions remain readable, but new split decisions must be bound.
             if parent.get('decision_points'):
@@ -214,11 +287,19 @@ def validate(value,p,excerpts):
 
 
 def save_questions(p,questions):
+    from .core import ident
     for parent in questions:
         children=[]
+        points=parent.get('decision_points') or []
+        existing_group=next((x.get('decision_group_id') for point in points
+            for x in p['questions'] if x['id']==point['temp_id'] and x.get('decision_group_id')),None)
+        group_id=(existing_group or ident('QG')) if points else None
         for q in parent.get('decision_points') or [parent]:
             prior=next((x for x in p['questions'] if x['id']==q['temp_id']),None)
             if prior:
+                if group_id:
+                    prior.setdefault('decision_group_id',group_id)
+                    prior.setdefault('decision_group_title',parent['question'])
                 # Link additional provenance without replacing question, answer or decision identity.
                 for key in ('source_refs','related_refs'):
                     prior[key]=list(prior.get(key,[]))+[v for v in q.get(key,[]) if v not in prior.get(key,[])]
@@ -232,6 +313,8 @@ def save_questions(p,questions):
                 children.append(prior['id']);continue
             earlier=next((x for x in p['questions'] if x.get('status')=='answered' and equivalent(x,q)),None)
             row=dict(id=q['temp_id'],**{k:copy.deepcopy(v) for k,v in q.items() if k!='temp_id'},status='open',answer=None)
+            if group_id:
+                row.update(decision_group_id=group_id,decision_group_title=parent['question'],decision_coverage='pending')
             if earlier:row['prior_question_id']=earlier['id']
             p['questions'].append(row);children.append(row['id'])
         if parent.get('target_question_id'):
@@ -246,9 +329,14 @@ def record_answer(q):
         q.pop('deferred_note', None)
     if q.get('answer') is not None:
         q.setdefault('answer_history',[]).append({k:copy.deepcopy(q.get(k)) for k in ('answer','answered_at','answer_source_refs')})
+    if q.get('decision_review_proposal'):
+        q.setdefault('decision_review_proposal_history',[]).append(q.pop('decision_review_proposal'))
     q['understanding_status']='pending'
+    q['decision_coverage']='pending'
+    q.pop('decision_coverage_review',None)
     q['applied_item_ids']=[]
     q['answer_applications']={}
+    q['decision_pending_group_ids']=[]
     q['applied_requirement_ids']=[]
     q['answer_effect']='回答已保存，关联条款仍待核对更新'
 
@@ -256,29 +344,62 @@ def record_answer(q):
 def annotate_candidates(p,items):
     for i in items:
         if i.get('answer_refs'):
-            i['answer_versions']={q['id']:digest(q.get('answer')) for q in p['questions'] if q['id'] in i['answer_refs']}
+            i['answer_versions']={q['id']:digest(q.get('answer')) for q in p['questions']
+                                  if q['id'] in i['answer_refs'] and not q.get('decision_group_id')}
+            i['decision_answer_bindings']={q['id']:dict(answer_id=row['id'],
+                answer_hash=row['answer_hash']) for q in p['questions']
+                if q['id'] in i['answer_refs'] for row in [current_decision_answer(p,q)] if row}
             for q in p['questions']:
                 if q['id'] in i['answer_refs']:
                     q['understanding_status']='candidate_ready'
-                    q['answer_effect']='已有相关修订候选待核对；尚未替换原条款'
+                    q['answer_effect']='已有相关修订候选待逐决定核对；尚未替换原条款'
 
 
-def accept_answer_update(p,candidate):
+def accept_answer_update(p,candidate,*,answer_implementations=None,before=None):
     refs=set(candidate.get('answer_refs',[]))
     questions=[q for q in p['questions'] if q['id'] in refs]
     require(len(questions)==len(refs),'REFERENCE_INVALID','修订候选关联的回答不存在')
     # Validate every answer before mutating any state, including direct callers.
     for q in questions:
-        require(current_answer(q) and answer_target(p,q,candidate) is not None,
+        require(answer_target(p,q,candidate) is not None,
                 'REFERENCE_INVALID','回答只能应用于该问题直接关联的原需求、规则或验收的同类修订')
-        require(candidate.get('answer_versions',{}).get(q['id'])==digest(q.get('answer')),
-                'STALE_ANSWER','回答已变化，请根据最新回答重新生成修订候选',409)
+        if q.get('decision_group_id'):
+            row=current_decision_answer(p,q)
+            require(row is not None and coverage_complete(q), 'REVIEW_REQUIRED',
+                    '决定组原话仍须逐子决定人工核对明确覆盖，不能直接采纳修订',409)
+            require(candidate_answer_binding_current(p,q,candidate),
+                    'STALE_ANSWER','决定组原话或候选绑定已变化，请重新生成修订候选',409)
+        else:
+            require(current_answer(q), 'REFERENCE_INVALID',
+                    '回答只能应用于当前已答问题',409)
+            require(candidate_answer_binding_current(p,q,candidate),
+                    'STALE_ANSWER','回答已变化，请根据最新回答重新生成修订候选',409)
+    from .answer_implementation import (derive_changed_witnesses, implementation_records,
+        saved_implementations, validate_implementation_map, validate_implementations)
+    supplied=validate_implementation_map(p,answer_implementations)
+    prepared=[]
     for q in questions:
         targets=answer_targets(p,q)
-        affected={i['id'] for i in targets}
-        applied=(set(q.get('applied_item_ids',q.get('applied_requirement_ids',[])))
-                 | {candidate['target_item_id']}) & affected
-        remaining=affected-applied
+        target=next(i for i in targets if i['id']==candidate['target_item_id'])
+        witnesses=supplied.get(q['id'])
+        if witnesses is None:
+            witnesses=[w for w in saved_implementations(p,q) if w['item_id']!=target['id']]
+            witnesses+=derive_changed_witnesses(before,target)
+        try:
+            scope=targets if q['id'] in supplied else [i for i in targets if any(w['item_id']==i['id'] for w in witnesses)]
+            grouped=validate_implementations(p,q,witnesses,targets=scope)
+        except Problem:
+            if q['id'] in supplied:
+                raise
+            grouped={}
+        prepared.append((q,targets,grouped))
+    for q,targets,grouped in prepared:
+        q['answer_implementation_contract']=2
+        if grouped:
+            q['answer_applications']=implementation_records(p,q,grouped,method='candidate_adoption')
+            q['applied_item_ids']=sorted(grouped)
+        applied=applied_targets(p,q)
+        remaining={i['id'] for i in targets}-applied
         q['applied_item_ids']=sorted(applied)
         q['applied_requirement_ids']=sorted(i['id'] for i in targets
                                             if i['kind']=='requirement' and i['id'] in applied)
@@ -289,17 +410,22 @@ def accept_answer_update(p,candidate):
 
 def application_hash(item):
     """Exact reviewed clause content, excluding transient selection/version metadata."""
-    from .requirements import CONTENT_FIELDS
-    return digest({key:item.get(key) for key in CONTENT_FIELDS})
+    from .requirements import item_content
+    return digest(item_content(item))
 
 
 def applied_targets(p,q):
     targets={i['id']:i for i in answer_targets(p,q)}
     applied=set(q.get('applied_item_ids',q.get('applied_requirement_ids',[]))) & set(targets)
     records=q.get('answer_applications',{})
-    return {iid for iid in applied if iid not in records or
-            (records[iid]['answer_hash']==digest(q.get('answer')) and
-             records[iid]['clause_hash']==application_hash(targets[iid]))}
+    from .answer_implementation import record_current
+    def current(iid):
+        record=records.get(iid,{})
+        if record.get('contract_version')==2 or q.get('answer_implementation_contract')==2:
+            return record_current(p,q,targets[iid],record)
+        return not record or (record.get('answer_hash')==digest(q.get('answer'))
+                              and record.get('clause_hash')==application_hash(targets[iid]))
+    return {iid for iid in applied if current(iid)}
 
 
 def invalidate_answer_applications(p, before=None):
@@ -320,11 +446,17 @@ def invalidate_answer_applications(p, before=None):
             q.update(understanding_status='pending',answer_effect='已核对条款或回答发生变化，请重新核对回答是否落实；不会自动批准。')
 
 
-def confirm_manual_answer(p,q,answer_hash,clause_hashes,review_confirmed):
+def confirm_manual_answer(p,q,answer_hash,clause_hashes,review_confirmed,*,answer_implementations=None):
     from .requirements import require_behavior_review
     require(review_confirmed,'REVIEW_REQUIRED','请先逐项核对回答与当前条款，不会自动批准',409)
     require(q.get('status')=='answered' and not q.get('superseded_by') and not q.get('out_of_scope_reason'),
             'ANSWER_REQUIRED','只能核对本期已保存的具体回答',409)
+    if not q.get('decision_group_id') and len((q.get('decision_review_proposal') or {}).get('decisions') or [])>1:
+        proposal=q['decision_review_proposal']
+        same_answer=(proposal.get('question_hash')==digest([question_fingerprint(q)])
+                     and proposal.get('answer_hash')==digest(q.get('answer')))
+        require(not same_answer, 'DECISION_MAPPING_REQUIRED',
+                '该旧问题包含多个独立决定，请先逐项核对映射；不能整题标为已回答',409)
     require(answer_hash==digest(q.get('answer')),'STALE_ANSWER','回答已变化，请重新查看后核对',409)
     targets=answer_targets(p,q)
     require(targets and set(clause_hashes)=={i['id'] for i in targets},
@@ -333,9 +465,16 @@ def confirm_manual_answer(p,q,answer_hash,clause_hashes,review_confirmed):
         require(item['selection_status']=='selected','REVIEW_REQUIRED','请先编辑、核对并采纳 '+item['id'],409)
         require(clause_hashes[item['id']]==application_hash(item),'STALE_REVISION','条款已变化，请重新查看核对',409)
         require_behavior_review(item,p)
-    q['answer_applications']={item['id']:dict(answer_hash=answer_hash,clause_hash=clause_hashes[item['id']],
-        method='manual_review',actor='authenticated_local_user',reviewed_at=now(),
-        answer_source_refs=copy.deepcopy(q.get('answer_source_refs',[]))) for item in targets}
+    from .answer_implementation import (implementation_records, saved_implementations,
+        validate_implementation_map, validate_implementations)
+    supplied=validate_implementation_map(p,answer_implementations)
+    grouped=validate_implementations(p,q,supplied.get(q['id'],saved_implementations(p,q)))
+    q['answer_implementation_contract']=2
+    q['answer_applications']=implementation_records(p,q,grouped,method='manual_review')
     q['applied_item_ids']=sorted(clause_hashes)
     q['applied_requirement_ids']=sorted(i['id'] for i in targets if i['kind']=='requirement')
     q.update(understanding_status='applied',answer_effect='人工核对当前已采纳条款承载此回答；非正式业务批准。')
+    q['decision_coverage']='clear'
+    q['decision_coverage_review']=dict(answer_hash=answer_hash,
+        question_hash=question_fingerprint(q),method='manual_review',
+        actor='authenticated_local_user',reviewed_at=now())

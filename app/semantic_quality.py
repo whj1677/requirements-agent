@@ -634,9 +634,11 @@ def current_document_checks(p):
                 refs=[r for r in basis.get('normative_refs',[]) if r in items]
                 keys=[r for r in basis.get('context_refs',[]) if r in context]
                 claims=[r for r in basis.get('business_claim_refs',[]) if r in business]
-                evidence='\n'.join([context[r] for r in keys]+[items[r]['statement'] for r in refs]+[business[r]['text'] for r in claims])
+                from .prd import normative_evidence, CLOUD_PRD_SECTIONS
+                detail=kind=='prd' and section['title'] in CLOUD_PRD_SECTIONS.values()
+                evidence='\n'.join([context[r] for r in keys]+[normative_evidence(items[r],include_behavior=detail) for r in refs]+[business[r]['text'] for r in claims])
                 existing='\n'.join([context[r] for r in keys if r=='current_state']+[business[r]['text'] for r in claims])
-                scenario='\n'.join([context[r] for r in keys if r!='current_state']+[items[r]['statement'] for r in refs])
+                scenario='\n'.join([context[r] for r in keys if r!='current_state']+[normative_evidence(items[r],include_behavior=detail) for r in refs])
                 for issue in explanation_issues(visible[location],evidence,existing,scenario):
                     checks.append(dict(check_id='DOC:'+location+':'+issue['dimension'],object_id=artifact['id'],document_type=kind,document_version=artifact.get('document_version'),location=location,related_refs=refs or scope,**issue))
     return checks

@@ -1,6 +1,7 @@
 import hashlib
 import io
 import os
+import re
 import tempfile
 from pathlib import Path
 import zipfile
@@ -40,6 +41,74 @@ def readable_picture_parts(data):
         return parts
 
 
+def add_full_flow_page(doc, picture, title):
+    """Place one complete flow on a landscape page and restore body geometry."""
+    from docx.enum.section import WD_ORIENT, WD_SECTION
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from PIL import Image
+
+    geometry_keys=('orientation','page_width','page_height','top_margin','bottom_margin',
+                   'left_margin','right_margin','header_distance','footer_distance','gutter')
+    geometry={key:getattr(doc.sections[-1],key) for key in geometry_keys}
+    # A diagram chapter normally starts with its heading. Move that contiguous
+    # heading group with the image so a section break cannot strand its title.
+    headings=[]
+    for child in reversed(list(doc._body._body)[:-1]):
+        if child.tag!=qn('w:p'):
+            break
+        paragraph=next((p for p in doc.paragraphs if p._p is child),None)
+        if paragraph is None or not (paragraph.style.name.startswith('Heading') or
+                paragraph.style.name=='Document Metadata' and paragraph.paragraph_format.keep_with_next):
+            break
+        headings.insert(0,paragraph)
+    for paragraph in headings:
+        paragraph._p.getparent().remove(paragraph._p)
+
+    def new_page_section():
+        section=doc.add_section(WD_SECTION.NEW_PAGE)
+        # The paragraph carrying sectPr has no visible content. Keep it tiny so
+        # it does not push a fitted landscape figure onto an additional page.
+        paragraph=doc.paragraphs[-1]
+        paragraph.paragraph_format.space_before=Pt(0)
+        paragraph.paragraph_format.space_after=Pt(0)
+        paragraph.paragraph_format.line_spacing=Pt(1)
+        paragraph.paragraph_format.keep_with_next=False
+        return section
+
+    landscape=new_page_section()
+    landscape.orientation=WD_ORIENT.LANDSCAPE
+    landscape.page_width=max(geometry['page_width'],geometry['page_height'])
+    landscape.page_height=min(geometry['page_width'],geometry['page_height'])
+    for paragraph in headings:
+        doc._body._body.insert_element_before(paragraph._p,'w:sectPr')
+    if headings:
+        headings[0].paragraph_format.space_before=Pt(0)
+
+    width=(landscape.page_width-landscape.left_margin-landscape.right_margin)/Inches(1)
+    height=(landscape.page_height-landscape.top_margin-landscape.bottom_margin)/Inches(1)
+    # Reserve room for headings, the caption, the inline-image baseline and the
+    # closing section-break paragraph; never crop or split the image to fit.
+    height-=.7+.42*len(headings)
+    with Image.open(io.BytesIO(picture)) as image:
+        picture_width=min(width,height*image.width/image.height)
+    doc.add_picture(io.BytesIO(picture),width=Inches(picture_width))
+    paragraph=doc.paragraphs[-1]
+    paragraph.alignment=WD_ALIGN_PARAGRAPH.CENTER
+    paragraph.paragraph_format.space_before=Pt(0)
+    paragraph.paragraph_format.space_after=Pt(3)
+    paragraph.paragraph_format.line_spacing=1
+    paragraph.paragraph_format.keep_with_next=True
+    caption=doc.add_paragraph(title+' · 完整流程图','Document Metadata')
+    caption.alignment=WD_ALIGN_PARAGRAPH.CENTER
+    caption.paragraph_format.space_before=Pt(0)
+    caption.paragraph_format.space_after=Pt(0)
+    caption.paragraph_format.keep_with_next=False
+
+    restored=new_page_section()
+    for key,value in geometry.items():
+        setattr(restored,key,value)
+
+
 async def capture(spec):
     from playwright.async_api import async_playwright
     async with async_playwright() as pw:
@@ -55,11 +124,22 @@ async def capture(spec):
     return images
 
 
-async def document_files(p, kind, status='草稿／待产品经理内容确认', *, reader=True):
+async def document_files(p, kind, status='草稿／待产品经理内容确认', *, reader=True, mode='formal'):
     require(kind in p['documents'], 'NOT_FOUND', '请先生成此类型文档', 404)
     artifact = p['documents'][kind]
+    require(mode in ('formal','review'),'SCHEMA_INVALID','文档导出模式无效。')
     require(artifact['brief_hash'] == brief_hash(p), 'STALE_REVISION', '底稿已改变，请重新成文', 409)
     require(kind not in p.get('stale_document_kinds', []), 'STALE_REVISION', '页面已改变，请重新生成此文档后导出', 409)
+    structured = kind=='prd' and any(item.get('detail_contract') or item.get('detail_required') for item in delivery_items(p))
+    review_warnings=[]
+    if structured:
+        from .document_reader import export_readiness
+        readiness=export_readiness(p,kind,mode=mode)
+        require(readiness['ready'],'DOCUMENT_CONTENT_REQUIRED',
+                '；'.join(issue['message'] for issue in readiness['issues']),409)
+        review_warnings=readiness.get('warnings',[])
+    if mode=='review':
+        status='需求评审稿／非正式交付／含待确认项'
     content = reader_document(artifact) if reader else artifact['content']
     # Keep machine-level source/profile mapping available to export internals
     # without placing its workflow explanations in the product reading view.
@@ -75,8 +155,11 @@ async def document_files(p, kind, status='草稿／待产品经理内容确认',
     doc = Document()
     section = doc.sections[0]
     section.page_width, section.page_height = Inches(8.5), Inches(11)
+    if structured and reader:
+        section.page_width, section.page_height = Inches(8.27), Inches(11.69)
     section.top_margin = section.bottom_margin = Inches(.7)
     section.left_margin = section.right_margin = Inches(.75)
+    table_width = (section.page_width-section.left_margin-section.right_margin)/Inches(1)
     for style_name in ('Normal','Title',*[f'Heading {n}' for n in range(1,10)]):
         st = doc.styles[style_name]
         st.font.name = 'Microsoft YaHei'
@@ -90,7 +173,7 @@ async def document_files(p, kind, status='草稿／待产品经理内容确认',
             st.font.size = Pt(11)
             st.font.bold = False
             st.paragraph_format.space_after = Pt(7)
-            st.paragraph_format.line_spacing = 1.5
+            st.paragraph_format.line_spacing = 1.3 if structured and reader else 1.5
         elif style_name == 'Title':
             st.font.size = Pt(22)
             st.font.bold = True
@@ -103,6 +186,8 @@ async def document_files(p, kind, status='草稿／待产品经理内容确认',
             st.paragraph_format.space_before = Pt(20 if depth==1 else 14)
             st.paragraph_format.space_after = Pt(7)
             st.paragraph_format.keep_with_next = True
+            if structured and reader:
+                st.font.color.rgb = RGBColor.from_string('234B67')
     from docx.enum.style import WD_STYLE_TYPE
     metadata_style = doc.styles.add_style('Document Metadata', WD_STYLE_TYPE.PARAGRAPH)
     metadata_style.base_style = doc.styles['Normal']
@@ -115,9 +200,52 @@ async def document_files(p, kind, status='草稿／待产品经理内容确认',
     cover_metadata_style.font.color.rgb = RGBColor(70,80,74)
     cover_metadata_style.paragraph_format.line_spacing = 1.4
     cover_metadata_style.paragraph_format.space_after = Pt(10)
-    doc.add_paragraph(content['title'], 'Title')
-    doc.add_paragraph(meta.replace(' · ', '\n'), 'Document Cover Metadata')
+    table_caption_style = doc.styles.add_style('Document Table Caption', WD_STYLE_TYPE.PARAGRAPH)
+    table_caption_style.base_style = doc.styles['Normal']
+    table_caption_style.font.bold=True
+    table_caption_style.font.size=Pt(10)
+    table_caption_style.font.color.rgb=RGBColor.from_string('234B67')
+    table_caption_style.paragraph_format.keep_with_next=True
+    table_caption_style.paragraph_format.space_before=Pt(8)
+    table_caption_style.paragraph_format.space_after=Pt(5)
+    if structured and reader:
+        from .document_reader import document_name
+        doc.add_paragraph(document_name(artifact), 'Title')
+        doc.add_paragraph('产品需求文档 PRD · '+meta, 'Document Cover Metadata')
+    else:
+        doc.add_paragraph(content['title'], 'Title')
+        doc.add_paragraph(meta.replace(' · ', '\n'), 'Document Cover Metadata')
     doc.add_paragraph(md[2])
+    if mode=='review':
+        notice='本文件仅供需求评审，不能作为已确认的研发交付依据。'
+        doc.add_paragraph(notice);md.append(notice)
+        if structured and reader and review_warnings:
+            line='本版保留待确认内容，请结合文末「未决产品事项」与「评审核对清单」审核。'
+            doc.add_paragraph(line);md.append(line)
+            question_ids={b.get('question_id') for s in content['sections'] for b in s['blocks'] if b.get('question_id')}
+            labels={v['item_id']:v['label'] for v in content.get('reference_labels',[])}
+            property_names={'enum_values':'枚举选项','condition':'生效条件','validation':'校验规则',
+                            'inputs':'输入','constraints':'约束','required':'必填条件',
+                            'empty_value':'空值处理','default_value':'默认值','time_basis':'时间口径'}
+            rows=[]
+            for warning in review_warnings:
+                if warning.get('question_id') in question_ids:
+                    continue  # The complete question, impact and state are already in the reader.
+                message=warning['message']
+                for raw,label in {**labels,**property_names}.items():
+                    message=re.sub(r'(?<![\w-])'+re.escape(raw)+r'(?![\w-])',lambda _:label,message)
+                rows.append([f'P{len(rows)+1:02d}',message])
+            if rows:
+                last_number=max((int(n['number']) for n in content['outline'] if n['level']==1),default=0)+1
+                warning_section=dict(section_id='REVIEW-CHECKS',title='评审核对清单',reading_nodes=[
+                    dict(kind='heading',number=str(last_number),text='评审核对清单',level=1),
+                    dict(kind='table',title='待核对定义',text='待核对定义',columns=['编号','核对内容'],
+                         rows=rows,column_weights=[.10,.90],table_role='review_warnings')])
+                rendered.append((warning_section,[]))
+        else:
+            for warning in review_warnings:
+                line='待核对：'+warning['message']
+                doc.add_paragraph(line);md.append(line)
     ui_current = bool(sketches_included and p.get('ui') and p['ui']['brief_hash'] == brief_hash(p))
     images = await capture(p['ui']['spec']) if ui_current else []
     image_map = dict(images)
@@ -134,6 +262,79 @@ async def document_files(p, kind, status='草稿／待产品经理内容确认',
                     title=node['number']+' '+node['text']
                     md.append('#'*(node['level']+1)+' '+title)
                     doc.add_heading(title, node['level'])
+                elif node['kind']=='table':
+                    from .detail_rendering import table_markdown
+                    if node['title']!=s.get('title'):
+                        doc.add_paragraph(node['title'],'Document Table Caption')
+                        md.append('**'+node['title']+'**')
+                    md.append(table_markdown(node))
+                    table=doc.add_table(rows=1,cols=len(node['columns']))
+                    table.style='Table Grid'
+                    table.autofit=False
+                    weights=(node.get('column_weights') or {'字段属性':[.19,.30,.51] if len(node['columns'])==3 else [.14,.19,.18,.30,.19],
+                              '流程步骤':[.10,.15,.35,.11,.29],
+                              '分支与流转条件':[.09,.27,.27,.37],
+                              '状态变化':[.08,.22,.22,.26,.22]}.get(node['title'])
+                             or ([.12,.44,.44] if len(node['columns'])==3 and node.get('detail_hash') else None)
+                             or ([.22,.78] if len(node['columns'])==2 else [1/len(node['columns'])]*len(node['columns'])))
+                    for column,weight in zip(table.columns,weights):
+                        column.width=Inches(table_width*weight)
+                    borders=OxmlElement('w:tblBorders')
+                    for edge in ('top','left','bottom','right','insideH','insideV'):
+                        border=OxmlElement('w:'+edge)
+                        for key,value in (('val','single'),('sz','4'),('color','D9D9D9')):
+                            border.set(qn('w:'+key),value)
+                        borders.append(border)
+                    table._tbl.tblPr.append(borders)
+                    for cell,value in zip(table.rows[0].cells,node['columns']):
+                        cell.text=str(value)
+                    repeat=OxmlElement('w:tblHeader');table.rows[0]._tr.get_or_add_trPr().append(repeat)
+                    for values in node['rows']:
+                        row=table.add_row()
+                        for cell,value in zip(row.cells,values):
+                            cell.text=str(value)
+                    from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT
+                    for row_number,row in enumerate(table.rows):
+                        no_split=OxmlElement('w:cantSplit');row._tr.get_or_add_trPr().append(no_split)
+                        for cell,weight in zip(row.cells,weights):
+                            cell.width=Inches(table_width*weight)
+                            cell.vertical_alignment=WD_CELL_VERTICAL_ALIGNMENT.TOP
+                            props=cell._tc.get_or_add_tcPr()
+                            shade=OxmlElement('w:shd');shade.set(qn('w:fill'),'234B67' if row_number==0 else 'F3F7FA' if row_number%2 else 'FFFFFF');props.append(shade)
+                            margins=OxmlElement('w:tcMar')
+                            for edge in ('top','bottom','left','right'):
+                                margin=OxmlElement('w:'+edge);margin.set(qn('w:w'),'70' if edge in ('top','bottom') else '90');margin.set(qn('w:type'),'dxa');margins.append(margin)
+                            props.append(margins)
+                            for paragraph in cell.paragraphs:
+                                paragraph.paragraph_format.space_after=Pt(2)
+                                paragraph.paragraph_format.line_spacing=1.15
+                                paragraph.paragraph_format.keep_with_next=row_number==0
+                                for run in paragraph.runs:
+                                    run.font.size=Pt(9.5)
+                                    run.font.bold=row_number==0
+                                    run.font.color.rgb=RGBColor(255,255,255) if row_number==0 else RGBColor(0,0,0)
+                                    run.font.name='Microsoft YaHei'
+                                    run._element.get_or_add_rPr().rFonts.set(qn('w:eastAsia'),'Microsoft YaHei')
+                    bindings.append(dict(section_id=s['section_id'],item_id=node.get('item_id'),
+                                         item_ids=node.get('item_ids',[]),detail_hash=node.get('detail_hash'),kind='table',title=node['title']))
+                elif node['kind']=='diagram':
+                    from .detail_rendering import flow_png
+                    try:
+                        picture=flow_png(node['flow'])
+                    except (ValueError,OSError,KeyError,TypeError) as error:
+                        require(False,'DETAIL_RENDER_FAILED','流程图导出失败：'+str(error),409)
+                    asset='assets/flow-'+node['detail_hash'][:20]+'.png'
+                    svg_asset=asset.removesuffix('.png')+'.svg'
+                    files[asset]=picture;files[svg_asset]=node['svg'].encode('utf-8')
+                    # Self-contained Markdown also works when downloaded alone.
+                    import base64
+                    md.append('!['+node['title'].replace('[','').replace(']','')+'](data:image/png;base64,'+base64.b64encode(picture).decode('ascii')+')')
+                    add_full_flow_page(doc,picture,node['title'])
+                    bindings.append(dict(section_id=s['section_id'],item_id=node['item_id'],
+                                         detail_hash=node['detail_hash'],kind='diagram',
+                                         asset=asset,asset_hash=hashlib.sha256(picture).hexdigest()))
+                elif node['kind']=='detail_error':
+                    require(False,'DETAIL_RENDER_FAILED',node['text'],409)
                 else:
                     md.append(node['text'])
                     paragraph = doc.add_paragraph(node['text'], 'Document Metadata' if node['kind']=='metadata' else 'Normal')
@@ -199,11 +400,23 @@ async def document_files(p, kind, status='草稿／待产品经理内容确认',
     footer = doc.sections[0].footer.paragraphs[0]
     footer.add_run('需求内容评审 · ')
     fld = OxmlElement('w:fldSimple'); fld.set(qn('w:instr'),'PAGE'); footer._p.append(fld)
+    if structured and reader:
+        # Explicit body runs keep local Word theme/template defaults from
+        # turning ordinary Chinese prose into a second heading weight.
+        for paragraph in [*doc.paragraphs,footer]:
+            if paragraph.style.name in ('Normal','Document Metadata','Document Cover Metadata'):
+                for run in paragraph.runs:
+                    run.bold=False
+                    run.font.name='Microsoft YaHei'
+                    run._element.get_or_add_rPr().rFonts.set(qn('w:eastAsia'),'Microsoft YaHei')
     out = io.BytesIO(); doc.save(out)
     files[kind.upper()+'.docx'] = out.getvalue()
     files[kind.upper()+'.md'] = ('\n\n'.join(md)+'\n').encode('utf-8')
     files['document_asset_bindings.json'] = dumps(bindings).encode('utf-8')
     files['reference_mapping.json'] = dumps(reference_mapping).encode('utf-8')
+    if content.get('reference_labels'):
+        files[kind.upper()+'.references.json']=dumps(dict(document_id=artifact['id'],
+            content_hash=digest(artifact['content']),references=content['reference_labels'])).encode('utf-8')
     return files
 
 

@@ -39,7 +39,9 @@ def evidence(p,excerpts):
         sources=[dict(source_id=s['id'],created=s.get('created'),purpose=s.get('purpose'),sha256=s.get('sha256'),
             stored_order=n,excluded=s.get('excluded',False),superseded_by=s.get('superseded_by'),
             parent_source_id=s.get('parent_source_id'),origin=s.get('origin'),
-            excerpt_ids=[e['id'] for e in excerpts if e['source_id']==s['id']],evidence_role='source_statement')
+            excerpt_ids=[e['id'] for e in excerpts if e['source_id']==s['id']],
+            evidence_role=('external_benchmark_reference_not_product_decision' if s.get('benchmark_reference') else
+                'benchmark_task_intent_not_adoption' if s.get('origin')=='benchmark_intake' else 'source_statement'))
             for n,s in enumerate(p.get('sources',[]))],
         revision_targets=[dict(target_item_id=i['id'],kind=i['kind'],selection_status=i.get('selection_status'),
                                **({'content_version':i['content_version']} if 'content_version' in i else {}))

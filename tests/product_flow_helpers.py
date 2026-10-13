@@ -55,6 +55,10 @@ def http_check(client,root,through=3):
     if through>=2:
         for i in reqs:
             if i.get('change_type')=='unspecified':post('/items/'+i['id']+'/behavior',dict(values={},change_type='modified'))
+            # Step 2 includes the human adoption decision, while unknown behavior
+            # details may still be resolved during step 3.
+            post('/items/'+i['id']+'/behavior',dict(values={},change_type=i.get('change_type') if i.get('change_type')!='unspecified' else 'modified',review_confirmed=True))
+            post('/items/'+i['id'],dict(selection_status='selected'))
     if through>=3:
         for i in reqs:post('/items/'+i['id']+'/behavior',dict(values={k:'合成已给出的 '+v for k,v in BEHAVIOR.items()},change_type='modified',review_confirmed=True))
     for n in (1,2):

@@ -17,7 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 from .core import DATA, ROOT, FROZEN, Problem, brief_hash, digest, hashes, ident, now, require, ui_view_hash
 from .store import Store
-from .contracts import gate, API_CAPABILITIES, PROFILES, review_target
+from .contracts import gate, gate_blockers, API_CAPABILITIES, PROFILES, review_target
 from .provider import Provider, DEFAULT, origin
 from .workflow import Workflow, confirm
 from .actions import Actions
@@ -29,7 +29,9 @@ from .exports import document_files, handoff, zip_files
 from .document_reader import reader_document, export_readiness, filename
 from .product_flow import status as flow_status, current_stage, checkpoint, INTAKE, SCOPE, BEHAVIOR, review_document, document_review_current
 from .requirements import exchange, requirement_ref, delivery_items
+from .bulk_adoption import review as review_item_adoptions, adopt as adopt_items
 from .budgets import MODEL_OUTPUT_LIMIT
+from .scope_context import validate_context_edit, save_context_edit, scope_field_rules
 from . import business_context
 
 MODEL_TEST_TIMEOUT_SECONDS = 60
@@ -78,6 +80,11 @@ class ActionTarget(Strict):
     id: str = Field(min_length=1,max_length=200)
     section_id: str | None = None
 
+class BenchmarkInput(Strict):
+    target: str = Field(min_length=1,max_length=200)
+    focus: str = Field(default='',max_length=2000)
+    source_ids: list[str] = Field(min_length=1)
+
 class ActionPlan(Revision):
     action: Literal['interview','organize','explore','clarify','prototype','document','review','change']
     message: str = Field(default='',max_length=12000)
@@ -85,6 +92,8 @@ class ActionPlan(Revision):
     option_id: str | None = None
     max_calls: int | None = Field(default=None,ge=1,strict=True)
     target: ActionTarget | None = None
+    benchmark: BenchmarkInput | None = None
+    attachment_source_ids: list[str] = Field(default_factory=list)
 
 class ActionStart(ActionPlan):
     plan_hash: str
@@ -106,6 +115,13 @@ class DirectionDecision(Revision):
 class OptionItems(Revision):
     item_ids: list[str] = Field(min_length=1)
 
+class ItemAdoptionReview(Revision):
+    item_ids: list[str] = Field(min_length=1)
+
+class ItemAdoptions(ItemAdoptionReview):
+    content_hashes: dict[str, str]
+    review_confirmed: bool = Field(strict=True)
+
 class Answer(Revision):
     answer: str = Field(min_length=1,max_length=6000)
 
@@ -116,6 +132,7 @@ class ManualAnswerReview(Revision):
     answer_hash: str
     clause_hashes: dict[str,str]
     review_confirmed: bool = False
+    answer_implementations: dict[str, list[dict]] = Field(default_factory=dict)
 
 class Intake(Revision):
     text: str = Field(default='',max_length=12000)
@@ -134,9 +151,19 @@ class AcceptanceCandidate(Revision):
 class DocumentReview(Revision):
     document_id: str
 
+class ScopeProfile(Strict):
+    scenario: Literal['unspecified','new_product','new_module','modify_existing']
+    dependencies: Literal['unknown','independent','shared']
+
+class FieldState(Strict):
+    status: Literal['known','not_applicable','none','unknown']
+    note: str = Field(default='',max_length=2000)
+
 class ContextEdit(Revision):
     values: dict[str,str]
     scope_ids: list[str] | None = None
+    scope_profile: ScopeProfile | None = None
+    field_states: dict[str, FieldState] | None = None
 
 class BehaviorEdit(Revision):
     values: dict[str,str]
@@ -252,11 +279,10 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
             return await asyncio.wait_for(asyncio.shield(job),180)
         except asyncio.TimeoutError:
             raise Problem('EXPORT_TIMEOUT','导出等待超时，后台仍可能在处理；其他功能可继续使用，请稍后核对导出记录再重试',503)
-    # Local session protection is independent of model credentials and material consent.
-    if access_token is None and os.environ.get('RA_ACCESS_TOKEN')=='off':
-        token=None
-    else:
-        token = access_token or os.environ.get('RA_ACCESS_TOKEN') or secrets.token_urlsafe(32)
+    # Daily local access has no password; explicit tokens remain for isolated compatibility tests.
+    # This is independent of model credentials and material consent.
+    token = access_token
+    local_csrf = secrets.token_urlsafe(32)
     sessions = {}
     app = FastAPI(title='需求 Agent', version='1.1', docs_url=None, redoc_url=None)
     app.state.store, app.state.provider, app.state.workflow = store, provider, workflow
@@ -298,10 +324,10 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
             expected_origin = str(request.base_url).rstrip('/')
             if remote_origin and remote_origin != expected_origin:
                 return JSONResponse({'code':'ORIGIN_DENIED','message':'拒绝跨站访问'},status_code=403)
-            if request.url.path != '/api/session/login' and token is not None:
-                session = sessions.get(request.cookies.get('ra_session',''))
-                if not session:
-                    return JSONResponse({'code':'SESSION_REQUIRED','message':'请输入本机访问令牌'},status_code=401)
+            if request.url.path != '/api/session/login':
+                session = sessions.get(request.cookies.get('ra_session','')) if token is not None else local_csrf
+                if token is not None and not session:
+                    return JSONResponse({'code':'SESSION_REQUIRED','message':'会话已失效，请刷新页面'},status_code=401)
                 if request.method not in ('GET','HEAD','OPTIONS'):
                     if not remote_origin or not hmac.compare_digest(request.headers.get('x-csrf-token',''),session):
                         return JSONResponse({'code':'CSRF_DENIED','message':'会话校验失败'},status_code=403)
@@ -328,7 +354,7 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
     @app.post('/api/session/login')
     async def login(body: KeyInput):
         if token is None:
-            return {'csrf':''}
+            return {'csrf':local_csrf}
         require(hmac.compare_digest(body.key,token), 'AUTH_FAILED', '本机访问令牌错误', 401)
         sid, csrf = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
         sessions[sid] = csrf
@@ -339,8 +365,18 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
     @app.get('/api/session')
     async def session(request:Request):
         # backend 为纯附加字段：旧前端忽略它，新前端据此核实接口能力。
-        return {'csrf':sessions.get(request.cookies.get('ra_session',''),''), 'mode':'live', 'version':'1.1',
+        return {'csrf':sessions.get(request.cookies.get('ra_session',''),'') if token is not None else local_csrf, 'mode':'live', 'version':'1.1',
                 'backend': app.state.runtime}
+
+    @app.get('/api/platform-knowledge')
+    async def platform_knowledge_status():
+        from .platform_knowledge import load
+        bundle, status = load(store.folder)
+        if bundle:
+            status.update(overview=bundle['overview'], source_snapshot=bundle['source_snapshot'],
+                          modules=[{k:m[k] for k in ('id','name','summary')} for m in bundle['modules']],
+                          coverage=bundle['coverage'], unknowns=bundle['unknowns'])
+        return status
 
     def project_summary(p, updated_at=None):
         if updated_at is None:
@@ -368,12 +404,15 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
         p=store.get(pid)
         summary = project_summary(p)
         try:
-            issues=gate(p)
+            confirmation_blockers=gate_blockers(p)
+            issues=[row['message'] for row in confirmation_blockers]
         except Problem as e:
             issues=[e.message]
+            confirmation_blockers=[dict(key='gate_error',code=e.code,title='交接条件需要核对',message=e.message,
+                actions=[dict(kind='source',label='核对参考资料'),dict(kind='document',label='核对 PRD 文档',document='prd')])]
         # Reader/source progress are response projections; keep canonical review hashes intact.
         result=copy.deepcopy(p)
-        result.update(summary, hashes=hashes(p), confirmation_issues=issues,
+        result.update(summary, hashes=hashes(p), confirmation_issues=issues, confirmation_blockers=confirmation_blockers,
                       baselines=store.records(pid,'baseline'), exports=store.records(pid,'export'))
         from .requirements import behavior_review_current
         # Keep response-only UI state outside canonical items: clients may use
@@ -382,6 +421,14 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
             ('legacy' if not item.get('behavior_review_required') else
              'reviewed' if behavior_review_current(item) else 'required')
             for item in result['items'] if item['kind']=='requirement'}
+        from .decision_semantics import proposal_current
+        from .understanding import coverage_complete
+        from .domain_context import active_source_ids
+        result['active_source_ids'] = sorted(active_source_ids(p))
+        for question in result['questions']:
+            qid = question.get('decision_group_id') or question['id']
+            question['decision_review_proposal_current'] = proposal_current(p, qid)
+            question['decision_coverage_complete'] = coverage_complete(question)
         for source in result['sources']:
             if source.get('embedded_image_ids'):
                 children=[s for s in result['sources'] if s.get('container_source_id')==source['id']]
@@ -390,7 +437,9 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
         for artifact in result['documents'].values():
             attach_document_snapshot(pid,artifact)
         result['document_export_readiness']={kind:export_readiness(p,kind) for kind in p['documents']}
+        result['document_review_export_readiness']={kind:export_readiness(p,kind,mode='review') for kind in p['documents']}
         result['product_flow']=flow_status(p)
+        result['scope_field_rules']=scope_field_rules(p)
         result['confirmation_scope_ids']=[i['id'] for i in delivery_items(p)]
         result['document_review_status']={k:dict(reviewed=document_review_current(p,k),record=p.get('document_reviews',{}).get(k)) for k in ('mrd','prd')}
         result['review_status']=dict(available=bool(p.get('review')),current=bool(p.get('review') and p['review']['target_hash']==review_target(p)))
@@ -471,27 +520,28 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
 
     @app.post('/api/projects/{pid}/product-context')
     async def context_edit(pid:str,body:ContextEdit):
-        require(set(body.values)<=(INTAKE.keys()|SCOPE.keys()),'CONTEXT_INVALID','未知核对字段')
-        require(all(len(v)<=6000 for v in body.values.values()),'CONTEXT_INVALID','核对说明过长')
+        profile=body.scope_profile.model_dump() if body.scope_profile is not None else None
+        states={k:v.model_dump() for k,v in body.field_states.items()} if body.field_states is not None else None
+        validate_context_edit(body.values, profile, states)
         with store.edit(pid,body.expected_revision,'核对产品现状与增量范围') as (p,db):
             if body.scope_ids is not None:
                 valid={i['id'] for i in p['items'] if i['kind']=='requirement' and i['applies_to']=='to_be'}
                 require(set(body.scope_ids)<=valid,'REFERENCE_INVALID','本期范围只能引用实际目标需求')
-                p.setdefault('product_context',{})['scope_ids']=list(dict.fromkeys(body.scope_ids))
-            p.setdefault('product_context',{}).update(body.values)
+            save_context_edit(p,body.values,body.scope_ids,profile,states)
         return p
 
     @app.post('/api/projects/{pid}/intake/direct')
     async def direct_intake(pid:str,body:ContextEdit):
-        require(set(body.values)<=(INTAKE.keys()|SCOPE.keys()),'CONTEXT_INVALID','未知核对字段')
-        require(all(len(v)<=6000 for v in body.values.values()),'CONTEXT_INVALID','核对说明过长')
+        profile=body.scope_profile.model_dump() if body.scope_profile is not None else None
+        states={k:v.model_dump() for k,v in body.field_states.items()} if body.field_states is not None else None
+        validate_context_edit(body.values, profile, states)
         require(any(v.strip() for v in body.values.values()),'INPUT_REQUIRED','请先填写已知的需求信息')
         require(not body.scope_ids,'REFERENCE_INVALID','直接填写入口不采纳需求条目')
         with store.edit(pid,body.expected_revision,'保存专业用户的原始需求输入') as (p,db):
             text='\n\n'.join(f'{({**INTAKE,**SCOPE})[k]}：{v}' for k,v in body.values.items() if v.strip())
             source=save_source(store,'直接填写的需求.txt',text.encode('utf-8'),'goal')
             source['origin']='direct_intake';p['sources'].append(source)
-            p.setdefault('product_context',{}).update(body.values)
+            save_context_edit(p,body.values,profile=profile,field_states=states)
             p['intake']=dict(text=text,platform='',preserved='',mode='direct',
                 source_ids=[s['id'] for s in p['sources'] if not s['excluded']],saved_at=now())
             checkpoint(p,1,flow_status(p)[0]['content_hash'])
@@ -637,10 +687,22 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
     async def file_source(pid:str,expected_revision:int=Form(...),purpose:str=Form('current'),file:UploadFile=File(...)):
         data=await file.read(MAX_BYTES+1)
         require(len(data)<=MAX_BYTES,'SOURCE_FAILED','文件超过 12 MiB')
-        require(purpose in ('current','goal','reference','template'),'SOURCE_FAILED','材料用途无效')
+        require(purpose in ('current','goal','reference','template','chat_attachment'),'SOURCE_FAILED','材料用途无效')
         p=store.get(pid)
         require(p['revision']==expected_revision,'STALE_REVISION','页面已过期',409)
-        s=await asyncio.to_thread(save_source,store,Path(file.filename or 'unknown').name,data,purpose)
+        if purpose=='chat_attachment':
+            require(Path(file.filename or '').suffix.lower() in
+                    ('.txt','.md','.docx','.doc','.xlsx','.xls','.pptx','.ppt','.pdf','.png','.jpg','.jpeg','.webp'),
+                    'SOURCE_FAILED','请选择支持的文档或 PNG、JPEG、WebP 图片')
+        s=await asyncio.to_thread(save_source,store,Path(file.filename or 'unknown').name,data,
+                                  'goal' if purpose=='chat_attachment' else purpose)
+        if purpose=='chat_attachment':
+            if Path(file.filename or '').suffix.lower() in ('.png','.jpg','.jpeg','.webp'):
+                require(s.get('image_mime') and s.get('parse_status')=='awaiting_vision',
+                        'SOURCE_FAILED','图片无法读取，请选择有效的 PNG、JPEG 或 WebP 图片')
+            s['origin']='interview_attachment'
+            for child in s.get('_embedded_sources',[]):
+                child['origin']='interview_attachment'
         with store.edit(pid,expected_revision,'添加文件材料') as (p,db):
             append_source(p,s)
         return s
@@ -792,15 +854,13 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
                 # Preserve stable business identity for a selected revision.
                 for key in ('title','statement','applies_to','epistemic_status','source_refs','related_refs'):
                     target[key]=copy.deepcopy(i[key])
-                for key in ('behavior','change_type','scope_evidence','classification_reason'):
+                for key in ('behavior','change_type','scope_evidence','classification_reason',
+                            'detail_contract','detail_required'):
                     if key in i:target[key]=copy.deepcopy(i[key])
                 for key in ('behavior_review_required','behavior_review'):
                     if key in i:target[key]=copy.deepcopy(i[key])
                 target['selection_status']='selected'
                 accept_answer_update(p,i)
-                for q in p['questions']:
-                    if q['id'] in i.get('answer_refs',[]):
-                        q.setdefault('answer_applications',{})[target['id']]=dict(answer_hash=digest(q.get('answer')),clause_hash=application_hash(target),method='candidate_adoption',actor='authenticated_local_user',reviewed_at=now())
                 i['selection_status']='deferred'
                 for linked in p['items']+p['questions']:
                     linked['related_refs']=[target['id'] if ref==i['id'] else ref for ref in linked['related_refs']]
@@ -808,6 +868,16 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
                     option['proposed_item_refs']=[target['id'] if ref==i['id'] else ref for ref in option['proposed_item_refs']]
             else:
                 i['selection_status']=body.selection_status
+        return p
+
+    @app.post('/api/projects/{pid}/item-adoption-review')
+    async def item_adoption_review(pid:str,body:ItemAdoptionReview):
+        return review_item_adoptions(store.get(pid),body.item_ids,body.expected_revision)
+
+    @app.post('/api/projects/{pid}/item-adoptions')
+    async def item_adoptions(pid:str,body:ItemAdoptions):
+        with store.edit(pid,body.expected_revision,'人工逐条核对并批量采纳独立需求') as (p,db):
+            adopt_items(p,body.item_ids,body.content_hashes,body.review_confirmed)
         return p
 
     @app.post('/api/projects/{pid}/options/{oid}')
@@ -866,18 +936,20 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
 
     @app.get('/api/projects/{pid}/questions/{qid}/application-review')
     async def answer_application_review(pid:str,qid:str):
+        from .answer_review import review_targets
         p=store.get(pid)
         q=next((q for q in p['questions'] if q['id']==qid),None)
         require(q is not None,'NOT_FOUND','问题不存在',404)
-        return dict(expected_revision=p['revision'],question_id=qid,answer=q.get('answer'),
-                    answer_hash=digest(q.get('answer')),targets=[dict(item=i,clause_hash=application_hash(i)) for i in answer_targets(p,q)])
+        return dict(expected_revision=p['revision'],question_id=qid,question=q.get('question'),answer=q.get('answer'),
+                    answer_hash=digest(q.get('answer')),targets=review_targets(p,q))
 
     @app.post('/api/projects/{pid}/questions/{qid}/application-review')
     async def apply_manual_answer(pid:str,qid:str,body:ManualAnswerReview):
         with store.edit(pid,body.expected_revision,'人工核对已保存回答在当前条款中的落实') as (p,db):
             q=next((q for q in p['questions'] if q['id']==qid),None)
             require(q is not None,'NOT_FOUND','问题不存在',404)
-            confirm_manual_answer(p,q,body.answer_hash,body.clause_hashes,body.review_confirmed)
+            confirm_manual_answer(p,q,body.answer_hash,body.clause_hashes,body.review_confirmed,
+                                  answer_implementations=body.answer_implementations)
         return p
 
     @app.get('/api/models')
@@ -961,9 +1033,18 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
     async def user_tasks(pid:str):
         store.get(pid)
         tasks=store.records(pid,'user_task')
+        recovered={row['task_id']:row for row in store.records(pid,'local_recovery')}
         for task in tasks:
             task['calls']=sum(store.get_record(pid,rid,'run')['calls'] for rid in task['run_ids'])
+            if task['id'] in recovered:
+                row=recovered[task['id']]
+                task['local_recovery']={k:row[k] for k in ('id','output_revision','candidate_ids','external_model_calls')}
         return tasks
+
+    @app.post('/api/projects/{pid}/actions/{tid}/recover-draft')
+    async def recover_draft(pid:str,tid:str,body:Revision):
+        from .ingest_recovery import recover
+        return recover(store,pid,tid,body.expected_revision)
 
     @app.post('/api/projects/{pid}/actions/{tid}/cancel')
     async def action_cancel(pid:str,tid:str):
@@ -1030,33 +1111,34 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
         return p
 
     @app.get('/api/projects/{pid}/documents/{kind}/{fmt}')
-    async def download_document(pid:str,kind:str,fmt:str,document_id:str|None=None):
+    async def download_document(pid:str,kind:str,fmt:str,document_id:str|None=None,mode:str='formal'):
         require(kind in ('prd','mrd') and fmt in ('md','docx','zip'),'NOT_FOUND','文件类型不存在',404)
+        require(mode in ('formal','review'),'INPUT_REQUIRED','下载模式必须为正式核对或评审稿')
         p=store.get(pid)
         artifact=p['documents'].get(kind)
         require(artifact is not None,'NOT_FOUND','请先生成文档',404)
         require(document_id is None or document_id==artifact['id'],'STALE_DOCUMENT','文档版本已变化，请重新核对当前文档；历史文档只读。',409)
-        readiness=export_readiness(p,kind)
+        readiness=export_readiness(p,kind,mode=mode)
         require(readiness['ready'],readiness['issues'][0]['code'] if readiness['issues'] else 'DOCUMENT_NOT_READY',
                 '下载前请完成澄清并更新文档：'+'；'.join(i['message'] for i in readiness['issues']),409)
         attach_document_snapshot(pid,artifact)
-        status='需求评审稿／尚未正式确认'
-        if p['active_baseline_id']:
+        status='需求评审稿／非正式交付／请核对文中待决事项' if mode=='review' else '需求评审稿／尚未正式确认'
+        if mode=='formal' and p['active_baseline_id']:
             baseline=store.get_record(pid,p['active_baseline_id'],'baseline')
             if baseline['hashes']==hashes(p):
                 status='产品经理指定版本内容确认 · '+kind.upper()
         stem=filename(artifact)
         def build_download():
             logger.info('document export started %s %s',pid,kind)
-            files=asyncio.run(document_files(p,kind,status,reader=True))
+            files=asyncio.run(document_files(p,kind,status,reader=True,mode=mode))
             public_files={(stem+Path(k).suffix if k in (kind.upper()+'.md',kind.upper()+'.docx') else k):v for k,v in files.items() if not k.endswith('.json')}
             body=zip_files(public_files) if fmt=='zip' else files[kind.upper()+'.'+fmt]
-            record=dict(document_type=kind,document_artifact_id=artifact['id'],style_version='reader-2',generator_version='1.1',artifact_hashes={k:hashlib.sha256(v).hexdigest() for k,v in files.items()},asset_bindings=files['document_asset_bindings.json'].decode('utf8'))
+            record=dict(document_type=kind,document_artifact_id=artifact['id'],export_mode=mode,style_version='reader-2',generator_version='1.1',artifact_hashes={k:hashlib.sha256(v).hexdigest() for k,v in files.items()},asset_bindings=files['document_asset_bindings.json'].decode('utf8'))
             with store.connect() as db:
                 db.execute('BEGIN IMMEDIATE')
                 current=store.get(pid,db)
                 require(current['documents'].get(kind,{}).get('id')==artifact['id'] and brief_hash(current)==brief_hash(p)
-                        and export_readiness(current,kind)['ready'],
+                        and export_readiness(current,kind,mode=mode)['ready'],
                         'STALE_DOCUMENT','导出期间内容发生变化，请重新核对当前文档',409)
                 store.record(pid,'document_export',record,db=db)
             logger.info('document export completed %s %s',pid,kind)
@@ -1078,6 +1160,16 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
         store.get_record(pid,eid,'export')
         return FileResponse(store.folder/'exports'/(eid+'.zip'),filename=eid+'.zip')
 
+    from .workspace_draft import register as register_workspace_draft
+    from .decision_routes import register as register_decision_routes
+    from .domain_context_routes import register as register_domain_context
+    from .refinement_preparation import register as register_refinement_preparation
+    from .refinement_confirmation import register as register_refinement_confirmation
+    register_workspace_draft(app, store)
+    register_decision_routes(app, store)
+    register_domain_context(app, store)
+    register_refinement_preparation(app, store)
+    register_refinement_confirmation(app, store)
     if (ROOT/'web/dist').exists():
         app.mount('/',StaticFiles(directory=ROOT/'web/dist',html=True),name='web')
     return app

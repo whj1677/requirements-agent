@@ -80,6 +80,8 @@ def test_questions_not_repeated_and_candidate_not_auto_approved(tmp_path):
     assert p['active_baseline_id'] is None
 
 class FakeProvider(Provider):
+    # These frozen fixtures exercise the legacy runtime wire contract.
+    business_draft_protocol = None
     def __init__(self,results,delay=0):super().__init__();self.results=iter(results);self.delay=delay;self.received=[]
     def key(self,c):return 'offline-fixture'
     async def request(self,c,m,evidence=None):
