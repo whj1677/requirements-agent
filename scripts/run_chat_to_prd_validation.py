@@ -280,6 +280,13 @@ async def run(args):
                 await page.screenshot(path=str(phase_dir / '04-phase-result.png'), full_page=True)
                 if args.phase == 'organize':
                     report['refinement_table_visible'] = await page.get_by_role('table', name='需求确认表', exact=True).is_visible()
+                    produced=store.get(pid)
+                    report['draft_requirement_count']=sum(bool(item.get('kind')=='requirement'
+                        and not item.get('target_item_id') and item.get('statement','').strip()
+                        and item.get('selection_status') in ('candidate','selected')) for item in produced['items'])
+                    report['draft_question_count']=len(produced['questions'])
+                    if not report['draft_requirement_count']:
+                        raise RuntimeError('The UI reached refinement but produced no reviewable requirement; inspect business_draft_review, not just task status')
                 if report['routing_errors'] or report['page_errors']:
                     raise RuntimeError('Browser reported errors; see evidence')
                 report['status'] = 'passed'

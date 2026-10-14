@@ -268,6 +268,13 @@ def assemble(project, stage, user_message, config, folder=None, local_scope=None
         header['schema']['properties']['summary_fields'] = _object({})
     context = _input(project, excerpts, user_message, local_scope)
     header['required_row_keys'] = context['required_row_keys']
+    if not local_scope:
+        keys=list(_roots(project))
+        new_key={'type':'string','pattern':r'^new-[A-Za-z0-9_-]+$','maxLength':80}
+        header['allowed_existing_row_keys']=keys
+        header['schema']['properties']['requirements']['items']['properties']['row_key']=(
+            dict(anyOf=[{'enum':keys},new_key],description='已有行只能复制 allowed_existing_row_keys；新增必须以 new- 开头，不能自行编号 R1/R2。')
+            if keys else dict(new_key,description='当前没有已有需求行；全部新增行必须以 new- 开头，不能使用 R1/R2。'))
     system = PROMPT + detail_draft.PROMPT + '\n可信任务头：' + dumps(header)
     from .platform_knowledge import attach as attach_platform_knowledge, protected_system
     attach_platform_knowledge(context, system, config, folder, project, user_message, stage, scope=local_scope)
@@ -426,7 +433,7 @@ def _isolate_field_shapes(row, project, local_scope, aliases, index):
     return normalized, rejected
 
 
-def _canonical_row(row, project, excerpts, stage, local_scope, aliases, index):
+def _canonical_row(row, project, excerpts, stage, local_scope, aliases, index, *, detail_missing=False):
     root = _roots(project).get(row['row_key'])
     require(root is not None or row['row_key'].startswith('new-'), 'BUSINESS_DRAFT_ROW', '本地行名不存在或不在本次可整理范围')
     require(not local_scope or root and root['id'] == local_scope['requirement_id'],
@@ -452,7 +459,7 @@ def _canonical_row(row, project, excerpts, stage, local_scope, aliases, index):
     notes = []
     candidate_id = None
     detail = copy.deepcopy((root or {}).get('detail_contract'))
-    detail_required = bool((root or {}).get('detail_required') or _detail_requested(project)
+    detail_required = bool(detail_missing or (root or {}).get('detail_required') or _detail_requested(project)
                            or row.get('detail_contract'))
     if 'detail_contract' in row:
         item_refs = {alias: iid for iid, alias in _item_aliases(project).items()}
@@ -638,6 +645,7 @@ def adapt(value, project, excerpts, stage, local_scope=None):
         key = row.get('row_key') if isinstance(row, dict) else None
         root = roots.get(key) if isinstance(key, str) else None
         detail_normalized = []
+        detail_missing = False
         try:
             row_shape = copy.deepcopy(ROW)
             row_shape['properties']['questions']['items'] = {}
@@ -648,9 +656,35 @@ def adapt(value, project, excerpts, stage, local_scope=None):
                     normalized['detail_contract'])
                 for diagnostic in detail_normalized:
                     diagnostic.update(row_key=key, requirement_id=(root or {}).get('id'))
+                if root is None:
+                    try:
+                        _validate_shape(normalized['detail_contract'], ROW['properties']['detail_contract'])
+                    except Problem as error:
+                        # Preserve independently valid new requirements and
+                        # their decisions. Invalid detailed definitions remain
+                        # raw evidence and cannot satisfy confirmation gates.
+                        def validate_detail_sources(part):
+                            if isinstance(part, dict):
+                                if 'sources' in part:
+                                    _validate_shape(part['sources'], VALUE['properties']['sources'])
+                                    _refs(part['sources'], aliases)
+                                require(part.get('status') != 'source' or bool(part.get('sources')),
+                                    'BUSINESS_DRAFT_SOURCE', '详细属性标为资料明确时必须附真实来源')
+                                for child in part.values():
+                                    validate_detail_sources(child)
+                            elif isinstance(part, list):
+                                for child in part:
+                                    validate_detail_sources(child)
+                        validate_detail_sources(normalized['detail_contract'])
+                        field_rejected.append(dict(path=['requirements', index-1, 'detail_contract'],
+                            row_key=key, requirement_id=None, raw=copy.deepcopy(row['detail_contract']),
+                            code=error.code, reason=error.message))
+                        normalized.pop('detail_contract')
+                        detail_missing = True
             _validate_shape(normalized, row_shape)
             require(keys.count(key) == 1, 'BUSINESS_DRAFT_ROW', '本地行名重复，无法唯一确定独立需求行')
-            converted, metadata = _canonical_row(normalized, project, excerpts, stage, local_scope, aliases, index)
+            converted, metadata = _canonical_row(normalized, project, excerpts, stage, local_scope, aliases, index,
+                                                  detail_missing=detail_missing)
             metadata['raw'] = copy.deepcopy(row)
             metadata['field_rejected'] = field_rejected
             metadata['detail_normalized'] = detail_normalized

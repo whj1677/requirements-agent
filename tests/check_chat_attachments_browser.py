@@ -237,6 +237,12 @@ async def run(args):
                     await assert_composer_visible(page, (390, 844))
                     await page.screenshot(path=str(args.output / 'mobile-documents-pending.png'))
                     await page.locator('.connected-workspace:visible .connected-steps button').nth(1).click()
+                    await page.get_by_text('聊天框还有未发送的文字或附件。请先发送，或移除本轮输入，再进入完善需求。', exact=True).wait_for()
+                    assert len(attachment_sources(store, mobile['id'])) == 0 and provider.calls == 4
+                    assert await page.locator('.connected-chat .chat-pasted-image').count() == 2
+                    # Entering refinement deliberately keeps unsent input in
+                    # the assistant. Project switching exercises save-on-leave.
+                    await page.get_by_label('切换项目').select_option(desktop['id'])
                     leave = page.get_by_role('dialog', name='未保存的修改')
                     await leave.wait_for()
                     await leave.get_by_role('button', name='保存后离开').click()

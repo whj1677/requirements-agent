@@ -122,6 +122,19 @@ def test_synthetic_selection_preserves_unknowns_without_confirmation(tmp_path):
     assert store.records(project['id'], 'synthetic_test_review')
 
 
+def test_chat_created_project_can_select_review_scope_without_inventing_context(tmp_path):
+    store,project=candidates(tmp_path)
+    with store.edit(project['id'],project['revision'],'合成助手入口只有上下文建议') as (current,_):
+        current.pop('product_context')
+        current['product_context_proposal']={'product':'待确认的产品名称'}
+    project=store.get(project['id'])
+    after=select_reviewed_draft(store,project['id'],signed_review(project))
+    assert after['product_context']=={'scope_ids':['REQ-TEST']}
+    assert after['product_context_proposal']==project['product_context_proposal']
+    assert after['questions']==project['questions']
+    assert not after.get('baselines') and not any(i.get('requirement_confirmation') for i in after['items'])
+
+
 def test_actions_workflow_document_to_review_export_records_real_pipeline(tmp_path):
     async def scenario():
         store, project = candidates(tmp_path)

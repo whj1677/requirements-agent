@@ -21,6 +21,7 @@ fields 仅列本期实际输入、显示或业务结果数据。规则参数（�
 evidence 的键只对应本对象已有属性：例如 "validation":"待确认：单次上限", "evidence":{"validation":{"status":"unknown","reason":"单次上限未决定"}}。不能写 evidence.unknown 或用一个 evidence.source 代表全部属性。
 简单编辑用一个完整交互：打开与回显写 entry，保存前放弃写 cancel，提交中/重复提交写 pending/repeat；独立输入和结果才拆另一个交互。本地取消无需制造“取消失败/重试次数”问题。
 流程用 nodes 和 edges；判断出边写 condition，等待节点须给查询成功、确定失败及仍未知的后续路径。保存前取消从编辑节点分支，提交之后不得又宣称未提交。图、交互、状态表和验收描述同一规则。
+flow 对象只能含 nodes 和 edges，不得添加 flow.evidence；来源逐项放在节点或连线的 evidence。evidence 的 status 只能为 source、proposal、unknown，建议使用 proposal，不能使用 recommendation，也不能把 status/reason/sources 写到 evidence 容器这一层。
 批量业务若对象独立处理：记录单个对象失败后继续汇总，仅全部结果确定才判定全成功/部分成功/全失败；未决不能当失败。“可重试”保留退出分支，不画成必须重试；再次重试仍允许失败或未决。只有资料支持才应用这些规则，不扩展无关场景。
 状态变化说明所属业务对象，不把批次结果、通知状态和后续处理阶段混成一套枚举；prohibited_actions 只写有依据或明确标建议的限制。
 保留已有 id；新对象用 F1/I1/N1/E1/T1。field_refs 用字段 id，depends_on 用 R#，rule_refs/已有验收用 C#，本行新增验收用 A1/A2 对应 acceptance 顺序。

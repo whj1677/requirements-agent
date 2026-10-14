@@ -102,6 +102,33 @@ def test_unknown_no_assertion_or_confirmed_query_is_allowed(text):
     p,v,ex=case(text);validate_response(v,'ingest',p,ex)
 
 
+@pytest.mark.parametrize('text',[
+    '超时结果未知，不声称服务端未创建资源，先查询原申请ID。',
+    '超时结果未知，不得声称已经创建或未创建资源；先查询原申请ID。',
+    '超时结果未知，不能声称服务端已创建资源。',
+    '超时结果未知，不显示“未创建资源”等结论，只提供查询入口。',
+])
+def test_denied_claim_is_an_inference_constraint_not_a_known_result(text):
+    p,v,ex=case(text);before=copy.deepcopy((p,v,ex))
+    validate_response(v,'ingest',p,ex)
+    assert (p,v,ex)==before
+
+
+@pytest.mark.parametrize('text',[
+    '超时结果未知，声称服务端未创建资源。',
+    '超时结果未知，不得不声称服务端未创建资源。',
+    '超时结果未知，不声称已创建资源，但是服务端未创建资源。',
+    '超时结果未知，不声称已创建资源；服务端未创建资源。',
+    '超时结果未知，显示未创建资源。',
+    '超时结果未知，不得不显示未创建资源。',
+    '超时结果未知，不显示未创建资源，但是服务端已经创建资源。',
+])
+def test_claim_scope_does_not_hide_affirmative_or_double_negated_results(text):
+    p,v,ex=case(text)
+    with pytest.raises(Problem) as error:validate_response(v,'ingest',p,ex)
+    assert error.value.code=='SEMANTIC_BLOCKED'
+
+
 def test_explicit_sufficient_source_is_allowed_only_in_its_scope():
     src='本期新增云资源申请规则。同一租户每批最多20项时，全部配额满足则整批创建资源。'
     p,v,ex=case('同一租户每批最多20项时，全部配额满足则整批创建资源。',source=src)

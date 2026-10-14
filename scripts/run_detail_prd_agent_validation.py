@@ -144,7 +144,7 @@ def select_reviewed_draft(store, pid, review):
             item['test_review'] = dict(actor='SIMULATED_TEST_REVIEW', decision=row['decision'],
                                        reason=row['reason'], reviewed_content_hash=row['content_hash'],
                                        business_approval=False)
-        current['product_context']['scope_ids'] = req_ids
+        current.setdefault('product_context', {})['scope_ids'] = req_ids
         store.record(pid, 'synthetic_test_review', copy.deepcopy(review), db=db)
     return store.get(pid)
 

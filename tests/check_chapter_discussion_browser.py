@@ -210,7 +210,11 @@ async def exercise(page, store, initial, output, report, control, expect):
     report['checks'].append('quota_failure_keeps_typed_words_and_blocks_leaving_until_storage_is_restored')
 
     control['reject_answer_save'] = True
-    await drawer.get_by_role('button', name='沿用原文并查看修改', exact=True).click()
+    await drawer.get_by_role('button', name='核对原文的落实位置', exact=True).click()
+    implementation=drawer.locator('.answer-implementation-target')
+    await implementation.get_by_role('combobox').select_option('statement')
+    await implementation.get_by_role('checkbox', name='我已核对此原文表达了答案', exact=True).check()
+    await drawer.get_by_role('button', name='预览本次落实核对', exact=True).click()
     await expect(drawer).to_contain_text('离线注入：回答保存失败')
     await expect(answer).to_have_value(ANSWER)
     assert state_hash(store) == baseline
@@ -218,7 +222,7 @@ async def exercise(page, store, initial, output, report, control, expect):
     report['checks'].append('injected_answer_save_failure_keeps_words_and_never_opens_another_clause_form_or_writes_store')
     await page.screenshot(path=str(output / '02-failed-save-preserves-continuation.png'))
 
-    await drawer.get_by_role('button', name='沿用原文并查看修改', exact=True).click()
+    await drawer.get_by_role('button', name='预览本次落实核对', exact=True).click()
     preview = drawer.locator('.answer-change-preview')
     await expect(preview).to_be_visible()
     await expect(preview.locator('.answer-difference')).to_have_count(1)
@@ -242,7 +246,7 @@ async def exercise(page, store, initial, output, report, control, expect):
 
     saved_hash = state_hash(store)
     control['commit_conflict'] = True
-    await preview.get_by_role('button', name='确认本次变更', exact=True).click()
+    await preview.get_by_role('button', name='确认本次落实核对', exact=True).click()
     await expect(drawer).to_contain_text('离线注入：版本冲突')
     await expect(answer).to_have_value(ANSWER)
     await expect(preview).to_be_visible()
@@ -250,7 +254,7 @@ async def exercise(page, store, initial, output, report, control, expect):
     report['checks'].append('injected_commit_revision_conflict_keeps_input_and_visible_preview_without_writes')
     await page.screenshot(path=str(output / '04-conflict-keeps-preview.png'))
 
-    await preview.get_by_role('button', name='确认本次变更', exact=True).click()
+    await preview.get_by_role('button', name='确认本次落实核对', exact=True).click()
     confirmed = await wait_state(store, lambda value: status(value)[2]['complete'], 'chapter commit did not close stage 3 in its own transaction')
     await expect(drawer).to_contain_text('已确认本次变更')
     assert await drawer.get_by_role('button', name='确认本次补充已处理', exact=True).count() == 0

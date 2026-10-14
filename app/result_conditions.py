@@ -21,7 +21,7 @@ NON_ASSERTION = re.compile(r'建议|假设|待(?:澄清|核对|确认)|未采纳
                           r'不能[^，,。；;\n]{0,12}(?:推断|认定|断言)|并非|不代表|不意味着|不蕴含')
 SUBJECTS = re.compile(r'云资源|资源|工单|订单|记录|备注|时段|配置|文件')
 CONNECTOR = re.compile(r'则|便|就|即可|即会|即|将|会|能够|可以|可')
-ASSERTION = re.compile(r'断言|推断|认定|确认|反推|展示|当作|当成|视为|判定为')
+ASSERTION = re.compile(r'断言|声称|推断|认定|确认|反推|展示|显示|当作|当成|视为|判定为')
 NEGATOR = r'并非|不是|没有|不能|不得|禁止|不允许|不应|不可|无法|不|未'
 ASSERTION_MODIFIER = r'据此|因此|直接|自行|轻易|作出|进行|作|做|\s'
 ASSERTION_NEGATION = re.compile(r'(?:'+NEGATOR+r')(?:(?:'+ASSERTION_MODIFIER+r')|(?:'+NEGATOR+r'))*$')
