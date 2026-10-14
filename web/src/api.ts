@@ -2,14 +2,15 @@ import { beginActivity } from './activity';
 export type JsonObject = Record<string, any>;
 export interface ProjectSummary { id: string; name: string; revision: number; created?: string; updated_at?: string; flow_current_title?: string }
 export interface Run { id: string; stage: string; status: string; message: string; calls: number; error?: string; cost?: number }
-export type BusinessAction = 'interview' | 'organize' | 'explore' | 'clarify' | 'prototype' | 'document' | 'review' | 'change';
+export type BusinessAction = 'interview' | 'organize' | 'explore' | 'clarify' | 'prototype' | 'document' | 'review' | 'prewrite' | 'change';
 export interface BenchmarkInput {target:string;focus:string;source_ids:string[]}
-export interface ActionInput { expected_revision: number; action: BusinessAction; message: string; document_type: string; option_id?: string | null; max_calls?: number | null; target?: JsonObject; benchmark?:BenchmarkInput; attachment_source_ids?:string[] }
+export interface ActionInput { expected_revision: number; action: BusinessAction; message: string; document_type: string; option_id?: string | null; max_calls?: number | null; target?: JsonObject; benchmark?:BenchmarkInput; attachment_source_ids?:string[]; allow_review_draft?:boolean }
 export interface BudgetPolicy { mode: 'function_first'|'fixed'|'unlimited'; initial_output_tokens: number; maximum_output_tokens: number; truncation_escalations: number; action_seconds: number | null; input_measure: string; input_allowance: number | null }
 export interface ActionPlan { benchmark?:BenchmarkInput; budget_policies?: Record<string,BudgetPolicy>; plan_hash: string; label: string; stages: string[]; max_calls: number | null; expected_revision: number; pending_text: string; context_scope: string; missing: string[]; recipients: { origin: string; model: string; needs_authorization: boolean }[]; sources: { id: string; title: string; status: string }[]; generation_target?: JsonObject }
 export interface RequestBudget { limit: number; used: number; reservations: { call_id: string; run_id: string; state: string }[] }
 export interface UserTask { local_recovery?: {id:string;output_revision:number;candidate_ids:string[];external_model_calls:number}; id: string; action: BusinessAction; label: string; status: string; message: string; created?: string; completed?: string; error?: string; calls: number; max_calls: number | null; request_budget?: RequestBudget; step_states?: { stage: string; status: string }[]; run_ids: string[]; source_ids: string[]; completed_steps: number; stages: string[]; cost: number | null; retry_input?: Partial<ActionInput> }
 export interface Project extends ProjectSummary {
+  prewrite_review?: JsonObject;
   product_flow?: {step:number;title:string;content_hash:string;complete:boolean;available:boolean;missing:string[];blockers?:Blocker[];needs_recheck:boolean;retired?:boolean;display_step?:number|null}[];
   product_context?: JsonObject; product_context_proposal?: JsonObject; sketch_review?: JsonObject; benchmark_analysis?:JsonObject;
   requirement_relations?: JsonObject[];

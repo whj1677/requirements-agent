@@ -224,6 +224,9 @@ def test_changed_answer_rejects_stale_candidate_and_preserves_previous_answer(ro
 
 def test_open_question_empty_split_is_rejected_without_partial_write(route_case,monkeypatch):
     client, app, root, post=route_case
+    # Exercise the canonical ingest contract supplied below; the provider's
+    # business-draft protocol uses a different response envelope.
+    app.state.provider.business_draft_protocol=None
     enable_local_plan(route_case)
     p=client.get(root).json()
     response=ingest_contract()['example']

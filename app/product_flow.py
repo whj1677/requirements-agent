@@ -31,7 +31,7 @@ def question_stage(q):
 
 def question_open(q):
     from .understanding import coverage_complete
-    return (q['status']!='answered' or not coverage_complete(q)) and not q.get('out_of_scope_reason') and not q.get('superseded_by')
+    return (q['status']!='answered' or not coverage_complete(q)) and not q.get('out_of_scope_reason') and not q.get('superseded_by') and not q.get('prewrite_resolution')
 
 
 def clarification_focus(p):

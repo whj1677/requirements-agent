@@ -4,7 +4,7 @@ import copy
 from app.contracts import describe_schema_error, VALIDATOR
 from app.core import dumps
 from tests.helpers import EXAMPLES
-from tests.test_prd01 import prepare_http
+from tests.test_prd01 import prepare_http, precheck_http
 from tests.test_ui02_actions import case, plan as action_plan, start, finished
 
 
@@ -26,13 +26,14 @@ def test_compiled_document_shape_failure_stops_without_model_repair(case,monkeyp
         return value
     monkeypatch.setattr(workflow,'compile_plan',overflow)
     client,app,model,root=prepare_http(case)
+    precheck_http(client,root)
     before=client.get(root).json()
     calls=[]
     def capture(value,body,ctx):
         calls.append(body)
         return value
     model['transform']=capture
-    body,preview=action_plan(client,root,'document','',max_calls=3)
+    body,preview=action_plan(client,root,'document','',max_calls=3,allow_review_draft=True)
     assert start(client,root,body,preview).status_code==200
     task=finished(client,root)
     assert task['status']=='failed'

@@ -2,7 +2,7 @@ import React, {useState} from 'react';
 import {detailEditingIssues,detailFieldRequired,detailInteractionRequired,detailPropertyLabels,detailRows,detailSectionLabels,detailTransitionRequired,emptyDetailContract,mergeDetailContract,resolveDetailConflict,type DetailConflict,type DetailContract,type DetailIssue,type DetailObject,type DetailSection} from './detail-contract';
 import './detail-contract.css';
 
-type Props={requirementId:string;title:string;value?:DetailContract;base?:DetailContract;disabled?:boolean;conflicts?:DetailConflict[];issues?:DetailIssue[];candidate?:{contract:DetailContract;candidate_id:string};references?:{id:string;title:string;kind:string}[];onChange:(value:DetailContract,conflicts?:DetailConflict[])=>void;onSources?:(refs:Record<string,any>[])=>void};
+type Props={confirmationLabel?:string;requirementId:string;title:string;value?:DetailContract;base?:DetailContract;disabled?:boolean;conflicts?:DetailConflict[];issues?:DetailIssue[];candidate?:{contract:DetailContract;candidate_id:string};references?:{id:string;title:string;kind:string}[];onChange:(value:DetailContract,conflicts?:DetailConflict[])=>void;onSources?:(refs:Record<string,any>[])=>void};
 const dataTypes={text:'文本',string:'字符串',id:'标识',number:'数值',integer:'整数',boolean:'是／否',enum:'枚举',date:'日期',datetime:'日期时间',object:'复合信息',array:'列表'};
 const nodeKinds={start:'开始',action:'处理步骤',decision:'条件判断',wait:'等待',end:'结束'};
 const arrayKeys=['enum_values','field_refs','rule_refs','acceptance_refs'];
@@ -14,7 +14,7 @@ function newObject(section:string):DetailObject{
   return {id:prefixes[section]+'-'+crypto.randomUUID().slice(0,8),...Object.fromEntries(fields.map(key=>[key,''])),...(section==='flow.nodes'?{kind:'action'}:{})};
 }
 
-export function DetailContractEditor({requirementId,title,value,base,disabled=false,conflicts=[],issues=[],candidate,references=[],onChange,onSources}:Props){
+export function DetailContractEditor({confirmationLabel='确认并进入交付',requirementId,title,value,base,disabled=false,conflicts=[],issues=[],candidate,references=[],onChange,onSources}:Props){
   const [expandedObjects,setExpandedObjects]=useState<Record<string,boolean>>({});
   const [expandedSections,setExpandedSections]=useState<Record<string,boolean>>({});
   const cell=(path:string)=>'requirement-'+requirementId+'-'+path;
@@ -58,7 +58,7 @@ export function DetailContractEditor({requirementId,title,value,base,disabled=fa
     })}<button type="button" disabled={disabled} onClick={()=>{const row=newObject(section);setExpandedSections(previous=>({...previous,[section.split('.')[0]]:true}));setExpandedObjects(previous=>({...previous,[row.id]:true}));updateSection(section,[...rows,row]);}}>添加{names[section]}</button></div>;
   };
   return <div className="detail-contract-editor" data-detail-requirement={requirementId}>
-    <p className="detail-contract-intro">字段、交互和流程均随底部“确认并进入交付”提交。标为不适用时需说明原因，已有定义请核对后移除。</p>
+    <p className="detail-contract-intro">字段、交互和流程均随“{confirmationLabel}”提交。标为不适用时需说明原因，已有定义请核对后移除。</p>
     {candidate&&JSON.stringify(value)!==JSON.stringify(candidate.contract)&&<details className="detail-section"><summary>AI 详细定义修订建议 · 尚未替换当前内容</summary><p className="detail-help">合并时按字段和步骤编号比较；你的本地修改会保留，冲突会展示两份内容供选择。</p><p>{candidate.contract.fields?.length||0} 个字段 · {candidate.contract.interactions?.length||0} 项操作 · {candidate.contract.flow?.nodes?.length||0} 个流程步骤</p><button type="button" disabled={disabled} onClick={()=>{const merged=mergeDetailContract(value,base,candidate.contract);if(merged.value)onChange(merged.value,[...new Map([...conflicts,...merged.conflicts].map(conflict=>[conflict.path,conflict])).values()]);}}>合并 AI 详细定义建议</button></details>}
     {!!conflicts.length&&<div className="detail-conflicts" role="alert"><strong>详细定义有 {conflicts.length} 处版本冲突，请比较后选择。</strong>{conflicts.map((conflict,index)=><div key={conflict.path} data-cell-key={cell(conflict.path)}><p>{conflict.path.split('.').map(part=>detailPropertyLabels[part]||part).join(' / ')}</p><div className="detail-conflict-values"><div><b>你的修改</b><pre>{display(conflict.local)}</pre></div><div><b>最新内容</b><pre>{display(conflict.remote)}</pre></div></div>{([false,true] as const).map(remote=><button type="button" disabled={disabled} key={String(remote)} onClick={()=>{const next=resolveDetailConflict(value,conflict,remote);if(next)onChange(next,conflicts.filter((_,n)=>n!==index));}}>{remote?'采用最新内容':'保留我的修改'}</button>)}</div>)}</div>}
     {(Object.keys(detailSectionLabels) as DetailSection[]).map(section=>{

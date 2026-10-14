@@ -55,7 +55,7 @@ def answer_target(p,q,candidate):
 
 
 def active_question(q):
-    return not q.get('superseded_by') and not q.get('out_of_scope_reason')
+    return not q.get('superseded_by') and not q.get('out_of_scope_reason') and not q.get('prewrite_resolution')
 
 
 def current_answer(q):

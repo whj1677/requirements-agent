@@ -146,6 +146,10 @@ def test_local_requirement_help_runs_before_scope_checkpoint_and_keeps_retry_int
     assert task['status'] == 'failed' and task['error'] == 'AUTH_FAILED'
     expected = {k:v for k,v in body.items() if k != 'expected_revision'}
     expected['target'] = dict(expected['target'], section_id=None)
+    # Retry stores the normalized action contract, including explicit defaults.
+    # Neither an ordinary clarify action nor its retry requests a review draft
+    # or silently adds attachments.
+    expected.update(allow_review_draft=False, attachment_source_ids=[])
     assert task['retry_input'] == expected
     current = client.get(root).json()
     assert not current['product_flow'][1]['complete']

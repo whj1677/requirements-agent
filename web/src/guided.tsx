@@ -10,7 +10,7 @@ export const phases = ['聊清需求想法', '核对需求草稿', '澄清流程
 export function TaskStatus({ task, busy = false, uncertain = false, onRefresh, onCancel, onRetry, onViewResult, onOpenDraft, onRecover }: { task?: UserTask; busy?: boolean; uncertain?: boolean; onRefresh?: () => void; onCancel: () => void; onRetry: () => void; onViewResult?: () => void; onOpenDraft?: () => void; onRecover?: () => void }) {
   if (!task) return null;
   if (task.local_recovery) return <article className="task-status" role="status"><strong>已恢复待核对草稿</strong><p>已从原输出恢复 {task.local_recovery.candidate_ids.length} 条候选，未重新调用 AI。请核对内容并决定是否采纳。</p>{onOpenDraft&&<button className="primary" disabled={busy} onClick={onOpenDraft}>查看恢复的草稿 →</button>}<details><summary>原任务与恢复记录</summary><p>原 AI 请求仍记录为失败，本地恢复单独留痕。</p><small>{task.id} · {task.local_recovery.id}</small></details></article>;
-  const generated=onViewResult && ['succeeded','partial'].includes(task.status);
+  const generated=onViewResult && ['succeeded','partial','awaiting_user'].includes(task.status);
   const running=['queued','running'].includes(task.status);
   const stopped=['failed','cancelled','paused_budget'].includes(task.status);
   const unknownSlots=task.request_budget?.reservations.filter(r=>r.state!=='response_received').length||0;
@@ -20,7 +20,7 @@ export function TaskStatus({ task, busy = false, uncertain = false, onRefresh, o
     <p className="preserve-lines">{task.message || (running?'任务已开始，正在准备本次分析。':'请核对本次执行记录。')}</p>
     {running&&<><progress aria-label="分析步骤进度" max={Math.max(1,task.stages.length)} value={task.completed_steps}/><p>已完成 {task.completed_steps}/{task.stages.length} 步；当前步骤完成后更新进度。</p></>}
     {stopped&&<p>{unknownSlots?'有 '+unknownSlots+' 个已预留或启动的请求结果未知，不释放额度、不自动重发。':task.calls===0?'本次尚未发出模型请求。':'本次已发出 '+task.calls+' 次模型请求。'}输入与已保存资料保留；继续需重新核对计划并明确授权。</p>}
-    {generated&&<button onClick={onViewResult}>{task.action==='organize'?'查看分析结果':task.action==='document'?'查看讨论稿':task.action==='prototype'?'查看功能草图':'查看本步结果'}</button>}
+    {generated&&<button onClick={onViewResult}>{task.status==='awaiting_user'?'处理成文检查问题':task.action==='prewrite'?'查看成文检查':task.action==='organize'?'查看分析结果':task.action==='document'?'查看讨论稿':task.action==='prototype'?'查看功能草图':'查看本步结果'}</button>}
     {running?<button disabled={busy} onClick={onCancel}>停止后续步骤</button>:stopped&&<button disabled={busy||uncertain} onClick={onRetry}>重新核对后发起任务</button>}
     <details><summary>本次资料、限制与执行记录</summary><p>已执行 {task.calls} 次请求{task.max_calls!=null&&` / 本次授权上限 ${task.max_calls}`} · 已处理步骤 {task.completed_steps}/{task.stages.length} · 费用 {task.cost ?? '未知'}</p>{task.request_budget&&<p>已占用请求额度 {task.request_budget.used}/{task.request_budget.limit}；其中结果未知 {unknownSlots}。预留与发送之间中断时，额度保守占用，费用未知。</p>}{task.step_states&&<p>{task.step_states.map(s=>`${steps[s.stage]}：${s.status==='NOT_RUN'?'未执行':states[s.status]||s.status}`).join(' → ')}</p>}<p>资料：{task.source_ids.join('、') || '无资料文件'}</p><p>子步骤：{task.stages.map(s => steps[s]).join(' → ')}</p><small>{task.id} · {task.run_ids.join('、')}</small></details>
   </article>;

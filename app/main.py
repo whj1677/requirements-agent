@@ -86,7 +86,7 @@ class BenchmarkInput(Strict):
     source_ids: list[str] = Field(min_length=1)
 
 class ActionPlan(Revision):
-    action: Literal['interview','organize','explore','clarify','prototype','document','review','change']
+    action: Literal['interview','organize','explore','clarify','prototype','document','review','change','prewrite']
     message: str = Field(default='',max_length=12000)
     document_type: Literal['prd','mrd'] = 'prd'
     option_id: str | None = None
@@ -94,6 +94,7 @@ class ActionPlan(Revision):
     target: ActionTarget | None = None
     benchmark: BenchmarkInput | None = None
     attachment_source_ids: list[str] = Field(default_factory=list)
+    allow_review_draft: bool = False
 
 class ActionStart(ActionPlan):
     plan_hash: str
@@ -445,6 +446,8 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
         result['review_status']=dict(available=bool(p.get('review')),current=bool(p.get('review') and p['review']['target_hash']==review_target(p)))
         result['source_capabilities']=dict(max_bytes=MAX_BYTES,extensions=SOURCE_EXTENSIONS,office_fallback='local-read-only')
         result['business_context_status']=business_context.model_context(p)
+        from .prewrite import status as prewrite_status
+        result['prewrite_review']=prewrite_status(p)
         return result
 
     @app.post('/api/projects/{pid}/intake')
@@ -1167,6 +1170,8 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
     from .refinement_confirmation import register as register_refinement_confirmation
     register_workspace_draft(app, store)
     register_decision_routes(app, store)
+    from .prewrite import register as register_prewrite_routes
+    register_prewrite_routes(app,store)
     register_domain_context(app, store)
     register_refinement_preparation(app, store)
     register_refinement_confirmation(app, store)

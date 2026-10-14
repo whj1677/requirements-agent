@@ -180,6 +180,9 @@ def test_workflow_saves_candidate_and_both_rounds_raw_evidence(tmp_path, monkeyp
             original_outputs.append(json.dumps(invalid, ensure_ascii=False))
         original_outputs.append(json.dumps(valid, ensure_ascii=False))
         provider = Provider(tmp_path / '.env')
+        # This fixture exercises runtime-1.1 scope-quote normalization and its
+        # repair contract, not the production business-draft-v1 response shape.
+        provider.business_draft_protocol = None
         provider.keys[origin(DEFAULT)] = 'synthetic-test-key'
         flow = Workflow(store, provider)
         run = flow.start(project['id'], store.get(project['id'])['revision'], 'ingest', '')

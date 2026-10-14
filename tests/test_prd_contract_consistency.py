@@ -65,6 +65,8 @@ def test_empty_normative_whitelist_preserves_draft_unknowns(tmp_path):
 @pytest.mark.parametrize('shape',['root','missing','question'])
 def test_http_actual_contract_and_targeted_repair(case,shape):
     c,app,model,root=prepare_http(case)
+    from tests.test_prd01 import precheck_http
+    precheck_http(c,root)
     before=c.get(root).json(); calls=[]
     def response(value,body,ctx):
         calls.append(body)
@@ -76,7 +78,7 @@ def test_http_actual_contract_and_targeted_repair(case,shape):
             if shape=='question':value['sections'][0]['discussion_refs']=[before['questions'][0]['id']]
         return value
     model['transform']=response
-    body,preview=action_plan(c,root,'document','',max_calls=2)
+    body,preview=action_plan(c,root,'document','',max_calls=2,allow_review_draft=True)
     assert start(c,root,body,preview).status_code==200
     task=finished(c,root)
     assert task['status']=='succeeded' and task['calls']==2

@@ -11,7 +11,8 @@ def test_normal_and_diagnostic_entrypoints_enforce_same_steps(case):
         assert start(c,root,body,preview).status_code==409
         p=c.get(root).json()
         response=c.post(root+'/runs',json=dict(expected_revision=p['revision'],stage=stage))
-        assert response.status_code==409 and response.json()['code']=='STAGE_BLOCKED'
+        expected_code='PREWRITE_REQUIRED' if stage=='prd' else 'STAGE_BLOCKED'
+        assert response.status_code==409 and response.json()['code']==expected_code
     assert model['requests']==[]
     body,preview=plan(c,root)
     assert start(c,root,body,preview).status_code==200

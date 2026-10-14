@@ -167,15 +167,24 @@ def test_draft_with_unknowns_direct_document_and_option_identity(case,topic):
     assert start(c,root,body,preview).status_code==200
     assert finished(c,root)['status']=='succeeded'
     for action in ('explore','document'):
-        body,preview=plan(c,root,action,'')
+        body,preview=plan(c,root,action,'',**({'allow_review_draft':True} if action=='document' else {}))
         assert start(c,root,body,preview,False).status_code==200
         assert finished(c,root)['status']=='succeeded'
     p=c.get(root).json()
     assert p['documents']['prd']['content']['title']==p['name']
-    readable='\n'.join(b['text'] for s in p['documents']['prd']['reader']['sections'] for b in s['blocks'])
+    reader=p['documents']['prd']['reader']
+    pending=[s for s in reader['sections'] if s['title']=='成文检查待核对事项']
+    readable='\n'.join(b['text'] for s in reader['sections']
+                       if s['title']!='成文检查待核对事项' for b in s['blocks'])
     # Candidate-only legacy runs remain available in the project audit trail,
-    # but their statements are not product requirements until adopted.
+    # but their statements are not product requirements until adopted. An
+    # unresolved check may identify a candidate by its title without adoption.
     assert f'管理员维护{topic}列表。' not in readable
+    assert len(pending)==1
+    pending_text='\n'.join(b['text'] for b in pending[0]['blocks'])
+    assert f'管理员维护{topic}列表。' in pending_text and '关联对象：' in pending_text
+    candidate_ids={i['id'] for i in p['items'] if i['selection_status']=='candidate'}
+    assert not candidate_ids & {row['item_id'] for row in reader['coverage']}
     canonical=json.dumps(p['documents']['prd']['content'],ensure_ascii=False)
     assert f'管理员维护{topic}列表。' in canonical
     assert any(i['selection_status']=='candidate' and i['statement'] in canonical for i in p['items'])
@@ -184,7 +193,7 @@ def test_draft_with_unknowns_direct_document_and_option_identity(case,topic):
     assert p['confirmation_issues'] and not p['active_baseline_id']
     before=p['documents']['prd']
     model['fail_next']=True
-    body,preview=plan(c,root,'document','')
+    body,preview=plan(c,root,'document','',allow_review_draft=True)
     assert start(c,root,body,preview,False).status_code==200
     assert finished(c,root)['status']=='failed'
     assert c.get(root).json()['documents']['prd']==before

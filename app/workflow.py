@@ -102,6 +102,7 @@ def apply_response(p, response, *, identity_only=False, preserve_context_proposa
                 draft_revision=p['revision'], generated_spec_hash=digest(next_ui['spec']), created=next_ui['created'])
     if stage == 'prd':
         kind = r['result']['document_type']
+        previous_document=copy.deepcopy(p['documents'].get(kind))
         document_version=p['documents'].get(kind,{}).get('document_version',0)+1
         p['documents'][kind] = dict(id=ident('DOC'), content=r['result'], requirement_name=p['name'], question_snapshot=copy.deepcopy(p['questions']), brief_hash=brief_hash(p), draft_revision=p['revision'], item_snapshot=copy.deepcopy(p['items']), created=now(), style_version='1', generator_version='1.1', reference_hashes={s['reference_id']:s['sha256'] for s in PROFILES['sources']} if p.get('reference_mode')!='builtin' else {}, limitations=r['limitations'])
         p['documents'][kind]['source_snapshot']=[{k:s.get(k) for k in ('id','title','purpose','parse_status','failure_reason','sha256')} for s in p['sources']]
@@ -117,6 +118,11 @@ def apply_response(p, response, *, identity_only=False, preserve_context_proposa
         p['documents'][kind].update(document_version=document_version,document_family_id=p['id']+':'+kind,
             delivery_item_ids=[i['id'] for i in delivery_items(p)],
             requirement_versions=[requirement_ref(p,i) for i in p['items'] if i['kind'] in TRACKED])
+        from .prewrite import document_change_summary, status as prewrite_status
+        p['documents'][kind]['base_document_id']=(previous_document or {}).get('id')
+        p['documents'][kind]['change_summary']=document_change_summary(previous_document,p['documents'][kind])
+        if kind=='prd' and p.get('prewrite_review'):
+            p['documents'][kind]['prewrite_snapshot']=prewrite_status(p)
     if stage == 'review':
         p['review'] = dict(target_hash=review_target(p), response=r, created=now())
     p['messages'].append(dict(role='assistant', stage=stage, text=r['summary'], response=r, created=now()))
@@ -141,7 +147,7 @@ class Workflow:
             config['thinking_disabled']=not config.get('review_thinking',True)
         return config
 
-    def start(self, pid, revision, stage, message, kind='prd', resumed_from=None, *, user_task_id=None, config_override=None, generation_target=None, discussion_target=None, benchmark=None):
+    def start(self, pid, revision, stage, message, kind='prd', resumed_from=None, *, user_task_id=None, config_override=None, generation_target=None, discussion_target=None, benchmark=None, prewrite=False, allow_review_draft=False):
         require(stage in STAGES and stage != 'handoff', 'STAGE_INVALID', '请选择支持的分析阶段')
         require(stage!='interview' or user_task_id,'STAGE_INVALID','需求访谈请通过聊天任务入口保存原话并核对接收端')
         config = copy.deepcopy(config_override or self.config(stage))
@@ -153,10 +159,21 @@ class Workflow:
                     'BUDGET_AUTH_CHANGED','步骤配置与已批准计划不一致',409)
             require(not benchmark or benchmark==approved.get('benchmark'),'BENCHMARK_INVALID','对标范围与已批准计划不同',409)
         require(not benchmark or (stage=='ingest' and user_task_id),'BENCHMARK_INVALID','对标分析须使用已核对的任务入口')
+        require(not prewrite or (stage=='review' and user_task_id and approved['action'] in ('prewrite','document')),
+            'STAGE_INVALID','成文检查须通过明确核对的任务入口。')
         require(not any(t['status'] in ('queued','running') and t['id'] != user_task_id for t in self.store.records(pid,'user_task')), 'PROJECT_BUSY','当前项目任务正在执行，请等待或取消',409)
         require(not any(t['status'] in ('queued','running') for t in self.store.records(pid,'run')), 'PROJECT_BUSY','当前项目已有模型任务',409)
         p = self.store.get(pid)
         require(p['revision'] == revision, 'STALE_REVISION', '页面已过期', 409)
+        if stage=='prd' and kind=='prd':
+            from .prewrite import status as prewrite_status
+            checked=prewrite_status(p)
+            allowed=(allow_review_draft and user_task_id and approved['action']=='document'
+                and approved.get('retry_input',{}).get('allow_review_draft') is True)
+            require(checked['current'] and checked['status'] in ('passed','needs_confirmation')
+                and (checked['status']=='passed' or allowed)
+                and not any(f.get('hard_block') and f.get('status')!='resolved' for f in checked['findings']),
+                'PREWRITE_REQUIRED','请通过生成 PRD 任务先执行当前版本成文检查；关键问题需处理或明确选择带问题评审稿。',409)
         if discussion_target:
             from .actions import target_context
             target_context(p, discussion_target)
@@ -173,9 +190,17 @@ class Workflow:
         if limit is not None:run['request_budget']=initial_budget(limit)
         rid = self.store.record(pid, 'run', run)
         self.store.update_run(pid,rid,user_task_id=user_task_id,generation_target=generation_target,input_state_hash=execution_hash(p),
+            prewrite=prewrite,allow_review_draft=allow_review_draft,
             **({'requirement_recommendation_scope':local} if local else {}),
             **({'discussion_target':copy.deepcopy(discussion_target)} if discussion_target else {}),
             **({'benchmark':benchmark} if benchmark else {}))
+        if prewrite:
+            from .prewrite import input_hash
+            with self.store.edit(pid,p['revision'],'开始成文一致性检查',bump=False) as (current,db):
+                previous=copy.deepcopy(current.get('prewrite_review') or {})
+                current['prewrite_review']=dict(previous,id=previous.get('id') or ident('PWR'),status='running',
+                    input_hash=input_hash(current),input_revision=current['revision'],run_id=rid,
+                    findings=previous.get('findings',[]),created=now(),message='正在检查当前需求的一致性。')
         task = asyncio.create_task(self.execute(pid, rid, p, config))
         self.tasks[rid] = task
         task.add_done_callback(lambda _: self.tasks.pop(rid, None))
@@ -204,7 +229,9 @@ class Workflow:
             from .domain_context import active_source_ids, source_snapshot
             current_sources = active_source_ids(p)
             require(current_sources <= set(p['grants'][origin(config)]['source_ids']), 'DATA_AUTH_REQUIRED', '新增材料尚未授权发送，请检查材料范围')
-            messages, excerpts, omitted = assemble(p, run['stage'], run['message'], config, self.store.folder, run['document_type'], run.get('generation_target'), pending_images_only=bool(run.get('user_task_id')),vision_for_interview=run.get('vision_for_interview',False),
+            from .prewrite import review_project
+            reviewed_project=review_project(p) if run.get('prewrite') else p
+            messages, excerpts, omitted = assemble(reviewed_project, run['stage'], run['message'], config, self.store.folder, run['document_type'], run.get('generation_target'), pending_images_only=bool(run.get('user_task_id')),vision_for_interview=run.get('vision_for_interview',False),
                 requirement_recommendation_scope=run.get('requirement_recommendation_scope'),**({'benchmark':run['benchmark']} if run.get('benchmark') else {}))
             import json
             header=json.loads(messages[0]['content'].split('可信任务头：',1)[1])
@@ -271,6 +298,17 @@ class Workflow:
                     if run['stage']=='prd':
                         document_plan_version = value.get('plan_version')
                         value=compile_plan(value,p,run['document_type'],omitted,include_sketch=False)
+                    if run.get('prewrite'):
+                        from .prewrite import normalize_quotes
+                        original_hash=digest(value)
+                        value,quote_changes=normalize_quotes(p,value)
+                        if quote_changes:
+                            normalization=dict(rule='prewrite-full-property-terminal-punctuation-1',
+                                input_hash=original_hash,output_hash=digest(value),changes=quote_changes)
+                            evidence.value.setdefault('response_normalizations',[]).append(normalization)
+                            evidence.save()
+                            attempt.setdefault('response_normalizations',[]).append(normalization)
+                            events.append(dict(time=now(),phase='按完整属性原文恢复引文末尾标点，原模型输出保留在调用证据。',call=calls))
                     if run['stage']=='ingest':
                         if not run.get('benchmark'):
                             from .benchmark import ordinary_response
@@ -304,7 +342,7 @@ class Workflow:
                                 from .benchmark import preserve_analysis
                                 preserve_analysis(repair_original,value,p,excerpts)
                     try:
-                        validate_response(value, run['stage'], p, excerpts, run['document_type'],
+                        validate_response(value, run['stage'], reviewed_project, excerpts, run['document_type'],
                                           trusted_business_draft=business_protocol)
                     except Problem as validation_error:
                         if run['stage']=='prd' and validation_error.code=='SCHEMA_INVALID':
@@ -321,6 +359,10 @@ class Workflow:
                         require(not any(value.get(key) for key in ('proposals','questions','findings'))
                                 and 'product_context_proposal' not in value,
                                 'SEMANTIC_BLOCKED','聊天图片识别只能保存视觉观察，不能创建正式问题、条款或产品上下文')
+                    if run.get('prewrite'):
+                        from .prewrite import validate_result
+                        require(not omitted,'PREWRITE_CONTEXT_INCOMPLETE','成文检查的来源未完整输入，本次不能视为通过。')
+                        validate_result(p,value)
                     if interview_anchor is not None:
                         from .interview import format_atoms
                         require(format_atoms(json.dumps(value,ensure_ascii=False))==interview_anchor,
@@ -481,7 +523,7 @@ class Workflow:
                     calls, decision_review = await review_generated_draft(self.store,self.provider,p,staged,
                         run,config,excerpts,budget,attempts,events,calls)
             has_context_fields = bool(interview_context_review and interview_context_review['fields'])
-            with self.store.edit(pid, p['revision'], '模型：' + run['stage'], bump=bool(staged or value['proposals'] or value['questions'] or has_context_fields)) as (current, db):
+            with self.store.edit(pid, p['revision'], '模型：' + run['stage'], bump=bool(staged or value['proposals'] or value['questions'] or has_context_fields or run.get('prewrite'))) as (current, db):
                 state=next(x for x in self.store.records(pid,'run',db) if x['id']==rid)
                 require(state['status']!='cancelled','CANCELLED','已取消，结果未采纳')
                 require(execution_hash(current)==execution_hash(p),'STALE_REVISION','任务执行期间输入或产物发生变化；结果已保留在调用证据，未激活',409)
@@ -491,8 +533,18 @@ class Workflow:
                     current['messages'].append(dict(role='user', stage=run['stage'], text=run['message'], created=now()))
                 candidate_count=len(current.get('ui_candidates', []))
                 if staged is None:
-                    draft_mapping = apply_response(current, value, identity_only=business_protocol,
-                        preserve_context_proposal=preserve_context_proposal)
+                    if run.get('prewrite'):
+                        from .prewrite import apply_result
+                        prior_rid=(p.get('prewrite_review') or {}).get('run_id')
+                        previous_response=next((r.get('response') for r in self.store.records(pid,'run',db)
+                            if r['id']==prior_rid and r.get('result_applied')),None)
+                        apply_result(current,value,rid,previous_response=previous_response,
+                            previous_review=p.get('prewrite_review'))
+                        current['messages'].append(dict(role='assistant',stage='prewrite',text=value['summary'],created=now(),run_id=rid))
+                        draft_mapping={}
+                    else:
+                        draft_mapping = apply_response(current, value, identity_only=business_protocol,
+                            preserve_context_proposal=preserve_context_proposal)
                 else:
                     current.clear()
                     current.update(staged)
@@ -549,6 +601,7 @@ class Workflow:
                         apply_interview_context(current,interview_context_review,rid,p['revision'])
                 if run['stage']=='prd':
                     artifact=current['documents'][run['document_type']]
+                    if run['document_type']=='prd':artifact['prewrite_required']=True
                     artifact['sketch_policy']='excluded'
                     artifact['assembly_version']='prd-plan-'+document_plan_version
                     current['stale_document_kinds']=[kind for kind in current.get('stale_document_kinds',[]) if kind!=run['document_type']]
@@ -561,7 +614,8 @@ class Workflow:
                     artifact['generation_run_id']=rid
                     self.store.record(pid,'ui_artifact',artifact,db=db)
                 elif run['stage']=='review':
-                    self.store.record(pid,'review',current['review'],db=db)
+                    self.store.record(pid,'prewrite_review' if run.get('prewrite') else 'review',
+                        current['prewrite_review'] if run.get('prewrite') else current['review'],db=db)
                 if run['stage']=='vision':
                     current['messages'][-1]['run_id']=rid
                     sent_sources={x['source_id'] for x in excerpts}
@@ -608,6 +662,7 @@ class Workflow:
             status = 'partial' if omitted or value['limitations'] or any(s['parse_status'] in ('failed','partial','office_required','permission_denied') for s in p['sources'] if not s['excluded']) else ('awaiting_user' if value['questions'] else 'succeeded')
             if decision_review and decision_review['status'] == 'pending_manual_review':
                 status = 'partial'
+            if run.get('prewrite') and current['prewrite_review']['status']!='passed':status='awaiting_user'
             if interview_context_review is not None:
                 self.store.update_run(pid,rid,interview_context_review=interview_context_review)
                 if interview_context_review['rejected_fields']:
@@ -617,11 +672,19 @@ class Workflow:
         except asyncio.CancelledError:
             if budget:calls=self.store.get_record(pid,rid,'run')['calls']
             self.store.update_run(pid,rid,status='cancelled',error='CANCELLED',message='任务已取消；未采纳后续结果',calls=calls,attempts=attempts,events=events,completed=now())
+            if run.get('prewrite'):self._fail_prewrite(pid,rid,'检查已取消，尚未通过。')
         except Exception as e:
             if budget:calls=self.store.get_record(pid,rid,'run')['calls']
             error = e if isinstance(e, Problem) else Problem('INTERNAL_ERROR', '处理失败：' + type(e).__name__)
             state = 'cancelled' if error.code == 'CANCELLED' else 'paused_budget' if error.code == 'BUDGET_EXHAUSTED' else 'failed'
             self.store.update_run(pid, rid, status=state, error=error.code, message=error.message, calls=calls, attempts=attempts, repair_count=repair_count, events=events, completed=now())
+            if run.get('prewrite'):self._fail_prewrite(pid,rid,error.message)
+
+    def _fail_prewrite(self,pid,rid,message):
+        latest=self.store.get(pid)
+        with self.store.edit(pid,latest['revision'],'成文检查未完成',bump=False) as (current,db):
+            report=current.get('prewrite_review') or {}
+            if report.get('run_id')==rid:report.update(status='failed',message=message)
 
     def cancel(self, pid, rid):
         self.store.update_run(pid,rid,status='cancelled',message='任务已取消；已发请求仍可能计费')

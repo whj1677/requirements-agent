@@ -16,6 +16,7 @@ from scripts.run_detail_prd_agent_validation import (
     run_action, select_reviewed_draft, select_reviewed_with_revisions,
 )
 from scripts.run_detail_contract_validation import CASES
+from tests.helpers import EXAMPLES
 
 
 def detail_fixture():
@@ -69,8 +70,22 @@ class OfflinePlanProvider(Provider):
         return 'offline-fixture-not-a-secret'
 
     async def request(self, config, messages, evidence=None):
-        value = dict(plan_version='4', sections=[dict(section_key='function', context_refs=[],
-            normative_refs=['REQ-TEST', 'AC-TEST'], discussion_refs=[], explanations=[])])
+        header = json.loads(messages[0]['content'].split('可信任务头：')[-1])
+        if header['stage'] == 'review':
+            context = json.loads(messages[1]['content'][0]['text'])
+            pending = [q for q in context['questions'] if q['status'] == 'open']
+            value = copy.deepcopy(EXAMPLES['review'])
+            value.update(summary='离线预检：已有决定仍未回答。', proposals=[], questions=[],
+                findings=[dict(type='gap', severity='blocker', message=q['question'],
+                    related_refs=q['related_refs'], source_refs=q['source_refs'],
+                    decision_question=q['question'], suggested_resolution='继续保留待决事项。') for q in pending])
+            value['result'].update(assessment='needs_changes' if pending else 'ready_for_human_review',
+                reviewed_refs=[item['id'] for item in context['items']],
+                required_decisions=[q['question'] for q in pending])
+            value['used_source_refs'] = []
+        else:
+            value = dict(plan_version='4', sections=[dict(section_key='function', context_refs=[],
+                normative_refs=['REQ-TEST', 'AC-TEST'], discussion_refs=[], explanations=[])])
         evidence.before_send(config)
         evidence.response(json.dumps(value, ensure_ascii=False), http_status=200,
                           finish_reason='stop', response_model='OFFLINE_FIXTURE',
@@ -114,14 +129,24 @@ def test_actions_workflow_document_to_review_export_records_real_pipeline(tmp_pa
         provider = OfflinePlanProvider()
         store.setting('model', dict(DEFAULT))
         actions = Actions(store, Workflow(store, provider))
-        task = await run_action(store, actions, project['id'], 'document', '', 1, tmp_path)
+        checked = await run_action(store, actions, project['id'], 'prewrite', '', 1, tmp_path)
+        assert checked['status'] == 'awaiting_user' and checked['calls'] == 1
+        current = store.get(project['id'])
+        body = dict(expected_revision=current['revision'], action='document', message='',
+                    document_type='prd', max_calls=1, allow_review_draft=True)
+        plan = actions.plan(project['id'], body)
+        assert plan['stages'] == ['prd'] and not plan['missing']
+        task = actions.start(project['id'], body, plan['plan_hash'], 'review-draft-after-precheck', True)
+        await actions.jobs[task['id']]
+        task = store.get_record(project['id'], task['id'], 'user_task')
+        assert task['status'] == 'succeeded', task
         assert task['calls'] == 1
         manifest = await export_review(store, project['id'], tmp_path)
         summary = evidence_summary(store, project['id'])
-        assert summary['model_call_count'] == 1
+        assert summary['model_call_count'] == 2
         assert len(summary['document']['generation_run_ids']) == 1
         assert summary['model_evidence'][0]['raw_output_sha256']
-        assert summary['model_evidence'][0]['stage'] == 'prd'
+        assert {entry['stage'] for entry in summary['model_evidence']} == {'review', 'prd'}
         assert summary['review_readiness']['ready']
         assert not summary['formal_readiness']['ready']
         assert summary['row_confirmations'] == 0

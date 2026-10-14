@@ -5,7 +5,7 @@ import re
 from .core import brief_hash
 from .requirements import delivery_items
 
-PRESENTATION_VERSION = 'document-reading-7'
+PRESENTATION_VERSION = 'document-reading-8'
 _EMPTY_BEHAVIOR = {'未提及异常分支'}
 
 _INTERNAL_SECTIONS = {
@@ -170,6 +170,35 @@ def _answer_pending(project, question, delivered):
                              or targets - applied_targets(project, question)))
 
 
+def _prewrite_pending_section(artifact, items, section_ids, *, include_locations=False):
+    """Show unresolved checks from this artifact, never the project's latest run."""
+    snapshot = artifact.get('prewrite_snapshot') or {}
+    blocks = []
+    for index, finding in enumerate(snapshot.get('findings', [])):
+        if finding.get('status') == 'resolved' or finding.get('severity') not in ('blocker', 'warning'):
+            continue
+        label = '阻塞项' if finding['severity'] == 'blocker' else '提醒项'
+        text = f'待核对问题（{label}）：' + (finding.get('message') or finding.get('title') or '')
+        if finding.get('suggested_resolution'):
+            text += '\n建议（待确认）：' + finding['suggested_resolution']
+        refs = finding.get('related_refs', [])
+        if refs:
+            text += '\n关联对象：' + '、'.join(
+                ref + ('（' + items[ref]['title'] + '）' if items.get(ref, {}).get('title') else '')
+                for ref in refs)
+        block = dict(kind='narrative', ref_ids=[], text=text)
+        if include_locations:
+            block['source_location'] = f"{artifact['id']}.prewrite_snapshot.findings[{index}]"
+        blocks.append(block)
+    if not blocks:
+        return None
+    section_id = 'PRODUCT-PREWRITE-PENDING'
+    while section_id in section_ids:
+        section_id += '-CHECK'
+    return dict(section_id=section_id, title='成文检查待核对事项', level=1,
+                parent_section_id=None, blocks=blocks)
+
+
 def reader_document(artifact, *, include_locations=False):
     """Return product content only; retain canonical audit evidence in the project."""
     content = copy.deepcopy(artifact['content'])
@@ -256,7 +285,7 @@ def reader_document(artifact, *, include_locations=False):
             seen_questions=set()
             for block in section['blocks']:
                 q=questions.get(block['ref_ids'][0]) if len(block.get('ref_ids',[]))==1 else None
-                if not q or q['id'] in seen_questions or q.get('superseded_by'):
+                if not q or q['id'] in seen_questions or q.get('superseded_by') or q.get('prewrite_resolution'):
                     continue
                 answered = q.get('status') == 'answered'
                 if answered and (q.get('out_of_scope_reason') or not _answer_pending(
@@ -389,6 +418,11 @@ def reader_document(artifact, *, include_locations=False):
         if acceptance and all(s['level']==1 and s['parent_section_id'] is None for s in detail_sections):
             sections.remove(acceptance)
             sections.insert(max(sections.index(s) for s in detail_sections)+1,acceptance)
+    if content['document_type'] == 'prd':
+        pending = _prewrite_pending_section(artifact, items,
+            {s['section_id'] for s in sections}, include_locations=include_locations)
+        if pending:
+            sections.append(pending)
     # Mapping explanations and raw coverage are audit/provenance structures, not
     # part of a product document. Rebuild coverage from clauses actually shown.
     content.pop('reference_mapping', None)
@@ -419,6 +453,8 @@ def export_readiness(p, kind, mode='formal'):
         for message in cloud_prd_gaps(artifact['content'],p):
             issues.append(dict(code='DOCUMENT_CONTENT_REQUIRED',message=message))
     if kind=='prd':
+        from .prewrite import formal_issues
+        issues.extend(formal_issues(p))
         from .requirement_details import detail_issues
         from .detail_rendering import detail_hash, GROUP_TITLES
         for item in delivery_items(p):
@@ -446,7 +482,7 @@ def export_readiness(p, kind, mode='formal'):
             message='当前内容存在可复现语义风险，请先核对并修订：'+check['check_id']))
     problems = []
     for q in p['questions']:
-        if q.get('superseded_by'):
+        if q.get('superseded_by') or q.get('prewrite_resolution'):
             continue
         state = None
         if q['status'] != 'answered' and not q.get('out_of_scope_reason'):
@@ -462,7 +498,7 @@ def export_readiness(p, kind, mode='formal'):
                                  message=message, related_refs=q.get('related_refs', [])))
     warnings=[]
     if mode=='review':
-        reviewable={'DOCUMENT_CONTENT_REQUIRED','DETAIL_REQUIRED','SEMANTIC_BLOCKED','CLARIFICATION_REQUIRED'}
+        reviewable={'DOCUMENT_CONTENT_REQUIRED','DETAIL_REQUIRED','SEMANTIC_BLOCKED','CLARIFICATION_REQUIRED','PREWRITE_REQUIRED'}
         warnings=[issue for issue in issues if issue['code'] in reviewable]
         issues=[issue for issue in issues if issue['code'] not in reviewable]
     return dict(ready=not issues, issues=issues, problems=problems, warnings=warnings, mode=mode)

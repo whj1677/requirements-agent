@@ -13,7 +13,7 @@ from app.core import Problem
 from app.detail_rendering import detail_hash, detail_plaintext, flow_png, flow_svg, flow_layout, flow_png_pages
 from app.document_reader import export_readiness, reader_document
 from app.exports import document_files
-from app.prd import compile_plan, plan_contract
+from app.prd import compile_plan, plan_contract, plan_schema, repair_instruction
 from app.requirement_confirmation import row_fingerprint
 from app.requirement_details import detail_issues
 from app.workflow import apply_response
@@ -87,6 +87,33 @@ def test_structured_cloud_prd_uses_one_snapshot_without_legacy_seven_fields(tmp_
     assert all(b.get('source_location') for b in blocks)
     assert any('1 至 30 个字符' in b['text'] and '电站成员可见' in b['text'] for b in blocks)
     assert any('校验失败，保留输入并重新填写' in b['text'] for b in blocks)
+
+
+def test_structured_reference_contract_agrees_with_compiler_and_keeps_exact_tables(tmp_path):
+    import jsonschema
+    p=project_fixture(tmp_path)
+    contract=plan_contract(p,'prd')
+    assert 'REQ-0001' in contract['normative_item_ids']
+    assert 'REQ-0001' not in contract['explanation_normative_item_ids']
+    assert 'REQ-0001' in plan_contract(p,'mrd')['explanation_normative_item_ids']
+    plan=dict(plan_version='4',sections=[dict(section_key='function',context_refs=[],
+        normative_refs=['REQ-0001'],discussion_refs=[],explanations=[dict(text=p['items'][0]['statement'],
+            evidence_refs=dict(context_refs=[],normative_refs=['REQ-0001'],business_claim_refs=[]))])])
+    errors=list(jsonschema.Draft202012Validator(plan_schema(p,'prd')).iter_errors(plan))
+    assert any('explanations' in list(error.absolute_path) for error in errors)
+    with pytest.raises(Problem) as caught:
+        compile_plan(plan,p,'prd',include_sketch=False)
+    assert caught.value.code=='REFERENCE_INVALID'
+    assert 'explanations[0].evidence_refs.normative_refs' in caught.value.message
+    assert '不得只删引用却保留无依据文字' in repair_instruction(caught.value,p,'prd')
+    plan['sections'][0]['explanations']=[]
+    jsonschema.Draft202012Validator(plan_schema(p,'prd')).validate(plan)
+    result=compile_plan(plan,p,'prd',include_sketch=False)
+    apply_response(p,result)
+    reader=reader_document(p['documents']['prd'])
+    nodes=[n for s in reader['sections'] for n in s['reading_nodes']]
+    assert any(n['kind']=='diagram' for n in nodes)
+    assert any(n['kind']=='table' and '1 至 30 个字符' in str(n) for n in nodes)
 
 
 def test_word_real_tables_and_images_markdown_self_contained(tmp_path):

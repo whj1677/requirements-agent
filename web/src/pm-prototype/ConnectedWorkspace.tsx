@@ -4,6 +4,8 @@ import { useDirty, useNavigation } from '../editing';
 import { activitySnapshot, subscribeActivity } from '../activity';
 import { hasPendingInterviewInput } from '../intake-chat';
 import { RequirementTable } from './RequirementTable';
+import { PrewriteReviewPanel } from './PrewriteReviewPanel';
+import { prewriteLabel } from '../prewrite-review';
 import { singleRequirementRoot } from './requirement-location';
 import { refinementDestination, ConnectedDestination } from './refine-navigation';
 export type { ConnectedDestination } from './refine-navigation';
@@ -20,10 +22,10 @@ type Step = 'information' | 'refine' | 'delivery';
 type DraftResponse = { text: string; entry_mode: EntryMode; revision: number; saved_at?: string };
 type DiscussionDraft = { project_id: string; revision: number; formal: false; filename: string; text: string };
 type ContextResponse = { revision: number; background: string; suggested_background?: string; terms: Obj[]; selected_source_ids: string[] | null; effective_source_ids: string[]; bound_input_source_ids?: string[]; unavailable_selected_source_ids: string[]; evidence_policy?: string };
-const taskStatusText: Record<string, string> = { queued: '排队中', running: '执行中', succeeded: '已完成', partial: '部分完成，待核对', failed: '失败', cancelled: '已取消', paused_budget: '预算已暂停', not_needed: '无需复核', proposal_ready: '建议待人工核对', pending_manual_review: '待人工核对' };
+const taskStatusText: Record<string, string> = { queued: '排队中', running: '执行中', succeeded: '已完成', partial: '部分完成，待核对', awaiting_user:'等待业务确认', failed: '失败', cancelled: '已取消', paused_budget: '预算已暂停', not_needed: '无需复核', proposal_ready: '建议待人工核对', pending_manual_review: '待人工核对' };
 const humanError = (value?: string) => value && /^[A-Z][A-Z0-9_]+$/.test(value) ? '任务发生可定位错误，请打开任务记录查看原因与恢复操作。' : value || '';
 
-export function ConnectedWorkspace({ id, project, tasks, active=true, busy, running, actionBlockReason, mutate, onOrganize, onClarify, onRecommendRequirement, onSources, chatPanel, onCreateRequirement, onCreateAcceptance, onDelivery, onDocuments, onRefresh, taskPanel, destination, workspaceRef, onMainNavigation, onResolveBlocker, deliveryBlockers, preparation={state:'idle'}, onPrepareRefinement, onCancelPreparation, assistantEntryNonce }: {
+export function ConnectedWorkspace({ id, project, tasks, active=true, busy, running, actionBlockReason, mutate, onOrganize, onClarify, onRecommendRequirement, onSources, chatPanel, onCreateRequirement, onCreateAcceptance, onDelivery, onDocuments, onRefresh, taskPanel, destination, workspaceRef, onMainNavigation, onResolveBlocker, deliveryBlockers, preparation={state:'idle'}, onPrepareRefinement, onCancelPreparation, assistantEntryNonce, onPrewrite, onGeneratePrd }: {
   id: string; project: Project; tasks: UserTask[]; active?: boolean; busy: boolean; running: boolean; actionBlockReason: string;
   mutate: (path: string, body: Obj, method?: string) => Promise<any>;
   onOrganize: (instruction?:string) => void; onClarify: (questionId?: string) => void; onSources: (refs?: Obj[]) => void;
@@ -37,12 +39,14 @@ export function ConnectedWorkspace({ id, project, tasks, active=true, busy, runn
   preparation?: {state:'idle'|'checking'|'running'|'failed'|'authorization';message?:string;taskId?:string};
   onPrepareRefinement: (retry?:boolean) => Promise<void>; onCancelPreparation: () => void;
   assistantEntryNonce?: number;
+  onPrewrite:()=>void; onGeneratePrd:(allowReviewDraft?:boolean)=>void;
 }) {
   const root = '/projects/' + id;
   const navigate = useNavigation();
   const activity=useSyncExternalStore(subscribeActivity,activitySnapshot,activitySnapshot);
   const pendingActivity=activity.active.length>0;
   const [step, setStep] = useState<Step>('information');
+  const [refineView,setRefineView]=useState<'requirements'|'prewrite'>('requirements');
   const [mode, setMode] = useState<EntryMode>('chat');
   const [savedMode, setSavedMode] = useState<EntryMode>('chat');
   const modeTouched=useRef(false),draftTouched=useRef(false);
@@ -61,7 +65,7 @@ export function ConnectedWorkspace({ id, project, tasks, active=true, busy, runn
   const [refinementGate,setRefinementGate]=useState(false);
   const [refinementReturn,setRefinementReturn]=useState<RefinementReturnState|null>(null);
   const preparing=['checking','running','authorization'].includes(preparation.state);
-  const scrollPositions = useRef<Partial<Record<Step, number>>>({});
+  const scrollPositions = useRef<Partial<Record<string, number>>>({});
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [taskOpen, setTaskOpen] = useState(false);
   const [context, setContext] = useState<ContextResponse | null>(null);
@@ -106,14 +110,16 @@ export function ConnectedWorkspace({ id, project, tasks, active=true, busy, runn
     return()=>{cancelled=true;};
   },[root,draftReadAttempt]);
 
-  useLayoutEffect(() => { if (active && containerRef.current) containerRef.current.scrollTop = scrollPositions.current[step] || 0; }, [step, active]);
+  const scrollKey=step==='refine'?step+':'+refineView:step;
+  useLayoutEffect(() => { if (active && containerRef.current) containerRef.current.scrollTop = scrollPositions.current[scrollKey] || 0; }, [scrollKey, active]);
   useEffect(() => {
     if (!destination) return;
     setStep(destination.step); sessionStorage.setItem('ra-connected-step-' + id, destination.step);
     restoreRefinement.current=false;setRefinementGate(false);
     if(destination.step==='refine'){
-      const reqId=singleRequirementRoot(project,destination);
-      setTableFocus(previous=>({itemId:reqId,questionId:destination.questionId,field:destination.field,scope:destination.scope,nonce:(previous?.nonce||0)+1}));
+      setRefineView(destination.prewrite?'prewrite':'requirements');
+      if(!destination.prewrite){const reqId=singleRequirementRoot(project,destination);
+        setTableFocus(previous=>({itemId:reqId,questionId:destination.questionId,field:destination.field,scope:destination.scope,nonce:(previous?.nonce||0)+1}));}
     }
     setTaskOpen(Boolean(destination.task));
   }, [id, destination?.nonce]);
@@ -126,6 +132,7 @@ export function ConnectedWorkspace({ id, project, tasks, active=true, busy, runn
     modeTouched.current=false;
     restoreRefinement.current=false;manualRefinement.current=false;
     setStep('information');setMode('chat');setRefinementGate(false);
+    setRefineView('requirements');
     setRefinementReturn(null);setTableFocus(undefined);setTaskOpen(false);
     setNavigationError('');setEntryError('');
     sessionStorage.setItem('ra-connected-step-'+id,'information');
@@ -209,7 +216,8 @@ export function ConnectedWorkspace({ id, project, tasks, active=true, busy, runn
       const destination = target;
       navigate(() => {
         setStep(destination.step); sessionStorage.setItem('ra-connected-step-' + id, destination.step); onMainNavigation?.();
-        if(destination.step==='refine')setTableFocus(previous=>({itemId:singleRequirementRoot(project,{itemId:action.item_id}),questionId:action.question_id,field:action.field,scope:action.kind==='scope',nonce:(previous?.nonce||0)+1}));
+        if(destination.step==='refine')setRefineView(destination.prewrite?'prewrite':'requirements');
+        if(destination.step==='refine'&&!destination.prewrite)setTableFocus(previous=>({itemId:singleRequirementRoot(project,{itemId:action.item_id}),questionId:action.question_id,field:action.field,scope:action.kind==='scope',nonce:(previous?.nonce||0)+1}));
         if (action.kind === 'candidate') onCreateRequirement();
         
       });
@@ -239,7 +247,7 @@ export function ConnectedWorkspace({ id, project, tasks, active=true, busy, runn
   }
   const saving = busy || localBusy || pendingActivity;
   const blockers = deliveryBlockers ?? project.confirmation_blockers;
-  return <div ref={node => { containerRef.current = node; if (typeof workspaceRef === 'function') workspaceRef(node); else if (workspaceRef) workspaceRef.current = node; }} onScroll={e => { if (active) scrollPositions.current[step] = e.currentTarget.scrollTop; }} className="connected-workspace" data-step={step}>
+  return <div ref={node => { containerRef.current = node; if (typeof workspaceRef === 'function') workspaceRef(node); else if (workspaceRef) workspaceRef.current = node; }} onScroll={e => { if (active) scrollPositions.current[scrollKey] = e.currentTarget.scrollTop; }} className="connected-workspace" data-step={step}>
     {draftError&&<p role="alert" className="connected-error">{draftError}{!draftLoaded&&<button type="button" onClick={()=>setDraftReadAttempt(value=>value+1)}>重新读取工作底稿</button>}</p>}
     {navigationError && <p role="alert" className="connected-error">{navigationError}<button type="button" onClick={() => {
       setNavigationError('');
@@ -298,9 +306,15 @@ export function ConnectedWorkspace({ id, project, tasks, active=true, busy, runn
       </aside>
     </div>}
     {step === 'refine' && !refinementGate && <>
-      {manualRefinement.current&&<p className="connected-status">当前为手动完善，刷新或再次进入不会自动调用 AI。<button type="button" disabled={saving||running||preparing} onClick={()=>void prepareRefinement()}>让 AI 先起草整表</button></p>}
-      <RequirementTable project={project} active={active} busy={saving||running} mutate={mutate} onRefresh={onRefresh} onSources={onSources}
+      <div className="refinement-view-toolbar">
+      <div className="refinement-view-switch" role="group" aria-label="完善需求视图"><button type="button" aria-pressed={refineView==='requirements'} onClick={()=>navigate(()=>setRefineView('requirements'))}>需求列表</button><button type="button" aria-pressed={refineView==='prewrite'} onClick={()=>navigate(()=>setRefineView('prewrite'))}>成文检查{project.prewrite_review?.blocking_count?' · '+project.prewrite_review.blocking_count:''}</button><small>{prewriteLabel(project.prewrite_review)}</small></div>
+      {manualRefinement.current&&refineView==='requirements'&&<p className="connected-status">当前为手动完善，刷新或再次进入不会自动调用 AI。<button type="button" disabled={saving||running||preparing} onClick={()=>void prepareRefinement()}>让 AI 先起草整表</button></p>}
+      </div>
+      <div className="refinement-requirements-view" hidden={refineView!=='requirements'}>
+      <RequirementTable project={project} active={active&&refineView==='requirements'} busy={saving||running} mutate={mutate} onRefresh={onRefresh} onSources={onSources}
         onRecommend={onRecommendRequirement} onSuggest={onOrganize} onCreate={onCreateRequirement} onResolve={resolveTable} onQuestionReview={reviewTableQuestion} onStageConfirmed={()=>chooseStep('delivery')} onReturnAvailabilityChange={setRefinementReturn} focus={tableFocus}/>
+      </div>
+      {refineView==='prewrite'&&<PrewriteReviewPanel project={project} busy={saving} running={running} blockReason={actionBlockReason} mutate={mutate} onRefresh={onRefresh} onRecheck={onPrewrite} onGenerate={onGeneratePrd} onClarify={questionId=>onClarify(questionId)} onSources={onSources} focusFindingId={destination?.findingId} onRequirement={itemId=>navigate(()=>{setRefineView('requirements');if(itemId)setTableFocus(previous=>({itemId:singleRequirementRoot(project,{itemId}),nonce:(previous?.nonce||0)+1}));})}/>}
     </>}
     {step === 'delivery' && <div className="connected-grid">
       <main className="connected-card">

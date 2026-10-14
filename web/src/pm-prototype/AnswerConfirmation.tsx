@@ -5,25 +5,29 @@ import { directReviewTargets, previewGroups } from './answer-actions';
 import { requirementBehaviorLabels } from './requirement-fields';
 import {validImplementationRefs, type AnswerImplementations, type AnswerImplementationRef} from '../answer-application-review';
 import {AnswerImplementation} from './AnswerImplementation';
+import {DetailContractChanges} from './DetailContractChanges';
+import {DetailContractEditor} from './DetailContractEditor';
+import {mergeDetailContract,detailPathValue,type DetailContract,type DetailConflict} from './detail-contract';
 import './answer-confirmation.css';
 
 type Obj = Record<string, any>;
-type Edit = { statement: string; behavior: Record<string,string> };
+type Edit = { statement: string; behavior: Record<string,string>; detail_contract?:DetailContract };
 const fields = requirementBehaviorLabels;
 const otherLabels:Record<string,string>={title:'名称',applies_to:'适用范围',epistemic_status:'内容依据',source_refs:'来源引用',related_refs:'关联条款',change_type:'需求性质',scope_evidence:'范围依据',classification_reason:'分类依据'};
 const valueLabels:Record<string,string>={to_be:'本次目标',as_is:'现状',new:'新增',modified:'修改',preserved:'保持约束',existing:'现状',reported:'资料陈述',inferred:'推断待核对',confirmed:'已确认',unspecified:'待明确'};
 function displayValue(value:any):string {if(value==null||value==='')return '无';if(typeof value==='string')return valueLabels[value]||value;return JSON.stringify(value);}
-const identity = (item: Obj) => JSON.stringify([item.statement,item.behavior,item.source_refs,item.selection_status,item.content_version]);
+const identity = (item: Obj) => JSON.stringify([item.statement,item.behavior,item.detail_contract,item.source_refs,item.selection_status,item.content_version]);
 
 /** One answer, visible clause changes, one explicit confirmation. */
 export function AnswerConfirmation({ project, question, decisions, answer, answerDirty, onAnswerChange,
   onSaveAnswer, busy, running, blockReason, proposalCurrent, onOrganize, mutate, onSaved, onSources, onScope, onRefresh,
-  variant='default', documentDiscussion }: {
+  variant='default', documentDiscussion, confirmLabel }: {
   project: Project; question: Obj; decisions: Obj[]; answer: string; answerDirty: boolean;
   onAnswerChange:(text:string)=>void; onSaveAnswer:()=>Promise<any>; busy:boolean; running:boolean;
   blockReason:string; proposalCurrent:boolean; onOrganize:()=>void;
   mutate:(path:string,body:Obj,method?:string)=>Promise<any>;
-  onSaved:(latest:Project,notice:string)=>void; onSources:(refs?:Obj[])=>void; onScope:()=>void; onRefresh:()=>void;
+  onSaved:(latest:Project,notice:string,implementationPending?:boolean)=>void; onSources:(refs?:Obj[])=>void; onScope:()=>void; onRefresh:()=>void;
+  confirmLabel?:string;
   variant?:'default'|'document'; documentDiscussion?:{document_id:string;section_id:string};
 }) {
   const root='/projects/'+project.id, qid=question.decision_group_id||question.id;
@@ -39,6 +43,7 @@ export function AnswerConfirmation({ project, question, decisions, answer, answe
   const [notice,setNotice]=useState('');
   const [switchRequested,setSwitchRequested]=useState(false);
   const [conflicts,setConflicts]=useState<{itemId:string;field:string;current:string;mine:string}[]>([]);
+  const [detailConflicts,setDetailConflicts]=useState<Record<string,DetailConflict[]>>({});
   const originals=useRef<Record<string,Edit>>({});
   const previewRef=useRef<HTMLElement|null>(null),editorRef=useRef<HTMLDivElement|null>(null);
   const answerRef=useRef<HTMLTextAreaElement|null>(null);
@@ -52,17 +57,17 @@ export function AnswerConfirmation({ project, question, decisions, answer, answe
   const stale=!!review&&review.expected_revision!==project.revision;
 
   function resetEdits(){
-    const values=Object.fromEntries(targets.map(item=>[item.id,{statement:item.statement||'',behavior:{...(item.behavior||{})}}]));
+    const values=Object.fromEntries(targets.map(item=>[item.id,{statement:item.statement||'',behavior:{...(item.behavior||{})},...(item.detail_contract?{detail_contract:structuredClone(item.detail_contract)}:{})}]));
     originals.current=values;setEdits(values);
     setBaseline(Object.fromEntries(targets.map(item=>[item.id,identity(item)])));
-    setTouched(false);setReview(null);setEditingField('');setConflicts([]);
+    setTouched(false);setReview(null);setEditingField('');setConflicts([]);setDetailConflicts({});
     setImplementations(previous=>Object.fromEntries(Object.entries(previous).map(([id,refs])=>[id,validImplementationRefs(refs,targets)])));setImplementationDirty(false);
   }
   useEffect(()=>{resetEdits();setImplementations({});setMode('assistant');setManualExpanded(false);setConfirmed([]);setError('');setNotice('');autoPreview.current='';},[project.id,qid]);
   useEffect(()=>{if(!touched&&!review)resetEdits();},[project.revision]);
   useEffect(()=>{setReview(null);setSelectedGroups([]);setImplementations({});setImplementationDirty(false);},[answer]);
   useEffect(()=>{if(review)requestAnimationFrame(()=>{previewRef.current?.scrollIntoView({block:'start'});previewRef.current?.focus({preventScroll:true});});},[review?.preview_hash]);
-  useDirty(project.id+'-answer-clause-edits',touched,'当前回答的需求修改',async()=>{throw Error('请查看需求修改并确认，或放弃本次未确认修改。');},()=>{resetEdits();setConfirmed([]);});
+  useDirty(project.id+'-answer-clause-edits-'+qid,touched,'当前回答的需求修改',async()=>{throw Error('请查看需求修改并确认，或放弃本次未确认修改。');},()=>{resetEdits();setConfirmed([]);});
 
   function edit(itemId:string,patch:Partial<Edit>){
     const next={...edits,[itemId]:{...edits[itemId],...patch}};setEdits(next);
@@ -110,7 +115,7 @@ export function AnswerConfirmation({ project, question, decisions, answer, answe
       const reviewIds=included.filter(item=>item.kind==='requirement'&&Object.keys(fields).every(key=>String(edits[item.id]?.behavior[key]||'').trim())).map(item=>item.id);
       const value=await api<Obj>(root+'/decision-review/manual-preview','POST',{
         expected_revision:latest.revision,question_id:qid,answer_id:record?.id,expected_answer_text:answer,
-        edits:included.map(item=>({item_id:item.id,statement:edits[item.id]?.statement||'',behavior:edits[item.id]?.behavior||{}})),
+        edits:included.map(item=>({item_id:item.id,statement:edits[item.id]?.statement||'',behavior:edits[item.id]?.behavior||{},...(edits[item.id]?.detail_contract?{detail_contract:edits[item.id].detail_contract}:{})})),
         review_behavior_item_ids:reviewIds,
         answer_implementations:implementationPayload('manual'),
         ...(grouped?{decisions:decisions.map(d=>({decision_id:d.id,confirmed:confirmed.includes(d.id),answer_quote:confirmed.includes(d.id)?answer:''}))}:{})
@@ -166,7 +171,7 @@ export function AnswerConfirmation({ project, question, decisions, answer, answe
       committed=true;setTouched(false);setReview(null);intent.current=null;
       const latest=await api<Project>(root);
       const pending=result.implementation_pending_ids||review.implementation_pending_ids||[];
-      onSaved(latest,pending.length?'条款修改已保存，'+pending.length+' 项回答仍待落实到正文。':documentMode?'已确认本次变更。':'已确认本次需求修改。');
+      onSaved(latest,pending.length?'条款修改已保存，'+pending.length+' 项回答仍待落实到正文。':documentMode?'已确认本次变更。':'已确认本次需求修改。',pending.length>0);
     }catch(e){setError((committed?'修改已保存，状态刷新未完成，请刷新后继续。':'本次尚未确认，编辑已保留。')+(e as Error).message);}
     finally{lock.current=false;setWorking(false);}
   }
@@ -175,19 +180,21 @@ export function AnswerConfirmation({ project, question, decisions, answer, answe
     try{
       const latest=await api<Project>(root);
       const current=[...new Map(decisions.flatMap(d=>directReviewTargets(latest,d)).map(i=>[i.id,i])).values()];
-      const merged:Record<string,Edit>={},nextConflicts:typeof conflicts=[];
+      const merged:Record<string,Edit>={},nextConflicts:typeof conflicts=[],nextDetailConflicts:Record<string,DetailConflict[]>={};
       for(const item of current){
-        const old=edits[item.id],base=originals.current[item.id],now:Edit={statement:item.statement||'',behavior:{...(item.behavior||{})}};
+        const old=edits[item.id],base=originals.current[item.id],now:Edit={statement:item.statement||'',behavior:{...(item.behavior||{})},...(item.detail_contract?{detail_contract:structuredClone(item.detail_contract)}:{})};
         const merge=(field:string,previous:string,mine:string,value:string)=>{
           if(mine===previous)return value;
           if(mine!==value&&(value!==previous||conflicts.some(c=>c.itemId===item.id&&c.field===field)))nextConflicts.push({itemId:item.id,field,current:value,mine});
           return mine;
         };
-        merged[item.id]=!old||!base?now:{statement:merge('statement',base.statement,old.statement,now.statement),behavior:Object.fromEntries([...new Set([...Object.keys(now.behavior),...Object.keys(old.behavior)])].map(field=>[field,merge(field,base.behavior[field]||'',old.behavior[field]||'',now.behavior[field]||'')]))};
+        const detail=mergeDetailContract(old?.detail_contract,base?.detail_contract,now.detail_contract);
+        nextDetailConflicts[item.id]=[...new Map([...(detailConflicts[item.id]||[]).filter(conflict=>JSON.stringify(detailPathValue(detail.value,conflict.path))!==JSON.stringify(conflict.remote)),...detail.conflicts].map(conflict=>[conflict.path,conflict])).values()];
+        merged[item.id]=!old||!base?now:{statement:merge('statement',base.statement,old.statement,now.statement),behavior:Object.fromEntries([...new Set([...Object.keys(now.behavior),...Object.keys(old.behavior)])].map(field=>[field,merge(field,base.behavior[field]||'',old.behavior[field]||'',now.behavior[field]||'')])),...(detail.value?{detail_contract:detail.value}:{})};
       }
-      originals.current=Object.fromEntries(current.map(item=>[item.id,{statement:item.statement||'',behavior:{...(item.behavior||{})}}]));
+      originals.current=Object.fromEntries(current.map(item=>[item.id,{statement:item.statement||'',behavior:{...(item.behavior||{})},...(item.detail_contract?{detail_contract:structuredClone(item.detail_contract)}:{})}]));
       setBaseline(Object.fromEntries(current.map(item=>[item.id,identity(item)])));
-      setEdits(merged);setConflicts(nextConflicts);
+      setEdits(merged);setConflicts(nextConflicts);setDetailConflicts(nextDetailConflicts);
       setReview(null);setError('');setMode('manual');setManualExpanded(true);onRefresh();
       setNotice('你的编辑已保留。当前原文已重新读取，请对照最新内容后再次预览。');
     }catch(e){setError('最新内容未能读取，编辑仍保留。'+(e as Error).message);}
@@ -201,7 +208,7 @@ export function AnswerConfirmation({ project, question, decisions, answer, answe
   const groups:Obj[]=review?.groups||[];
   const clausesChanged=targets.some(item=>JSON.stringify(edits[item.id])!==JSON.stringify(originals.current[item.id]));
   const originalOnlyPreview=!!review&&documentMode&&!review.legacy_split&&groups.length>0&&groups.every(group=>(group.targets||[]).every((target:Obj)=>
-    ['title','statement','applies_to','epistemic_status','source_refs','related_refs','behavior','change_type','scope_evidence','classification_reason'].every(key=>JSON.stringify(target.before?.[key])===JSON.stringify(target.after?.[key]))));
+    ['title','statement','applies_to','epistemic_status','source_refs','related_refs','behavior','detail_contract','change_type','scope_evidence','classification_reason'].every(key=>JSON.stringify(target.before?.[key])===JSON.stringify(target.after?.[key]))));
   function implementationEditors(rows:Obj[],source:'manual'|'assistant'|'preview'){
     return rows.map(decision=><div key={decision.id}>
       {rows.length>1&&<p><b>{decision.question||decision.title}</b></p>}
@@ -239,10 +246,11 @@ export function AnswerConfirmation({ project, question, decisions, answer, answe
         {(!documentMode||manualExpanded)&&<label>{item.title||item.id}（修改后）<textarea rows={3} disabled={disabled} value={edits[item.id]?.statement||''} onChange={e=>edit(item.id,{statement:e.target.value})}/></label>}
         {(!documentMode||manualExpanded)&&item.kind==='requirement'&&<details className="answer-behavior-editor"><summary>业务说明 · 核对或修改</summary>{Object.entries(fields).map(([field,label])=><div key={field} className="answer-behavior-row"><b>{label}</b>{editingField===item.id+':'+field?<label>{label}（修改后）<textarea disabled={disabled} rows={2} value={edits[item.id]?.behavior[field]||''} onChange={e=>edit(item.id,{behavior:{...edits[item.id]?.behavior,[field]:e.target.value}})}/></label>:<><p>{edits[item.id]?.behavior[field]||'尚未填写'}</p><button type="button" disabled={disabled} onClick={()=>setEditingField(item.id+':'+field)}>修改{label}</button></>}</div>)}</details>}
         <button type="button" onClick={()=>onSources(item.source_refs||[])}>查看来源</button>
+        {(!documentMode||manualExpanded)&&item.kind==='requirement'&&<details className="answer-detail-editor"><summary>字段、交互、流程与状态 · 核对或修改</summary><DetailContractEditor requirementId={item.id} title={item.title||item.id} value={edits[item.id]?.detail_contract} base={originals.current[item.id]?.detail_contract} disabled={disabled} conflicts={detailConflicts[item.id]||[]} confirmationLabel={confirmLabel||(documentMode?"确认本次变更":"确认并继续")} references={project.items.filter(value=>!value.target_item_id&&!value.superseded_by&&!['rejected','deferred','excluded'].includes(value.selection_status)).map(value=>({id:value.id,title:value.title||value.statement,kind:value.kind}))} onSources={onSources} onChange={(detail_contract,remaining)=>{edit(item.id,{detail_contract});if(remaining)setDetailConflicts(previous=>({...previous,[item.id]:remaining}));}}/></details>}
       </article>)}
       {implementationEditors(activeDecisions,'manual')}
       {!targets.length&&<div role="status"><p>本问题没有已采纳的关联条款。先核对本期需求，或让助手生成候选修改。</p><button type="button" onClick={onScope}>核对本期需求</button></div>}
-      {!!targets.length&&<div className="answer-confirm-bar"><button type="button" className="primary" disabled={disabled||!!conflicts.length||!answer.trim()||grouped&&!confirmed.length} onClick={()=>void prepareManual()}>{working?'正在准备核对…':documentMode?clausesChanged?'查看本次修改':'预览本次落实核对':'查看修改并确认'}</button><span>预览不会修改需求。</span></div>}
+      {!!targets.length&&<div className="answer-confirm-bar"><button type="button" className="primary" disabled={disabled||!!conflicts.length||Object.values(detailConflicts).some(rows=>rows.length>0)||!answer.trim()||grouped&&!confirmed.length} onClick={()=>void prepareManual()}>{working?'正在准备核对…':documentMode?clausesChanged?'查看本次修改':'预览本次落实核对':'查看修改并确认'}</button><span>预览不会修改需求。</span></div>}
     </div>}
     {review&&<section className="answer-change-preview" ref={previewRef} tabIndex={-1}>
       <h4>{originalOnlyPreview?'请核对回答与原文的对应':'请核对这次需求修改'}</h4>{originalOnlyPreview&&<p>正文沿用原文。本次仅确认回答与所选原句的对应，明确确认后才记为已落实。</p>}
@@ -255,6 +263,7 @@ export function AnswerConfirmation({ project, question, decisions, answer, answe
         {(g.targets||[]).map((t:Obj)=><div className="answer-difference" key={t.id+'-'+(t.candidate_id||'')}><h4>{t.title||t.id}</h4><div className="answer-before-after"><div><b>修改前</b><p>{t.before?.statement||'新增条款'}</p></div><div><b>确认后</b><p>{t.after?.statement||'无正文变化'}</p></div></div>
           {Object.entries(otherLabels).filter(([key])=>JSON.stringify(t.before?.[key])!==JSON.stringify(t.after?.[key])).map(([key,label])=><div className="answer-other-change" key={key}><b>{label}也将变化</b><p>原来：{displayValue(t.before?.[key])}</p><p>确认后：{displayValue(t.after?.[key])}</p></div>)}
           {t.after?.kind==='requirement'&&<div className="answer-behavior-preview"><h5>{t.review_behavior?'同时核对业务说明':'业务说明（缺项继续保留）'}</h5>{Object.entries(fields).map(([field,label])=>{const before=t.before?.behavior?.[field]||'',after=t.after?.behavior?.[field]||'';return <div className="answer-behavior-row" key={field}><b>{label}</b>{before!==after&&<p className="answer-old">原来：{before||'未填写'}</p>}<p>{after||'待补充'}</p></div>;})}</div>}
+          <DetailContractChanges before={t.before?.detail_contract} after={t.after?.detail_contract}/>
           <button type="button" onClick={()=>onSources(t.after?.source_refs||t.before?.source_refs||[])}>核对来源</button>
         </div>)}
       </article>)}
@@ -263,7 +272,7 @@ export function AnswerConfirmation({ project, question, decisions, answer, answe
       {!groups.length&&!review.legacy_split&&<p>当前建议还没有可确认的条款修改。可以返回直接编辑，或补充回答后重新整理。</p>}
       {review.legacy_split&&<p>这个回答包含多个问题，先确认拆分，未解决的问题会继续显示。</p>}
       {stale&&<p className="connected-error" role="alert">项目内容已变化，本次预览不能提交。请返回编辑，核对最新内容后重新预览。</p>}
-      <div className="answer-confirm-bar"><button type="button" disabled={disabled} onClick={()=>{setReview(null);setMode(documentMode&&!touched?'assistant':'manual');autoPreview.current=documentMode?qid+':'+question.decision_review_proposal?.stored_at+':'+project.revision:'manual';requestAnimationFrame(()=>{if(documentMode)answerRef.current?.focus();else editorRef.current?.scrollIntoView({block:'start'});});}}>{documentMode?'返回补充':'返回修改'}</button><button type="button" className="primary" disabled={disabled||stale||implementationDirty||!!review.blockers?.length||!review.legacy_split&&(!groups.length||groups.length>1&&!selectedGroups.length)} onClick={()=>void commit()}>{working?'正在确认…':review.legacy_split?'确认拆分并继续':review.implementation_pending_ids?.length?'保存条款并保留待落实':documentMode?originalOnlyPreview?'确认本次落实核对':'确认本次变更':'确认并继续'}</button><p>确认后保存以上条款及已展示的核对结果；未解决的问题仍会保留。</p></div>
+      <div className="answer-confirm-bar"><button type="button" disabled={disabled} onClick={()=>{setReview(null);setMode(documentMode&&!touched?'assistant':'manual');autoPreview.current=documentMode?qid+':'+question.decision_review_proposal?.stored_at+':'+project.revision:'manual';requestAnimationFrame(()=>{if(documentMode)answerRef.current?.focus();else editorRef.current?.scrollIntoView({block:'start'});});}}>{documentMode?'返回补充':'返回修改'}</button><button type="button" className="primary" disabled={disabled||stale||implementationDirty||!!review.blockers?.length||!review.legacy_split&&(!groups.length||groups.length>1&&!selectedGroups.length)} onClick={()=>void commit()}>{working?'正在确认…':review.legacy_split?'确认拆分并继续':review.implementation_pending_ids?.length?'保存条款并保留待落实':confirmLabel?confirmLabel:documentMode?originalOnlyPreview?'确认本次落实核对':'确认本次变更':'确认并继续'}</button><p>确认后保存以上条款及已展示的核对结果；未解决的问题仍会保留。</p></div>
     </section>}
     {error&&<div className="connected-error" role="alert"><p>{error}</p><button type="button" disabled={disabled} onClick={()=>void reloadLatest()}>重新核对最新内容</button></div>}
     {notice&&<p role="status">{notice}</p>}

@@ -115,7 +115,12 @@ def test_contextual_plan_identity_is_bound_and_invalid_object_rejected(tmp_path)
 
 
 def test_answer_batch_stale_revision_preserves_all_answers(tmp_path):
- c,app=client(tmp_path);p=prepared(app.state.store);root='/api/projects/'+p['id'];snapshot=copy.deepcopy(p['questions'])
+ c,app=client(tmp_path);p=prepared(app.state.store);root='/api/projects/'+p['id']
+ stored_before=copy.deepcopy(app.state.store.get(p['id']))
+ visible_before=c.get(root).json()
  r=c.post(root+'/answers',json={'expected_revision':p['revision']-1,'answers':{'Q-0001':'不应保存'}})
- assert r.status_code==409 and c.get(root).json()['questions']==snapshot
- assert not c.get(root).json()['active_baseline_id']
+ assert r.status_code==409 and r.json()['code']=='STALE_REVISION'
+ assert app.state.store.get(p['id'])==stored_before
+ visible_after=c.get(root).json()
+ assert visible_after['questions']==visible_before['questions']
+ assert not visible_after['active_baseline_id']

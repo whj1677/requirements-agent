@@ -20,6 +20,9 @@ def manual_edit_text(before, after):
     for key, value in (after.get('behavior') or {}).items():
         if (before.get('behavior') or {}).get(key) != value:
             parts.append(key + '：' + value)
+    if before.get('detail_contract')!=after.get('detail_contract') and 'detail_contract' in after:
+        from .core import dumps
+        parts.append('人工核对的结构化详细需求：\n'+dumps(after['detail_contract']))
     return '\n'.join(parts)
 
 
@@ -29,6 +32,13 @@ def validate_manual_target(project, target):
     validate_item(target['after'])
     validate_source_fidelity(target['after'], project,
                              decision_text=manual_edit_text(target['before'], target['after']))
+    if 'detail_contract' in target['after']:
+        from .requirement_details import validate_detail, detail_issues, DetailProblem
+        validate_detail(target['after']['detail_contract'],project)
+        hard=[issue for issue in detail_issues(target['after'],project) if issue['code'] in
+            ('DETAIL_INVALID','DETAIL_STRUCTURE','DETAIL_SOURCE_INVALID','DETAIL_FLOW_REFERENCE',
+             'DETAIL_FIELD_REFERENCE','DETAIL_INTERACTION_REFERENCE','DETAIL_ITEM_REFERENCE')]
+        if hard:raise DetailProblem(hard)
 
 
 def build_manual_preview(project, payload):
@@ -92,9 +102,9 @@ def build_manual_preview(project, payload):
         iid = edit.get('item_id')
         require(isinstance(iid, str) and iid in targets and iid not in edited,
                 'REFERENCE_INVALID', '只能修改当前已明确回答直接关联的原条款，不可重复或跨项', 409)
-        require(set(edit) <= {'item_id', 'statement', 'behavior'}
-                and ('statement' in edit or 'behavior' in edit),
-                'INPUT_REQUIRED', '此处只修改需求正文和已展示的业务说明')
+        require(set(edit) <= {'item_id', 'statement', 'behavior','detail_contract'}
+                and any(key in edit for key in ('statement','behavior','detail_contract')),
+                'INPUT_REQUIRED', '此处只修改已展示的正文、业务说明和详细需求')
         after = copy.deepcopy(targets[iid])
         if 'statement' in edit:
             require(isinstance(edit['statement'], str) and edit['statement'].strip()
@@ -106,6 +116,11 @@ def build_manual_preview(project, payload):
                     and all(isinstance(v, str) and len(v) <= 6000 for v in behavior.values()),
                     'INPUT_REQUIRED', '业务说明字段或内容无效')
             after['behavior'] = {**after.get('behavior', {}), **behavior}
+        if 'detail_contract' in edit:
+            from .requirement_details import validate_detail
+            require(after['kind']=='requirement','INPUT_REQUIRED','详细定义只适用于需求条目。')
+            validate_detail(edit['detail_contract'],project)
+            after['detail_contract']=copy.deepcopy(edit['detail_contract'])
         edited[iid] = after
     review_ids = payload.get('review_behavior_item_ids', [])
     require(isinstance(review_ids, list) and all(isinstance(iid, str) for iid in review_ids)

@@ -94,22 +94,41 @@ def test_draft_assembly_preserves_answers_unknowns_and_exports(tmp_path):
     assert all(c['item_id']!='REQ-CANDIDATE' for c in r['result']['coverage'])
 
 
-def test_omitted_call_limit_preserves_frozen_single_request_capacity(tmp_path,monkeypatch):
-    # Single-request configuration snapshot; business gates are covered separately.
-    monkeypatch.setattr('app.workflow.execution_issues',lambda *a:[])
+def test_omitted_call_limit_preserves_frozen_single_request_capacity(tmp_path):
+    # The real document action first checks the draft. Unknown fixture decisions
+    # remain unknown; explicit review-draft generation permits the budget probe.
     async def run():
         store,p=state(tmp_path)
+        with store.edit(p['id'],p['revision'],'隔离共享草稿入口') as (current,_):
+            current['workflow_mode']='shared-draft'
+        p=store.get(p['id'])
+        from app.actions import Actions
+        from tests.helpers import EXAMPLES
+        check=copy.deepcopy(EXAMPLES['review'])
+        q=p['questions'][0]
+        check.update(proposals=[],questions=[],findings=[dict(type='gap',severity='blocker',
+            message=q['question'],related_refs=q['related_refs'],source_refs=[],
+            decision_question=q['question'],suggested_resolution='原问题继续待确认。')])
+        check['result'].update(assessment='needs_changes',
+            reviewed_refs=[i['id'] for i in p['items']],required_decisions=[q['question']])
         class Capture(FakeProvider):
-            def __init__(self):super().__init__([Problem('OUTPUT_TRUNCATED','length')]*3);self.configs=[]
+            def __init__(self):super().__init__([check]+[Problem('OUTPUT_TRUNCATED','length')]*3);self.configs=[]
             async def request(self,c,m,evidence=None):
                 self.configs.append(dict(c));return await super().request(c,m,evidence)
         provider=Capture();w=Workflow(store,provider);store.setting('model',dict(DEFAULT,max_tokens=700,max_calls=2))
-        approved=dict(DEFAULT,max_tokens=700,max_calls=None)
-        r=w.start(p['id'],p['revision'],'prd','',config_override=approved)
-        approved['max_tokens']=2800  # later setting/caller changes cannot alter this approved run
-        await w.tasks[r['id']]
-        result=store.get_record(p['id'],r['id'])
-        assert [c['max_tokens'] for c in provider.configs]==[700,700,700]
+        # Freeze this test's explicit single-request capacity, as the former
+        # low-level config_override did; do not bypass any content/generation gate.
+        w.config=lambda stage:dict(DEFAULT,max_tokens=700,max_calls=None)
+        actions=Actions(store,w)
+        body=dict(expected_revision=p['revision'],action='document',message='',
+                  document_type='prd',max_calls=None,allow_review_draft=True)
+        preview=actions.plan(p['id'],body)
+        task=actions.start(p['id'],body,preview['plan_hash'],'frozen-request-capacity',True)
+        store.setting('model',dict(DEFAULT,max_tokens=2800))
+        w.config=lambda stage:dict(DEFAULT,max_tokens=2800,max_calls=None)
+        await actions.jobs[task['id']]
+        result=next(r for r in store.records(p['id'],'run') if r['stage']=='prd')
+        assert [c['max_tokens'] for c in provider.configs]==[700,700,700,700]
         assert result['calls']==3 and result['status']=='failed' and result['error']=='OUTPUT_TRUNCATED'
         assert result['repair_count']==2  # omitted cap keeps the existing finite repair behavior
         assert store.get(p['id'])['documents']=={}
@@ -150,18 +169,28 @@ def prepare_http(case):
     return c,app,model,root
 
 
+def precheck_http(c,root):
+    """Real isolated review step; unresolved fixture decisions stay pending."""
+    body,preview=action_plan(c,root,'prewrite','',max_calls=1)
+    assert start(c,root,body,preview).status_code==200
+    task=finished(c,root)
+    assert task['status']=='awaiting_user' and task['calls']==1,task
+    assert c.get(root).json()['prewrite_review']['status']=='needs_confirmation'
+
+
 def test_http_candidate_rejected_and_explicit_discussion_retained(case):
     c,app,model,root=prepare_http(case)
+    precheck_http(c,root)
     before=c.get(root).json()
     ref=before['items'][0]['id']
     model['transform']=lambda value,body,ctx:plan([ref])
-    body,preview=action_plan(c,root,'document','',max_calls=2)
+    body,preview=action_plan(c,root,'document','',max_calls=2,allow_review_draft=True)
     assert start(c,root,body,preview).status_code==200
     task=finished(c,root)
     assert task['status']=='failed' and task['error']=='SEMANTIC_BLOCKED' and task['calls']==1
     assert c.get(root).json()['items']==before['items'] and not c.get(root).json()['documents']
     model['transform']=lambda value,body,ctx:plan(discussion=[ref])
-    body,preview=action_plan(c,root,'document','',max_calls=2)
+    body,preview=action_plan(c,root,'document','',max_calls=2,allow_review_draft=True)
     assert start(c,root,body,preview).status_code==200
     assert finished(c,root)['status']=='succeeded'
     after=c.get(root).json()
@@ -171,8 +200,9 @@ def test_http_candidate_rejected_and_explicit_discussion_retained(case):
 
 def test_http_failed_schema_repair_keeps_each_request_and_input_identity(case):
     c,app,model,root=prepare_http(case)
+    precheck_http(c,root)
     model['invalid_next']=True
-    body,preview=action_plan(c,root,'document','',max_calls=2)
+    body,preview=action_plan(c,root,'document','',max_calls=2,allow_review_draft=True)
     assert start(c,root,body,preview).status_code==200
     task=finished(c,root)
     assert task['calls']==2 and task['status']=='succeeded'
@@ -194,7 +224,8 @@ def test_http_failed_schema_repair_keeps_each_request_and_input_identity(case):
 
 def test_http_truncation_is_bounded_and_old_document_preserved(case):
     c,app,model,root=prepare_http(case)
-    body,preview=action_plan(c,root,'document','')
+    precheck_http(c,root)
+    body,preview=action_plan(c,root,'document','',allow_review_draft=True)
     assert start(c,root,body,preview).status_code==200
     assert finished(c,root)['status']=='succeeded'
     old=c.get(root).json()['documents']
@@ -202,7 +233,7 @@ def test_http_truncation_is_bounded_and_old_document_preserved(case):
     assert c.put('/api/models/model',json=config).status_code==200
     model['truncate']=True
     before=len(model['requests'])
-    body,preview=action_plan(c,root,'document','',max_calls=2)
+    body,preview=action_plan(c,root,'document','',max_calls=2,allow_review_draft=True)
     assert start(c,root,body,preview).status_code==200
     task=finished(c,root)
     assert task['calls']==2 and task['status']=='paused_budget' and task['error']=='BUDGET_EXHAUSTED'

@@ -182,7 +182,7 @@ def prepare_implementations(project, preview, supplied=None):
             changes.setdefault(iid,copy.deepcopy(after))
             for key in ('title','statement','applies_to','epistemic_status','source_refs','related_refs',
                         'behavior','change_type','scope_evidence','classification_reason',
-                        'behavior_review_required','behavior_review'):
+                        'behavior_review_required','behavior_review','detail_contract','detail_required'):
                 if key in target['after']:
                     after[key]=copy.deepcopy(target['after'][key])
     known={q['id']:q for q in projected['questions']}
@@ -440,6 +440,8 @@ def apply_review(project, preview, selected_group_ids, store=None):
                 current['statement']=target['after']['statement']
                 if 'behavior' in target['after']:
                     current['behavior']=copy.deepcopy(target['after']['behavior'])
+                if 'detail_contract' in target['after']:
+                    current['detail_contract']=copy.deepcopy(target['after']['detail_contract'])
                 if authored:
                     require(store is not None,'INPUT_REQUIRED','人工修改须保存可追溯的来源')
                     source=save_source(store,'人工核对回答并修订.txt',authored.encode('utf-8'),'goal')
@@ -508,7 +510,7 @@ def apply_review(project, preview, selected_group_ids, store=None):
                         '候选与决定绑定不一致', 409)
                 for key in ('title','statement','applies_to','epistemic_status','source_refs','related_refs',
                             'behavior','change_type','scope_evidence','classification_reason',
-                            'behavior_review_required','behavior_review'):
+                            'behavior_review_required','behavior_review','detail_contract','detail_required'):
                     if key in candidate:original[key]=copy.deepcopy(candidate[key])
                 original['selection_status']='selected'
                 if candidate.get('answer_refs'):

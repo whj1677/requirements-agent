@@ -53,6 +53,7 @@ export function Workspace({ id, active, assistantEntryNonce, assistantEntryTask 
   useEffect(()=>progress.register(id,progressControls),[id,progress]);
   useEffect(()=>{if(p)progress.publish({projectId:id,projectName:p.name,tasks,busy,uncertain:Boolean(fatal)||stale.includes('任务列表')});},[id,p?.name,tasks,busy,Boolean(fatal),stale.includes('任务列表'),progress]);
   const analysisNavigation=useRef<{taskId:string;ingestCount:number;itemCount:number;questionCount:number;resolving?:boolean;connected?:boolean}|null>(null);
+  const prewriteNavigation=useRef<{taskId:string;resolving?:boolean}|null>(null);
   const [preparation,setPreparation]=useState<PreparationState>({state:'idle'});
   const preparationDependencies=useRef<PreparationDependencies|null>(null);
   const preparationController=useRef<RefinementPreparation|null>(null);
@@ -76,6 +77,7 @@ export function Workspace({ id, active, assistantEntryNonce, assistantEntryTask 
     // Invalidate only a former navigation intent; submitted tasks keep their
     // records and idempotency receipts and are not cancelled or repeated.
     preparationController.current?.cancel();
+    prewriteNavigation.current=null;
     showMain();setChapter(null);setHelp(null);setSourcesOpen(false);setHistoryOpen(false);
     setCandidateOpen(false);setAcceptanceOpen(false);setRenameOpen(false);setPending(null);
     setDocumentQuestion(undefined);setBlockerTask(null);setError('');
@@ -143,6 +145,18 @@ export function Workspace({ id, active, assistantEntryNonce, assistantEntryTask 
   useEffect(()=>()=>{preparationController.current?.cancel();},[]);
   useEffect(()=>{preparationController.current?.observe(tasks);},[tasks]);
   const running = tasks.some(t => ['queued','running'].includes(t.status)) || runs.some(r => ['queued','running'].includes(r.status));
+  useEffect(()=>{
+    const intent=prewriteNavigation.current,task=tasks.find(value=>value.id===intent?.taskId);
+    if(!active||busy||!intent||intent.resolving||!task||['queued','running'].includes(task.status))return;
+    intent.resolving=true;
+    // The task record can finish after the project read in the same poll.
+    void refresh().then(()=>{
+      if(prewriteNavigation.current!==intent)return;
+      prewriteNavigation.current=null;
+      if(!currentView.current.active)return;
+      if(task.action==='prewrite'||task.status==='awaiting_user'||task.status==='failed'&&projectRef.current?.prewrite_review?.status==='failed')openMain({step:'refine',prewrite:true});
+    }).catch(e=>{if(prewriteNavigation.current===intent)prewriteNavigation.current=null;onRefreshFail(e);});
+  },[tasks,active,busy]);
   useEffect(() => { if (!running) return; let stopped=false; let timer:ReturnType<typeof setTimeout>;
     async function poll(){try{await refresh();}catch(e){onRefreshFail(e);}finally{if(!stopped)timer=setTimeout(poll,800);}}
     timer=setTimeout(poll,800);return()=>{stopped=true;clearTimeout(timer);};
@@ -240,6 +254,7 @@ export function Workspace({ id, active, assistantEntryNonce, assistantEntryTask 
         setInterviewSubmission({taskId:task.id,message:task.retry_input.message,attachmentSourceIds:task.retry_input.attachment_source_ids||[]});
       }
       const submitted={...task,retry_input:task.retry_input||pending.input};
+      if(pending.input.action==='prewrite'||pending.input.action==='document'&&pending.input.document_type==='prd')prewriteNavigation.current={taskId:task.id};
       setTasks(current=>[...current.filter(t=>t.id!==task.id),submitted]);recordProgressSubmission(submitted);setTasksLoaded(true);setPending(null);
       if(pending.input.target?.kind==='document')setChapterSubmission({id:task.id,documentId:pending.input.target.id,sectionId:pending.input.target.section_id,message:pending.input.message});
       if(pending.input.target&&pending.input.target.kind!=='document'){setHelpText('');setHelp(null);}
@@ -287,6 +302,8 @@ export function Workspace({ id, active, assistantEntryNonce, assistantEntryTask 
     }
   }
   function openQuestion(questionId?:string){
+    const prewrite=projectRef.current?.prewrite_review?.findings?.find((finding:Obj)=>finding.question_id===questionId);
+    if(prewrite){openMain({step:'refine',prewrite:true,findingId:prewrite.id});return;}
     const document=questionId&&documentForQuestion(questionId);
     if(document){guard(()=>focusDocumentQuestion(document[0],questionId!));return;}
     openMain({step:'refine',questionId});
@@ -354,6 +371,7 @@ export function Workspace({ id, active, assistantEntryNonce, assistantEntryTask 
   }});});}
   function viewTaskResult(task:UserTask){
     if(canRecoverDraft(task)){recoverTask(task);return;}
+    if(task.action==='prewrite'||task.status==='awaiting_user'&&(task as Obj).prewrite_review_id){openMain({step:'refine',prewrite:true});return;}
     const documentKind=['mrd','prd'].includes(task.retry_input?.document_type||'')?task.retry_input!.document_type:undefined;
     if(task.action==='document'){openDetails(4,documentKind);return;}
     if(task.action==='review'){openReviewFindings(documentKind);return;}
@@ -366,7 +384,7 @@ export function Workspace({ id, active, assistantEntryNonce, assistantEntryTask 
       openDetails(4,kind,()=>openHelp({...target,label:kind.toUpperCase()+' · '+(projectRef.current?.documents[kind].content?.sections?.find((section:Obj)=>section.section_id===target.section_id)?.title||'本篇文档讨论')}));return;
     }
     if(['interview','organize','clarify','change','explore'].includes(task.action)){openMain({step:task.action==='interview'?'information':'refine'});return;}
-    const destination:Record<BusinessAction,number>={interview:0,organize:1,explore:1,clarify:2,change:2,prototype:4,document:4,review:4};
+    const destination:Record<BusinessAction,number>={interview:0,organize:1,explore:1,clarify:2,change:2,prototype:4,document:4,review:4,prewrite:2};
     go(destination[task.action]);
   }
   function continueSelectedTask() { guard(() => {
@@ -454,6 +472,8 @@ export function Workspace({ id, active, assistantEntryNonce, assistantEntryTask 
         onReferenceSources={referenceSources} onReferenceImport={importBenchmark} onBenchmark={prepareBenchmark} benchmarkSubmission={benchmarkSubmission} interviewSubmission={interviewSubmission}/>}
       onCreateRequirement={()=>setCandidateOpen(true)} onCreateAcceptance={requirementId=>{setAcceptanceRequirement(requirementId||'');setAcceptanceOpen(true);}}
       onDelivery={()=>openDetails(5)} onDocuments={()=>openDetails(4)} onRefresh={retry}
+      onPrewrite={()=>act(()=>planAction('prewrite',undefined,undefined,'',{document_type:'prd'}))}
+      onGeneratePrd={allowReviewDraft=>{openDetails(4,'prd');void act(()=>planAction('document',undefined,undefined,'',{document_type:'prd',allow_review_draft:!!allowReviewDraft}));}}
       onResolveBlocker={(action,row)=>resolveBlocker(action,row,5)}
       taskPanel={task=><TaskStatus task={task} busy={busy} uncertain={Boolean(fatal)||stale.includes('任务列表')} onRefresh={retry}
         onCancel={()=>act(async()=>{await api(root+'/actions/'+task.id+'/cancel','POST');await refresh();})} onRetry={()=>retryUserTask(task)}
@@ -470,7 +490,7 @@ export function Workspace({ id, active, assistantEntryNonce, assistantEntryTask 
         {phaseAccess.allowed&&blockerTask&&<p className="blocker-return" role="status">正在处理：{blockerTask.title}。<button type="button" disabled={busy||running} onClick={returnToBlockers}>返回阻塞清单</button></p>}
         {phaseAccess.allowed&&returnAnswerId&&(phase===1||phase===2)&&<p className="notice">正在核对回答关联条款。保存并采纳后，可返回原回答重新核对。<button type="button" disabled={busy||running} onClick={returnToAnswer}>返回原回答核对</button></p>}
         <div className="document-stage" hidden={phase!==4||!stageAccess(p,4).allowed} id={'document-result-'+id}>
-          <DocumentStudio focusReviewNonce={reviewFocusNonce} taskStatus={documentTaskStatus} p={p} docType={docType} setDocType={next=>guard(()=>{setDocType(next);setSelectedDocId('');setDocumentQuestion(undefined);})} setSelectedDocId={next=>{if(next!==selectedDocId)guard(()=>setSelectedDocId(next));}} selectedDocId={selectedDocId} artifacts={artifacts} setStage={setStage} setShowAdvanced={setShowAdvanced} setTab={navigate} setOutcome={()=>{}} root={root} act={act} mutate={mutate} busy={busy||running} onHelp={openHelp} onGenerate={()=>act(()=>planAction('document'))} onSource={shared.onSource} onClarify={openQuestion}
+          <DocumentStudio focusReviewNonce={reviewFocusNonce} taskStatus={documentTaskStatus} p={p} docType={docType} setDocType={next=>guard(()=>{setDocType(next);setSelectedDocId('');setDocumentQuestion(undefined);})} setSelectedDocId={next=>{if(next!==selectedDocId)guard(()=>setSelectedDocId(next));}} selectedDocId={selectedDocId} artifacts={artifacts} setStage={setStage} setShowAdvanced={setShowAdvanced} setTab={navigate} setOutcome={()=>{}} root={root} act={act} mutate={mutate} busy={busy||running} onHelp={openHelp} onGenerate={()=>act(()=>planAction('document'))} onPrewrite={()=>openMain({step:'refine',prewrite:true})} onSource={shared.onSource} onClarify={openQuestion}
             discussionPanel={p.documents[docType]&&<DocumentDiscussionPanel summaryOnly onOpenQuestion={openQuestion} project={p} tasks={tasks} runs={runs} document={p.documents[docType]} busy={busy} running={running} mutate={mutate} focusQuestion={documentQuestion} onRefresh={retry} onSources={refs=>shared.onSource(refs||[])} onScope={()=>openMain({step:'refine',scope:true})} onClarify={questionId=>act(()=>planAction('clarify',undefined,{kind:'question',id:questionId,label:p.questions.find(q=>q.id===questionId)?.question||'章节补充问题'}))}/>}/>
           <ProductCheckpoint onBlocked={blockedCheckpoint} p={p} phase={4} busy={busy||running} mutate={mutate} go={go} getProject={()=>projectRef.current||p}/>
         </div>

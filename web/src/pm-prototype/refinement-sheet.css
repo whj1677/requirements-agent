@@ -58,13 +58,13 @@
  .sheet-view-actions>span{font-size:12px}
 }
 /* Focus changes visibility only; the table and unsaved form state stay mounted. */
-.layout:has(.project-workspace:not([hidden]) .refinement-sheet[data-focus-mode="true"]){grid-template-columns:minmax(0,1fr)}
-.layout:has(.project-workspace:not([hidden]) .refinement-sheet[data-focus-mode="true"])>.sidebar{display:none}
-.project-workspace:has(.refinement-sheet[data-focus-mode="true"])>.project-bar{display:none}
-.connected-workspace:has(.refinement-sheet[data-focus-mode="true"])>.connected-steps,
-.connected-workspace:has(.refinement-sheet[data-focus-mode="true"])>.connected-status{display:none}
-.connected-workspace:has(.refinement-sheet[data-focus-mode="true"]){padding:12px 20px;min-height:0}
-.connected-workspace:has(.refinement-sheet[data-focus-mode="true"])>.refinement-sheet{max-width:none}
+.layout:has(.project-workspace:not([hidden]) .refinement-requirements-view:not([hidden]) .refinement-sheet[data-focus-mode="true"]){grid-template-columns:minmax(0,1fr)}
+.layout:has(.project-workspace:not([hidden]) .refinement-requirements-view:not([hidden]) .refinement-sheet[data-focus-mode="true"])>.sidebar{display:none}
+.project-workspace:has(.refinement-requirements-view:not([hidden]) .refinement-sheet[data-focus-mode="true"])>.project-bar{display:none}
+.connected-workspace:has(.refinement-requirements-view:not([hidden]) .refinement-sheet[data-focus-mode="true"])>.connected-steps,
+.connected-workspace:has(.refinement-requirements-view:not([hidden]) .refinement-sheet[data-focus-mode="true"])>.connected-status{display:none}
+.connected-workspace:has(.refinement-requirements-view:not([hidden]) .refinement-sheet[data-focus-mode="true"]){padding:12px 20px;min-height:0}
+.refinement-requirements-view:has(.refinement-sheet[data-focus-mode="true"]){max-width:none}
 @media(max-width:1000px){.sheet-view-actions{align-items:flex-end;flex-direction:column;gap:4px}.sheet-requirement-jump{margin-left:0}.sheet-pending-controls{margin-left:0}}
 
 @media(min-width:1001px){.refinement-sheet-heading>div:first-child{min-width:0;flex:1}.sheet-view-actions{flex-wrap:wrap;justify-content:flex-end;max-width:58%}.sheet-view-actions>span{flex-basis:100%;text-align:right;background:none;padding:0}}

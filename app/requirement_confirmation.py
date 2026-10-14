@@ -18,9 +18,6 @@ def _manual_text(before, after):
     normalized = copy.deepcopy(before)
     normalized['behavior'] = {field: before.get('behavior', {}).get(field, '') for field in FIELDS}
     text = manual_edit_text(normalized, after)
-    if before.get('detail_contract') != after.get('detail_contract') and 'detail_contract' in after:
-        from .core import dumps
-        text += '\n人工核对的结构化详细需求：\n' + dumps(after['detail_contract'])
     return text
 
 

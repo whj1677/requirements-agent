@@ -7,6 +7,7 @@ import { Icon } from './ui-icons';
 import { DownloadButton } from './feedback';
 import { SourceLibrary, sourcePurposes as sourcePurpose } from './source-library';
 import { BusinessContextImport } from './business-context';
+import { prewriteLabel } from './prewrite-review';
 import './ux-reading.css';
 type Obj = Record<string, any>;
 const statusNames = sourceStatusNames;
@@ -38,13 +39,14 @@ export function documentTaskForType(tasks: UserTask[], docType: string): UserTas
 export function DocumentStudio({
   focusReviewNonce = 0, taskStatus, discussionPanel, p, docType, setDocType, selectedDocId, setSelectedDocId, artifacts,
   setStage, setShowAdvanced, setTab, setOutcome, root, act, mutate,
-  onGenerate, busy, onHelp, onSource, onClarify,
+  onGenerate, busy, onHelp, onSource, onClarify, onPrewrite,
 }: {
   busy?: boolean;
   onHelp?: (target: Obj) => void;
   onSource?: (refs: Obj[]) => void;
   onClarify?: (questionId?: string) => void;
   onGenerate?: () => void;
+  onPrewrite?: () => void;
   taskStatus?: React.ReactNode; discussionPanel?: React.ReactNode; focusReviewNonce?: number;
   p: Obj; docType: string; setDocType: (s: string) => void;
   selectedDocId: string; setSelectedDocId: (s: string) => void;
@@ -112,6 +114,8 @@ export function DocumentStudio({
             </button>}
       </div>}
     </div>
+    {docType==='prd'&&!selectedDocId&&<div className="document-prewrite-notice"><p><b>{prewriteLabel(p.prewrite_review)}</b><br/>生成 PRD 前先检查当前需求；需要业务决定时，在完善需求中处理。</p><button type="button" disabled={busy} onClick={onPrewrite}>查看成文检查</button></div>}
+    {document?.change_summary&&<section className="document-change-summary" aria-label="本版PRD变更摘要"><h3>本版变更摘要{selectedDocId?' · 历史只读':''}</h3><p>{document.change_summary.summary}</p><p>修改 {document.change_summary.changed_item_ids?.length||0} 项 · 新增 {document.change_summary.added_item_ids?.length||0} 项 · 移出 {document.change_summary.removed_item_ids?.length||0} 项</p>{!!document.change_summary.affected_sections?.length&&<><b>受影响章节</b><ul>{document.change_summary.affected_sections.map((section:Obj)=><li key={section.section_id}>{section.title||section.section_id}</li>)}</ul></>}<small>{document.base_document_id?'原文档和确认记录保留；本版需要重新核对。':'本版为初次成文，尚未继承任何文档确认。'}</small></section>}
     <details className="document-options"><summary>历史版本与章节参考设置</summary>
       <details><summary>章节参考设置</summary><label>章节参考方式
         <select aria-label="章节参考方式" value={p.reference_mode || 'user'}

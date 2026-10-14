@@ -75,6 +75,17 @@ def model_server():
                     normative_refs=[i['id'] for i in chosen],discussion_refs=discussion)])
             elif stage=='review':
                 value['result']=dict(assessment='ready_for_human_review',reviewed_refs=[i['id'] for i in ctx['items']],perspectives=[dict(role='合成工程审查',considerations=['不代表真人审查'])],required_decisions=[q['question'] for q in ctx['questions'] if q['status']=='open'])
+                if 'previous_prewrite_findings' in ctx:
+                    # Preserve the fixture's real unanswered questions. The new
+                    # controlled connector needs a concrete finding for every
+                    # business decision; never fake a pass to reach generation.
+                    value['findings']=[dict(type='gap',severity='blocker',
+                        message='现有业务决定仍待确认：'+q['question'],
+                        decision_question=q['question'],topic_key=q.get('topic_key') or q['id'],
+                        related_refs=q['related_refs'],source_refs=q.get('source_refs',[]),
+                        suggested_resolution='请保留未决事项，待业务负责人明确。')
+                        for q in ctx['questions'] if q['status']=='open']
+                    if value['findings']:value['result']['assessment']='needs_changes'
             if state.get('transform'):
                 value=state['transform'](value,body,ctx)
             content=json.dumps(value,ensure_ascii=False)

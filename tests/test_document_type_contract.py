@@ -4,7 +4,7 @@ import pytest
 from app.core import Problem,dumps
 from app.prd import plan_schema,plan_contract,compile_plan,repair_instruction
 from app.provider import assemble,DEFAULT
-from tests.test_prd01 import state,plan,prepare_http
+from tests.test_prd01 import state,plan,prepare_http,precheck_http
 from tests.test_ui02_actions import case,plan as action_plan,start,finished
 
 @pytest.mark.parametrize('kind',['mrd','prd'])
@@ -38,7 +38,8 @@ def test_repair_focus_preserves_business_and_uses_only_current_type(tmp_path):
 
 def test_failed_document_update_retains_previous_document_and_business(case):
     c,app,model,root=prepare_http(case)
-    body,preview=action_plan(c,root,'document','')
+    precheck_http(c,root)
+    body,preview=action_plan(c,root,'document','',allow_review_draft=True)
     assert start(c,root,body,preview).status_code==200
     assert finished(c,root)['status']=='succeeded'
     before=c.get(root).json();doc=copy.deepcopy(before['documents']['prd'])
@@ -47,7 +48,7 @@ def test_failed_document_update_retains_previous_document_and_business(case):
         value['sections']=[dict(section_key='validation',context_refs=[],normative_refs=[],discussion_refs=value['sections'][0]['discussion_refs'],explanations=[dict(text='这段原文必须保留。',evidence_refs=dict(context_refs=[],normative_refs=[],business_claim_refs=[]))])]
         return value
     model['transform']=invalid
-    body,preview=action_plan(c,root,'document','')
+    body,preview=action_plan(c,root,'document','',allow_review_draft=True)
     assert start(c,root,body,preview).status_code==200
     task=finished(c,root)
     # Identical invalid plans stop after the first repair repeats the same error.

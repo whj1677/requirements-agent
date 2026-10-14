@@ -95,7 +95,18 @@ def test_real_http_adapter_to_confirmation_and_export(tmp_path):
             p=c.get(root).json()
             assert p['ui'] is None and '4' not in p.get('stage_checks',{})
             assert p['product_flow'][4]['available']
-            stage('prd');stage('prd','mrd');stage('review')
+            # Legacy /runs cannot bypass the same pre-writing gate. The
+            # user-facing document action performs review -> PRD explicitly.
+            rejected=c.post(root+'/runs',json=dict(expected_revision=p['revision'],stage='prd',document_type='prd'))
+            assert rejected.status_code==409 and rejected.json()['code']=='PREWRITE_REQUIRED'
+            assert len(requests)==1
+            from tests.test_ui02_actions import plan as action_plan,start,finished
+            body,preview=action_plan(c,root,'document','',max_calls=2)
+            assert preview['stages']==['review','prd']
+            assert start(c,root,body,preview,False).status_code==200
+            written=finished(c,root)
+            assert written['status']=='succeeded' and written['calls']==2,written
+            stage('prd','mrd');stage('review')
             p=c.get(root).json()
             for kind,doc in p['documents'].items():
                 response=c.post(root+'/documents/'+kind+'/review',json=dict(expected_revision=c.get(root).json()['revision'],document_id=doc['id']))
@@ -109,7 +120,7 @@ def test_real_http_adapter_to_confirmation_and_export(tmp_path):
             response=c.post(root+'/exports',json={'baseline_id':baseline,'idempotency_key':'http-export'})
             assert response.status_code==200,response.text
             assert c.get(root+'/exports/'+response.json()['id']).content.startswith(b'PK')
-            assert len(requests)==4  # Intake, PRD, MRD, review; no retired sketch request.
+            assert len(requests)==5  # Intake, prewrite, PRD, MRD, final review.
             assert all(d['sketch_policy']=='excluded' for d in p['documents'].values())
             assert len(app.state.store.records(p['id'],'confirmation'))==1
             artifacts=c.get(root+'/artifacts')

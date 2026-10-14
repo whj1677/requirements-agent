@@ -241,7 +241,9 @@ def plan_contract(p, kind=None):
         focus=('MRD 解释问题、使用者、价值依据、目标、衡量方式和业务影响；没有数据时只写具名待决。'
                if kind=='mrd' else
                'PRD 解释场景、操作流程、状态、数据、权限、异常和可观察验收；未知行为只写具名待决。')
-        return dict(version='prd-plan-contract-11',plan_version='4',document_type=kind,
+        explanation_ids=[i['id'] for i in p['items'] if i['id'] in normative_ids
+                         and not (kind=='prd' and i.get('detail_contract'))]
+        return dict(version='prd-plan-contract-12',plan_version='4',document_type=kind,
             example=example,can_generate=example is not None,
             example_notice='仅演示合法引用结构，不是项目答案。' if example else '没有可引用的已核对事实或条目，不可生成。',
             section_keys=([key for key in ('background','users','goal','scope','priority','validation','risks')] if kind=='mrd' else
@@ -253,6 +255,7 @@ def plan_contract(p, kind=None):
                                          if kind=='prd' and i['kind']=='requirement' and i.get('detail_contract')],
             validation_acceptance_ids=sorted(validation_acceptance_ids),
             context_ref_ids=context_ids,normative_item_ids=normative_ids,
+            explanation_normative_item_ids=explanation_ids,
             discussion_item_ids=discussion_ids,business_claim_ref_ids=claim_ids,
             rules='根节点只有 plan_version=4、sections；每节只有 section_key、context_refs、normative_refs、discussion_refs、explanations。'
                   '每节至少有一项当前有效引用；explanations 为可选的有来源解释，每项只含 text 和 evidence_refs；'
@@ -265,6 +268,7 @@ def plan_contract(p, kind=None):
                   'context_refs、normative_refs 所列原文及 PRD 行为字段会自动展示；explanations 没有新的有用关系或业务影响时用 []，不得换词复述或写组装过程。'
                   '解释只可归纳引用的已核对事实，不能发明数字、目标、权限、状态转换、默认行为或新规则；未知交还澄清候选。工程快照中的现有技术只证明快照现状；未经有权决策采纳，不得写成新功能已确定采用的技术选型或业务规范。'
                   'program_rendered_detail_ids中的详细定义由程序生成字段表、交互表、流程图、分支表和状态表；不得在explanations重新写这些字段属性、约束值或流程关系。相关条目只需列入normative_refs。'
+                  '章节外层normative_refs使用normative_item_ids；explanations.evidence_refs.normative_refs只能使用explanation_normative_item_ids。后者不含程序成文的详细定义，任何解释段落都不得引用这些条目；没有独立有效依据的解释使用[]，保留外层引用即可完整成文。'
                   'MRD的required_analysis_sections必须分别有至少一段explanations，不能仅列引用或空数组；priority解释为什么先做，validation说明如何观察验收，各自引用对应依据。这些必需分析不适用普通章节可以不解释的规则。'
                   '本期决定的数量边界、冲突拒绝及原子处理等规则仍是本期要求；只有current_state或肯定工程证据明确同一规则已经存在，才可称为既有约束/现行规则。不根据沿用、保持或验收前提推断已经实现。'
                   '已选规范由程序逐字回填，解释不能更改其含义；验收条款的“已有”前提可能指部署后的验收环境，不据此声称当前生产已经实现。候选条款、推断及冲突观察不能成为无标签正文事实。'
@@ -323,7 +327,7 @@ def plan_schema(p,kind):
         restrict(properties[field],ids)
     basis=properties['explanations']['items']['properties']['evidence_refs']['properties']
     for field,ids in (('context_refs',contract['context_ref_ids']),
-                      ('normative_refs',contract['normative_item_ids']),
+                      ('normative_refs',contract['explanation_normative_item_ids']),
                       ('business_claim_refs',contract['business_claim_ref_ids'])):
         basis[field]=copy.deepcopy(basis[field])
         restrict(basis[field],ids)
@@ -361,7 +365,7 @@ def repair_instruction(error,p,kind=None):
                 'section_key 只能从本次 document_type 对应的 section_keys 选择；discussion 仅在含有效 discussion_refs 时可用；不丢弃非法章节中的有效正文和依据，不删除业务内容来过关。'
                 '不能在解释中新增规则、数值或改变规范原文。工程快照不决定新功能技术选型。'+
                 ('MRD按 required_analysis_sections 分别补优先级和试点验证分析，前者引用已核对priority，后者引用已选验收或已核对value/intent；避免重复目标与范围，缺数字保留未知。'
-                 if kind=='mrd' else 'PRD不输出MRD专用priority、validation、risks章节；有来源的相关正文保留原意和全部有效依据，使用当前合法章节键，程序按依据归章。')+
+                 if kind=='mrd' else 'PRD不输出MRD专用priority、validation、risks章节；有来源的相关正文保留原意和全部有效依据，使用当前合法章节键，程序按依据归章。explanations.evidence_refs.normative_refs只能取explanation_normative_item_ids。若解释引用了程序成文的详细定义，删除重复解释并保留章节外层normative_refs，完整字段、流程和交互仍由程序展示；不得只删引用却保留无依据文字，也不得改挂其他条目或伪造上下文。')+
                 '空章节省略；未决问题返回澄清阶段。'
                 '\n实际错误：'+error.message+'\n唯一文档计划契约：'+dumps(contract))
     common=('重新输出完整 v2 章节引用对象，只修结构或引用；不重选方向、不补答、不改规则或采纳状态。业务原文由程序回填。'
@@ -401,7 +405,7 @@ def context(p, *, include_sketch=True):
             notice='本组条目均不在本期规范白名单，不能放入 normative_refs。selected 可能是范围外已采纳条目，不能据此推翻 plan_contract.normative_item_ids。只有明确列入 discussion_item_ids 的条目才可放入 discussion_refs，其余仅用于核对背景。selected仅为当前草稿采纳，不代表业务负责人批准；原条目和后续回答可能存在差异，必须并列保留。'),
         C_discussion=dict(items=[copy.deepcopy(i) for i in discussion if not allowed(i,p) and (i['selection_status']!='selected' or i['epistemic_status'] in ('proposed','inferred'))],
             options=copy.deepcopy(p['options']), notice='讨论方向不等于采纳条目；建议和假设不成为规范。'),
-        D_unknowns_limits=dict(questions=[copy.deepcopy(q) for q in p['questions'] if q['status']!='answered'],
+        D_unknowns_limits=dict(questions=[copy.deepcopy(q) for q in p['questions'] if q['status']!='answered' and not q.get('prewrite_resolution')],
             source_status=[{k:s.get(k) for k in ('id','title','purpose','parse_status','failure_reason','excluded')} for s in p['sources']],
             ui='本工作台已取消业务草图；仅交付需求文档，原页面截图仍是现状参考。' if p.get('_sketch_retired') else '尚无原型' if not p.get('ui') else '已有低保真模拟原型，不能证明业务实现',
             active_ui=None if not p.get('ui') else dict(version=p['ui']['spec']['draft_revision'],
@@ -506,11 +510,13 @@ def compile_plan(plan, p, kind, omitted=(), *, include_sketch=True):
                         'SCHEMA_INVALID',f'sections[{n}].explanations[{j}].text 是写作指令而非读者正文；直接写有来源的产品事实或使用 []')
                 require(any(basis.values()),'REFERENCE_INVALID',at+' 缺少已核对依据')
                 for group,allowed_refs in (('context_refs',set(contract['context_ref_ids'])),
-                    ('normative_refs',set(contract['normative_item_ids'])),
+                    ('normative_refs',set(contract.get('explanation_normative_item_ids',contract['normative_item_ids']))),
                     ('business_claim_refs',set(contract['business_claim_ref_ids']))):
                     for k,ref in enumerate(basis[group]):
                         require(ref in allowed_refs,'REFERENCE_INVALID',
-                                f'{at}.{group}[{k}] {ref} 不在当前已核对依据白名单')
+                                f'{at}.{group}[{k}] {ref} 不在当前已核对依据白名单'+
+                                ('；此条目详细定义由程序直接成文，请保留章节引用并移除重复解释。'
+                                 if group=='normative_refs' and ref in contract.get('program_rendered_detail_ids',[]) else ''))
                 from .semantic_quality import validate_explanation
                 structured_refs=[r for r in basis['normative_refs'] if items[r].get('detail_contract')]
                 require(not (kind=='prd' and structured_refs),'SEMANTIC_BLOCKED',
@@ -685,6 +691,7 @@ def compile_plan(plan, p, kind, omitted=(), *, include_sketch=True):
         discussion_locations={r:sid for r in appendix_ids}
     questions=[]
     for q in p['questions']:
+        if q.get('prewrite_resolution'):continue
         if q['status']=='answered':
             related='\n'.join(items[r]['statement'] for r in q.get('related_refs',[]) if r in items)
             answer_sources=[s['id']+'/'+e['id'] for s in p['sources'] for e in s['excerpts'] if e['text']==q['answer']]

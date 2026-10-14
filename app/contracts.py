@@ -8,12 +8,21 @@ from .core import KIT, brief_hash, digest, read_json, require
 from .requirements import delivery_items
 
 API_CAPABILITIES = tuple(sorted(('actions', 'artifacts', 'confirmations', 'documents', 'exports', 'models',
-                                 'options-direction', 'options-items', 'projects', 'runs', 'session', 'sources', 'product-flow', 'five-step-workflow', 'requirements-exchange', 'business-context', 'conversational-intake', 'shared-draft', 'decision-review', 'domain-context')))
+                                 'options-direction', 'options-items', 'projects', 'runs', 'session', 'sources', 'product-flow', 'five-step-workflow', 'requirements-exchange', 'business-context', 'conversational-intake', 'shared-draft', 'decision-review', 'domain-context','prewrite-review')))
 
 SCHEMA = read_json(KIT / 'examples/runtime_response.schema.json')
 from .requirement_details import DETAIL_SCHEMA
 SCHEMA['$defs']['Proposal']['properties']['detail_contract'] = copy.deepcopy(DETAIL_SCHEMA)
 SCHEMA['$defs']['Proposal']['properties']['detail_required'] = {'type':'boolean'}
+SCHEMA['$defs']['Finding']['properties'].update(
+    topic_key={'type':'string','minLength':1,'maxLength':200},
+    decision_question={'type':'string','maxLength':2000},
+    decision_options={'type':'array','maxItems':4,'uniqueItems':True,'items':{'type':'string','minLength':1,'maxLength':1000}},
+    evidence_quotes={'type':'array','maxItems':20,'items':dict(type='object',additionalProperties=False,
+        required=['object_id','path','quote'],properties={
+            'object_id':{'type':'string','minLength':1,'maxLength':120},
+            'path':{'type':'string','minLength':1,'maxLength':400},
+            'quote':{'type':'string','minLength':1,'maxLength':4000}})})
 # These blocks are compiled locally from item snapshots, never requested from
 # the model's plan schema. Historical document blocks remain byte-compatible.
 _document_blocks = SCHEMA['$defs']['prdResult']['properties']['sections']['items']['properties']['blocks']['items']['oneOf']
@@ -371,6 +380,10 @@ def gate_blockers(p):
         rows.append(row)
     def action(kind, label, **target):
         return dict(kind=kind, label=label, **target)
+    from .prewrite import formal_issues
+    for issue in formal_issues(p):
+        add('prewrite_required','成文一致性检查',issue['message'],
+            [action('stage','处理成文检查',step=3)])
     for finding in project_issues(p):
         message = finding['location']+': '+DIMENSIONS[finding['dimension']]+' / '+finding['quote']
         add('source_fidelity', '核对来源忠实度', message, [action('source', '核对参考资料')])

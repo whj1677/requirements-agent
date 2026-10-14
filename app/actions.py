@@ -11,9 +11,9 @@ from .budgets import policy_summary
 from .request_budget import validate_limit, initial_budget, check_available
 
 LABELS = {'interview':'聊清需求想法','organize':'整理当前信息','explore':'探索可选方案','clarify':'根据回答更新理解',
-          'prototype':'生成功能草图','document':'生成评审稿','review':'审查当前内容','change':'讨论修改方案'}
+          'prototype':'生成功能草图','document':'生成评审稿','review':'审查当前内容','change':'讨论修改方案','prewrite':'检查成文一致性'}
 STAGES = {'interview':['interview'],'explore':['brainstorm'],'clarify':['clarify'],'prototype':['ui'],
-          'document':['prd'],'review':['review'],'change':['change']}
+          'document':['prd'],'review':['review'],'change':['change'],'prewrite':['review']}
 ACTIVE = ('queued','running')
 
 
@@ -65,6 +65,13 @@ class Actions:
         active=[s for s in p['sources'] if s['id'] in active_source_ids(p) | attachment_source_ids(p,attachments)]
         images=[s for s in active if s.get('image_mime') and not s.get('vision_run_id')]
         stages=STAGES.get(body['action']) or ['vision']*math.ceil(len(images)/3) + ['ingest']
+        reuse_prewrite=False
+        if body['action']=='document' and body['document_type']=='prd':
+            from .prewrite import status as prewrite_status
+            checked=prewrite_status(p)
+            reuse_prewrite=not body.get('message','').strip() and checked['current'] and (
+                checked['status']=='passed' or body.get('allow_review_draft') and checked['status']=='needs_confirmation')
+            stages=['prd'] if reuse_prewrite else ['review','prd']
         if body['action']=='interview':
             stages=['vision']*math.ceil(len(images)/3)+['interview']
         limit=validate_limit(body.get('max_calls'))
@@ -76,7 +83,7 @@ class Actions:
             blockers.extend(execution_issues(p,stage,body['document_type'],body.get('target')))
         if not any(s['excerpts'] for s in active) and not p['items'] and not body['message'].strip():
             blockers.append('请先描述目标或添加项目资料。')
-        if body['action'] in ('prototype','document','review') and not p['items']:
+        if body['action'] in ('prototype','document','review','prewrite') and not p['items']:
             blockers.append('请先整理当前信息，形成可引用的内容；不要求预先采纳全部候选。')
         if body['action']=='review' and not p['documents'].get('prd'):
             blockers.append('尚无 PRD 讨论稿，请先生成讨论稿。')
@@ -110,6 +117,14 @@ class Actions:
             open_questions=sum(question_open(q) for q in p['questions']))
         result['pending_image_count']=len(images)
         result['target_label']=target_label
+        if body['action']=='prewrite' or (body['action']=='document' and body['document_type']=='prd'):
+            result['prewrite_policy']=dict(mode='before_document',review_draft=bool(body.get('allow_review_draft')),
+                stop_on_business_decisions=not body.get('allow_review_draft'),semantic_review=True,
+                reused=reuse_prewrite,review_id=(p.get('prewrite_review') or {}).get('id') if reuse_prewrite else None)
+            result['context_scope']+=' 先核对本期需求、字段、交互、流程、状态和验收的一致性；发现关键问题时返回完善需求处理。'
+            if reuse_prewrite:result['context_scope']+=' 复用同一版本已完成的成文检查，本次不重复调用检查模型。'
+            if body.get('allow_review_draft'):
+                result['context_scope']+=' 已明确选择带问题评审稿：保留未决问题，不代表可正式交付。检查失败或结构损坏仍停止。'
         from .requirement_recommendation import scope as recommendation_scope
         local = recommendation_scope(p, body.get('target'), body['action'])
         if local:
@@ -189,7 +204,7 @@ class Actions:
             if plan.get('requirement_recommendation_scope'):
                 task['requirement_recommendation_scope']=copy.deepcopy(plan['requirement_recommendation_scope'])
             task['retry_input'] = {k:copy.deepcopy(body[k]) for k in
-                                   ('action','message','document_type','option_id','target','attachment_source_ids') if k in body}
+                                   ('action','message','document_type','option_id','target','attachment_source_ids','allow_review_draft') if k in body}
             if benchmark:
                 task['benchmark']=copy.deepcopy(benchmark)
                 task['retry_input']['benchmark']=copy.deepcopy(benchmark)
@@ -221,6 +236,8 @@ class Actions:
                     message='本次局部讨论对象：'+target_context(p,body['target'])+'\n仅围绕此对象提出候选；保留其他需求、未知和采纳状态。\n用户修改意图：'+message
                 run=self.workflow.start(pid,p['revision'],stage,message,body['document_type'],
                     user_task_id=tid,config_override=config,generation_target=target,
+                    prewrite=stage=='review' and (body['action']=='prewrite' or body['action']=='document' and body['document_type']=='prd'),
+                    allow_review_draft=bool(body.get('allow_review_draft')),
                     discussion_target=body.get('target'),**({'benchmark':task['benchmark']} if stage=='ingest' and task.get('benchmark') else {}))
                 ids=current['run_ids']+[run['id']]
                 step_states=copy.deepcopy(current['step_states'])
@@ -237,6 +254,16 @@ class Actions:
                 completed+=1
                 expected=result['output_state_hash']
                 self.store.update_record(pid,tid,'user_task',completed_steps=completed)
+                if result.get('prewrite'):
+                    from .prewrite import status as prewrite_status
+                    checked=prewrite_status(self.store.get(pid))
+                    self.store.update_record(pid,tid,'user_task',prewrite_review_id=checked.get('id'))
+                    hard=any(f.get('hard_block') and f.get('status')!='resolved' for f in checked['findings'])
+                    if checked['status']!='passed' and (not body.get('allow_review_draft') or hard or body['action']=='prewrite'):
+                        self.store.update_record(pid,tid,'user_task',status='awaiting_user',completed=now(),
+                            message='成文检查发现需要处理的问题，请在完善需求中核对并复检；尚未生成新版 PRD。',
+                            output_state_hash=expected,cost=result.get('cost'))
+                        return
             p=self.store.get(pid)
             problems=[s for s in p['sources'] if s['id'] in task['source_ids'] and not s['excluded'] and s['parse_status']!='read']
             runs=[self.store.get_record(pid,rid,'run') for rid in ids]

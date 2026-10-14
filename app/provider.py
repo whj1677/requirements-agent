@@ -472,7 +472,7 @@ def review_documents(p):
                        for section in reader['sections'] for block in section['blocks'])],
             decision_snapshot=[{key:copy.deepcopy(question[key]) for key in (
                 'id','question','why','related_refs','source_refs','answer','answer_source_refs',
-                'status','understanding_status','out_of_scope_reason','superseded_by',
+                'status','understanding_status','out_of_scope_reason','superseded_by','prewrite_resolution',
                 'answer_applications','answer_implementation_contract','unresolved_locations') if key in question}
                 for question in artifact.get('question_snapshot', [])],
             notice='这是该文档实际阅读/导出的正文；clause_snapshot、decision_snapshot来自同版本冻结快照。'
@@ -819,6 +819,24 @@ def assemble(p, stage, user_message, config, folder, kind='prd', generation_targ
                 '分别核对入口、用户操作、输入校验与反馈，触发、角色、处理顺序、状态数据、结果及异常路径；'
                 '不能只凭标题或引用齐全认定完整。后台需求按实际接口/任务交互核对，不强行要求页面。'
                 '【资料待确认】须保留具体缺口、影响和待决定项；接口接收、回执、现场执行和效果分别核对。')
+        if p.get('_prewrite_review'):
+            context['review_scope']['instruction']=(
+                '这是成文前检查，尚未生成本轮文档；documents为空是正常情况，不能因此报告缺少PRD、缺少章节或要求先成文。'
+                '只检查当前本期需求、规则、字段、交互、流程、状态与验收的业务一致性和可实现性。'
+                '逐项核对流程分支能到结束或明确等待、部分成功/全失败/结果未知的路径、重试前提、状态层级、枚举与口径。'
+                '现有未答业务问题仍待处理，不因有问题就假定已解决；历史已答决定须核对当前条款是否真正承载。'
+                '人工作出的prewrite_responses是意见和反证，不能直接当通过；核对证据和原文后才可消除对应发现。'
+                '同一业务决定归一张finding；不要拆成字段、流程、验收三个同义问题，也不要凭空补本期无关功能。'
+                '每个finding给稳定topic_key（同一业务维度与对象反复检查保持不变），related_refs绑定真实本期条目。'
+                '必须引用冲突原文：evidence_quotes中每项object_id为条目/问题ID，path为从该对象开始的点分属性路径，'
+                '数组使用其id定位，如detail_contract.interactions.I1.repeat；quote逐字摘自该字符串属性。'
+                '需要产品经理决定的blocker填decision_question，并将完全相同问题加入required_decisions；'
+                '有清晰不同业务取舍时可给decision_options（最多4项待选建议），不能选中默认答案；来源已有答案则不制造选项。'
+                '仅文案或结构修复无需业务决定则decision_question为空。选项不能当已确认规则。'
+                'proposals和questions必须空，不修改任何业务。required_reviewed_refs必须完整审查并列入reviewed_refs，不能漏掉规则或验收。'
+                '有关键未决或真实冲突必须needs_changes，资料无法审查用insufficient_context，不得为了成文宣布通过。')
+            context['prewrite_responses']=copy.deepcopy(p.get('prewrite_responses',[]))
+            context['previous_prewrite_findings']=copy.deepcopy((p.get('prewrite_review') or {}).get('findings',[]))
     if stage=='prd':
         context=document_context(p, include_sketch=False)
         context['user_message']=user_message

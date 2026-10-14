@@ -124,6 +124,9 @@ def test_real_http_response_shapes_repair_without_hiding_original(tmp_path, monk
         with store.edit(p['id'], 0, 'synthetic grant', bump=False) as (draft, _):
             draft['grants'][origin(DEFAULT)] = {'source_ids':[]}
         provider = Provider(tmp_path/'.env')
+        # The supplied responses intentionally exercise the legacy runtime JSON
+        # repair contract; declare that protocol without changing the transport.
+        provider.business_draft_protocol = None
         provider.keys[origin(DEFAULT)] = 'synthetic-test-key'
         store.setting('model', dict(DEFAULT, max_calls=2, max_tokens=16000))
         workflow = Workflow(store, provider)

@@ -119,6 +119,9 @@ def test_provider_preserves_failed_raw_before_repair_and_redacts_key(tmp_path, m
         with store.edit(p['id'], 0, '合成授权', bump=False) as (draft, _):
             draft['grants'][origin(DEFAULT)] = {'source_ids':[]}
         provider=Provider(tmp_path/'.env'); provider.keys[origin(DEFAULT)]='sk-synthetic-secret'
+        # These frozen runtime-1.1 responses test bounded repair and evidence
+        # redaction. Business-draft responses have a separate no-rewrite contract.
+        provider.business_draft_protocol=None
         store.setting('model', dict(DEFAULT, max_calls=2))
         workflow=Workflow(store, provider)
         result=workflow.start(p['id'],0,'ingest','合成测试')
