@@ -380,8 +380,11 @@ class Provider:
             evidence.save()
         except DuplicateJsonMember:
             from .model_json import identical_members
+            # Review uses the same complete-evidence, typed equality proof as
+            # ingest/vision. This only removes identical syntax repetition;
+            # the normal review and prewrite validators still run afterwards.
             normalized = (identical_members(content) if response_schema is None and evidence and
-                evidence.value.get('stage') in ('ingest','vision') and evidence.value.get('final_output') == content and
+                evidence.value.get('stage') in ('ingest','vision','review') and evidence.value.get('final_output') == content and
                 not evidence.limitations else None)
             if normalized is None:
                 if evidence:

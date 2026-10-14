@@ -16,6 +16,7 @@ def request(monkeypatch,tmp_path,raw):
     provider=Provider(env_path=tmp_path/'absent.env');provider.key=lambda c:'offline-synthetic-key'
     class Proof:
         value=dict(stage='review')
+        limitations=[]
         def response(self,content=None,**meta):self.value.update(final_output=content,**meta)
         def save(self):pass
     proof=Proof();client=httpx.AsyncClient

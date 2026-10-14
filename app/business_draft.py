@@ -66,6 +66,7 @@ behavior、unknown 验收或 limitations 的说明中；非关键或暂缓内容
 已有内容已充分时原样保留，不能为了覆盖行或生成建议而重写明确内容；不强迫七个行为维度全部非空。
 局部完善只覆盖本次指定的一行，不能借整表要求扩大范围。
 已有条款只在有内容变化时形成修订；保留现有明确内容，不能为了输出字段而抹掉人工结果。
+current_rows 中的 detail_validation_issues 是程序对当前详细定义的定位检查；按 code/path 核对后提出修订候选，不把诊断当成新的业务规则。结构错误依据原有业务内容修正；unknown 只在资料或用户原话明确该属性时补齐，否则沿用对应待决定问题。
 验收只写本行可观察结果。可说明入口点击后打开哪个页面/弹窗，但不展开另一功能表单内部字段、
 保存校验或权限流程。可见按钮不证明点击结果，例如仅看见“重置”不能断言清空、回到默认列表。
 每条验收结合已有场景写清适用前提或输入、触发动作和可观察结果；不能只写“可查看结果”或
@@ -172,6 +173,14 @@ def _item_input(item, aliases, item_aliases=None):
         value['item_ref'] = item_aliases.get(item['id'], '')
         if item.get('detail_contract'):
             value['detail_contract'] = detail_draft.input_detail(item['detail_contract'], aliases, item_aliases)
+        if item.get('detail_contract') is not None or item.get('detail_required'):
+            from .requirement_details import detail_issues
+            # Drafts are deliberately not adopted yet. Check their own topology
+            # and attributes without treating selection/reference state as a
+            # new business defect. The normal project validators still apply.
+            value['detail_validation_issues'] = [{key: issue.get(key, '')
+                for key in ('code', 'path', 'object_id', 'message')}
+                for issue in detail_issues(item)]
     return value
 
 

@@ -18,16 +18,18 @@ fields 仅列本期实际输入、显示或业务结果数据。规则参数（�
 必备属性按 schema 逐一给出。数字补 unit/precision，枚举给 enum_values，时间给 time_basis，计算来源用 calculated 并给 formula。其他可选属性无关时省略，不凭空制造唯一性、加载方式等业务决定。
 每个实际业务属性用 evidence 区分 source/proposal/unknown。source 引用本轮真实 sources，并核对资料是否支持这一具体结论；权限规则不能证明入口隐藏、角色名称不能证明重试操作者。新增方案标 proposal，样例数字不变成限制。
 同一未定参数只提出一个独立问题：已知含义保持已知，仅未定值/策略所在属性标 unknown，并写明同一问题影响的位置。不把同一未知复制到无关属性，不把 unknown 改成临时实现指令；真正不同的业务决定不得为减少问题数而合并或隐藏。
+区分字段“是什么/用来做什么”和“由谁、何时、按什么规则产生”：已明确用原批次标识查询原提交结果时，meaning 保留这个已知用途；若标识生成方式未定，只把 source 中未定的产生方式标 unknown 并提问，不能连带把 meaning、名称或已知的只读属性也标 unknown。资料没有说明某属性时仍须如实待确认，不能由其他属性推导。
 evidence 的键只对应本对象已有属性：例如 "validation":"待确认：单次上限", "evidence":{"validation":{"status":"unknown","reason":"单次上限未决定"}}。不能写 evidence.unknown 或用一个 evidence.source 代表全部属性。
 简单编辑用一个完整交互：打开与回显写 entry，保存前放弃写 cancel，提交中/重复提交写 pending/repeat；独立输入和结果才拆另一个交互。本地取消无需制造“取消失败/重试次数”问题。
 流程用 nodes 和 edges；判断出边写 condition，等待节点须给查询成功、确定失败及仍未知的后续路径。保存前取消从编辑节点分支，提交之后不得又宣称未提交。图、交互、状态表和验收描述同一规则。
+kind 按当前流程中的业务含义选择：start 是本流程入口且没有入边；action 是仍有后续的动作或结果展示；decision 是业务判断且至少有两条条件明确、互不重复的出边；wait 是结果未决或等待外部事件，须写明已有依据的继续条件及去向；end 是本流程真正结束且没有任何出边。不能因“成功/失败/未知”的显示文案就标 end；展示后仍要核对权限、查询或继续处理时，展示节点仍为 action 或 wait。不得为通过校验把真实判断改成 action 或删掉已有连线。
 flow 对象只能含 nodes 和 edges，不得添加 flow.evidence；来源逐项放在节点或连线的 evidence。evidence 的 status 只能为 source、proposal、unknown，建议使用 proposal，不能使用 recommendation，也不能把 status/reason/sources 写到 evidence 容器这一层。
 批量业务若对象独立处理：记录单个对象失败后继续汇总，仅全部结果确定才判定全成功/部分成功/全失败；未决不能当失败。“可重试”保留退出分支，不画成必须重试；再次重试仍允许失败或未决。只有资料支持才应用这些规则，不扩展无关场景。
 状态变化说明所属业务对象，不把批次结果、通知状态和后续处理阶段混成一套枚举；prohibited_actions 只写有依据或明确标建议的限制。
 保留已有 id；新对象用 F1/I1/N1/E1/T1。field_refs 用字段 id，depends_on 用 R#，rule_refs/已有验收用 C#，本行新增验收用 A1/A2 对应 acceptance 顺序。
 节点形状：{"id":"N1","label":"步骤说明","kind":"action","actor":"执行者","interaction_id":"I1","evidence":{...}}。
 连线形状：{"id":"E1","from":"N1","to":"N2","condition":"转移条件","evidence":{"condition":{...}}}；interaction_id 只在节点，连线没有 label，也没有 index。这些仅为结构示意，须替换为本期真实内容，不能直接复制。
-输出前核对结构完整、来源真实、所有未知可定位、判断/等待有出路，以及正文/图/表/验收之间无互相矛盾；不得用来源定位有效代替业务或人工确认。
+输出前逐个核对节点的入边和出边：start 无入边，end 无出边，decision 至少两条不同且非空条件的出边，wait 有明确继续条件，其他步骤有后续；所有节点可从 start 到达并能到达 end 或 wait，所有 from/to 引用真实节点。再核对来源真实、所有未知可定位，以及正文/图/表/验收之间无互相矛盾。若缺失分支涉及未决定的业务，保留已知内容并在 questions 提出具体缺口，不自动补成成功、失败、退出或重试规则，也不伪称已完整或已确认。输入如有 detail_validation_issues，按其稳定 path 核对既有定义；诊断只指出缺口，不是业务决定或授权。不得用来源定位有效代替业务或人工确认。
 '''
 
 
@@ -112,6 +114,10 @@ def model_schema(*, generation=False):
         for item, required, evidence in collections:
             item['required'] = ['id', *required, 'evidence']
             props = item['properties']
+            # DETAIL_SCHEMA deliberately shares EVIDENCE_SCHEMA across object
+            # types. Narrow each copy independently or the final edge contract
+            # overwrites the required evidence of fields, actions and nodes.
+            props['evidence'] = copy.deepcopy(props['evidence'])
             props['evidence']['propertyNames'] = {'enum':[name for name in props if name not in ('id','evidence')]}
             # Graph identifiers are generated links, not source-backed business
             # facts. Require evidence for the condition/meaning rather than
@@ -119,6 +125,12 @@ def model_schema(*, generation=False):
             props['evidence']['required'] = list(evidence)
         schema['properties']['fields']['description'] = '仅实际输入、显示和业务结果字段；未定规则参数放对应交互和问题，不造配置项'
         schema['properties']['interactions']['description'] = '按独立输入和处理结果组织；同一编辑过程不机械拆开打开、保存、取消'
+        fields = schema['properties']['fields']['items']['properties']
+        fields['meaning'] = dict(fields['meaning'], description='字段表示什么、用于什么业务；产生方式未定不改变已知用途，仅在含义本身未知时标 unknown')
+        fields['source'] = dict(fields['source'], description='字段数据来自何处、由谁产生；未定产生方式在本属性标 unknown，不连带改写其他已知属性')
+        nodes = schema['properties']['flow']['properties']['nodes']['items']['properties']
+        nodes['kind'] = dict(nodes['kind'], enum=['start', 'action', 'decision', 'wait', 'end'],
+            description='start 无入边；action 有后续；decision 至少两条不同且非空条件的出边；wait 有继续条件和去向；end 无出边。按业务含义选择，不能为消除诊断伪造分支或改换类型。')
     return schema
 
 
