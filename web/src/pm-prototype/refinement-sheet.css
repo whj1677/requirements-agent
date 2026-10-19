@@ -68,3 +68,38 @@
 @media(max-width:1000px){.sheet-view-actions{align-items:flex-end;flex-direction:column;gap:4px}.sheet-requirement-jump{margin-left:0}.sheet-pending-controls{margin-left:0}}
 
 @media(min-width:1001px){.refinement-sheet-heading>div:first-child{min-width:0;flex:1}.sheet-view-actions{flex-wrap:wrap;justify-content:flex-end;max-width:58%}.sheet-view-actions>span{flex-basis:100%;text-align:right;background:none;padding:0}}
+
+/* Short laptop windows need room to edit before opting into focus mode.
+   Compact the surrounding navigation, not the table's text or inputs. */
+@media (min-width:851px) and (max-height:900px){
+  .project-workspace:has(>.connected-workspace[data-step="refine"] .refinement-requirements-view:not([hidden]))>.project-bar{
+    min-height:44px;gap:10px;padding:5px 16px;align-items:center
+  }
+  .project-workspace:has(>.connected-workspace[data-step="refine"] .refinement-requirements-view:not([hidden]))>.project-bar h1{font-size:17px;line-height:1.35}
+  .project-workspace:has(>.connected-workspace[data-step="refine"] .refinement-requirements-view:not([hidden]))>.project-bar .toolbar{gap:6px;margin:0}
+  .project-workspace:has(>.connected-workspace[data-step="refine"] .refinement-requirements-view:not([hidden]))>.project-bar button{min-height:32px;padding:5px 9px}
+  .connected-workspace[data-step="refine"]:has(.refinement-requirements-view:not([hidden])){padding:6px 16px}
+  .connected-workspace[data-step="refine"]:has(.refinement-requirements-view:not([hidden]))>.connected-steps{margin-bottom:4px;gap:6px}
+  .connected-workspace[data-step="refine"]:has(.refinement-requirements-view:not([hidden]))>.connected-steps button{min-height:32px;padding:3px 10px;font-size:13px;border-radius:8px}
+  .connected-workspace[data-step="refine"]:has(.refinement-requirements-view:not([hidden]))>.connected-steps button span{width:20px;height:20px;margin-right:7px}
+  .connected-workspace[data-step="refine"]:has(.refinement-requirements-view:not([hidden]))>.refinement-view-toolbar{margin-bottom:4px;gap:4px 10px}
+  .refinement-requirements-view:not([hidden]) .refinement-sheet-heading{gap:12px;margin:0 0 4px;min-height:34px}
+  .refinement-requirements-view:not([hidden]) .refinement-sheet-heading>div:first-child{flex:none;min-width:0}
+  .refinement-requirements-view:not([hidden]) .refinement-sheet-heading h2{font-size:18px;line-height:1.35;margin:0;white-space:nowrap}
+  .refinement-requirements-view:not([hidden]) .refinement-sheet-heading p,
+  .refinement-requirements-view:not([hidden]) .refinement-sheet-footer small{
+    position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap
+  }
+  .refinement-requirements-view:not([hidden]) .sheet-view-actions{flex:1;min-width:0;max-width:none;flex-flow:row nowrap;align-items:center;gap:6px}
+  .refinement-requirements-view:not([hidden]) .sheet-view-actions>span{flex:1 1 auto;min-width:0;padding:0;background:none;text-align:left;font-size:12px}
+  .refinement-requirements-view:not([hidden]) .sheet-view-actions button{min-height:32px;padding:5px 8px}
+  .refinement-requirements-view:not([hidden]) .sheet-navigation{flex-wrap:wrap;gap:5px;margin:0 0 4px;padding:3px 0}
+  .refinement-requirements-view:not([hidden]) .sheet-navigation>button,
+  .refinement-requirements-view:not([hidden]) .sheet-pending-controls>button{flex:none;min-height:30px;padding:4px 8px;white-space:nowrap}
+  .refinement-requirements-view:not([hidden]) .sheet-requirement-jump{margin:0;gap:5px;white-space:nowrap}
+  .refinement-requirements-view:not([hidden]) .sheet-requirement-jump select{width:clamp(136px,14vw,200px);min-height:30px}
+  .refinement-requirements-view:not([hidden]) .sheet-pending-controls:not(:has(button:not(:disabled))){display:none}
+  .refinement-requirements-view:not([hidden]) .refinement-sheet-footer{gap:8px;margin-top:4px;padding:6px 10px}
+  .refinement-requirements-view:not([hidden]) .refinement-sheet-footer strong{font-size:13px;line-height:1.4}
+  .refinement-requirements-view:not([hidden]) .refinement-sheet-footer button{min-height:36px;padding:5px 10px}
+}

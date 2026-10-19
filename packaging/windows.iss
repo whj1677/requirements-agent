@@ -6,7 +6,7 @@
   #error ReleaseDir is required
 #endif
 #ifndef AppVersion
-  #define AppVersion "1.2.2"
+  #define AppVersion "1.2.5"
 #endif
 
 [Setup]
