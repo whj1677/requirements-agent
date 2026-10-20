@@ -11,7 +11,6 @@ import { refinementDestination, ConnectedDestination } from './refine-navigation
 export type { ConnectedDestination } from './refine-navigation';
 import { currentQuestions } from './refine-context';
 import type {RefinementReturnState} from './refinement-return';
-import {refinementActionCopy} from './refinement-navigation';
 import {publicBlocker} from '../workflow-labels';
 import './refine-guided.css';
 import './connected-workspace.css';
@@ -78,6 +77,7 @@ export function ConnectedWorkspace({ id, project, tasks, active=true, busy, runn
   const [navigationError, setNavigationError] = useState('');
   const [entryError,setEntryError]=useState('');
   const [tableFocus,setTableFocus]=useState<{itemId?:string;questionId?:string;field?:string;scope?:boolean;nonce:number}>();
+  const [tableValidationRequest,setTableValidationRequest]=useState<number>();
   const questions = useMemo(() => currentQuestions(project), [project.questions]);
   const candidates = project.items.filter(i => i.selection_status !== 'excluded');
   const latestTask = tasks.at(-1);
@@ -119,6 +119,7 @@ export function ConnectedWorkspace({ id, project, tasks, active=true, busy, runn
     if(destination.step==='refine'){
       setRefineView(destination.prewrite?'prewrite':'requirements');
       if(!destination.prewrite){const reqId=singleRequirementRoot(project,destination);
+        if(destination.review&&!reqId&&!destination.questionId&&!destination.field)setTableValidationRequest(value=>(value||0)+1);
         setTableFocus(previous=>({itemId:reqId,questionId:destination.questionId,field:destination.field,scope:destination.scope,nonce:(previous?.nonce||0)+1}));}
     }
     setTaskOpen(Boolean(destination.task));
@@ -202,7 +203,9 @@ export function ConnectedWorkspace({ id, project, tasks, active=true, busy, runn
       if(next===step&&manualRefinement.current)return;
       void prepareRefinement(manualRefinement.current);return;
     }
-    if(next===step)return;
+    // While preparation is running, explicitly choosing the information step
+    // cancels only its automatic navigation, even if that step is already open.
+    if(next===step&&!(next==='information'&&preparing))return;
     navigate(()=>{restoreRefinement.current=false;setRefinementGate(false);onCancelPreparation();setStep(next);sessionStorage.setItem('ra-connected-step-'+id,next);onMainNavigation?.();});
   }
   function resolveHere(action: BlockerAction, row: Blocker) {
@@ -258,8 +261,7 @@ export function ConnectedWorkspace({ id, project, tasks, active=true, busy, runn
       {([['information', '1', '提供信息'], ['refine', '2', '完善需求'], ['delivery', '3', '确认交付']] as const).map(([key, number, label]) =>
         <button key={key} type="button" disabled={step==='information'&&key==='refine'&&!draftLoaded} aria-current={step === key ? 'step' : undefined} onClick={() => {
           if(key==='delivery'&&step==='refine'&&!(refinementReturn?.projectId===project.id&&refinementReturn.revision===project.revision&&refinementReturn.canReturn)){
-            const current=refinementReturn?.projectId===project.id&&refinementReturn.revision===project.revision?refinementReturn:null;
-            setNavigationError(current?refinementActionCopy(false,current.pendingAnswerCount,current.missingCount).navigation:'请先在表格中完成核对与保存后继续。');return;
+            setNavigationError('');setRefineView('requirements');setTableValidationRequest(value=>(value||0)+1);return;
           }
           chooseStep(key);
         }}><span>{number}</span>{label}</button>)}
@@ -312,7 +314,7 @@ export function ConnectedWorkspace({ id, project, tasks, active=true, busy, runn
       </div>
       <div className="refinement-requirements-view" hidden={refineView!=='requirements'}>
       <RequirementTable project={project} active={active&&refineView==='requirements'} busy={saving||running} mutate={mutate} onRefresh={onRefresh} onSources={onSources}
-        onRecommend={onRecommendRequirement} onSuggest={onOrganize} onCreate={onCreateRequirement} onResolve={resolveTable} onQuestionReview={reviewTableQuestion} onStageConfirmed={()=>chooseStep('delivery')} onReturnAvailabilityChange={setRefinementReturn} focus={tableFocus}/>
+        onRecommend={onRecommendRequirement} onSuggest={onOrganize} onCreate={onCreateRequirement} onResolve={resolveTable} onQuestionReview={reviewTableQuestion} onStageConfirmed={()=>chooseStep('delivery')} onReturnAvailabilityChange={setRefinementReturn} focus={tableFocus} validationRequest={tableValidationRequest}/>
       </div>
       {refineView==='prewrite'&&<PrewriteReviewPanel project={project} busy={saving} running={running} blockReason={actionBlockReason} mutate={mutate} onRefresh={onRefresh} onRecheck={onPrewrite} onGenerate={onGeneratePrd} onClarify={questionId=>onClarify(questionId)} onSources={onSources} focusFindingId={destination?.findingId} onRequirement={itemId=>navigate(()=>{setRefineView('requirements');if(itemId)setTableFocus(previous=>({itemId:singleRequirementRoot(project,{itemId}),nonce:(previous?.nonce||0)+1}));})}/>}
     </>}

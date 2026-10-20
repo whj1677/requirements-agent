@@ -188,7 +188,7 @@ export function IntakeChat({p,model,busy,blocked,tasks,status,beforeSend,onPrepa
         onKeyDown={event=>{if(!direct&&event.key==='Enter'&&!event.shiftKey&&!event.nativeEvent.isComposing&&event.keyCode!==229){event.preventDefault();void send();}}}
         onChange={e=>{setText(e.target.value);setDirty(true);sessionStorage.setItem(draftKey,e.target.value);}}/></label>
       {!direct&&<small className="chat-key-hint">Enter 发送 · Shift+Enter 换行</small>}
-      {!direct&&<><input ref={fileInput} className="chat-file-input" type="file" multiple accept=".txt,.md,.docx,.doc,.xlsx,.xls,.pptx,.ppt,.pdf,.png,.jpg,.jpeg,.webp"
+      {!direct&&<><input ref={fileInput} className="chat-file-input" type="file" multiple accept=".txt,.md,.docx,.doc,.xlsx,.xls,.pptx,.ppt,.pdf,.html,.htm,.png,.jpg,.jpeg,.webp"
         aria-label="选择本轮聊天附件" disabled={busy||sending||!!receipt.current} onChange={event=>{const result=extractChatAttachments(Array.from(event.target.files||[]));addAttachments(result.files,result.rejected);event.target.value='';}}/>
         <button type="button" className="chat-file-button" disabled={busy||sending||!!receipt.current} onClick={()=>fileInput.current?.click()}>＋ 选择图片或文件</button></>}
       {attachments.length>0&&<div className="chat-pasted-images" aria-label="本轮待发送附件">{attachments.map(a=><div className="chat-pasted-image" key={a.id}>{a.preview?<img src={a.preview} alt=""/>:<span className="chat-file-icon" aria-hidden="true">文件</span>}<span>{a.name} · {attachmentStatus(a)}</span><button type="button" disabled={sending} onClick={()=>removeAttachment(a.id)} aria-label={'移除本轮附件 '+a.name}>移除</button></div>)}<small>移除只影响本轮消息；已保存的附件仍可在项目资料中查看。保存后离开会保留本轮附件；未保存时刷新页面需重新选择。</small></div>}

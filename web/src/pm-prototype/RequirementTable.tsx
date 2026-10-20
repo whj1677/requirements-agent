@@ -11,6 +11,7 @@ import {AnswerImplementation} from './AnswerImplementation';
 import {nextPendingAnswer, refinementActionCopy} from './refinement-navigation';
 import {DetailContractEditor} from './DetailContractEditor';
 import {detailEditingIssues} from './detail-contract';
+import {DraftPackageStatus,DraftRowReview,latestDraftReview} from './BusinessDraftReview';
 
 type Obj = Record<string, any>;
 type Props = {
@@ -19,6 +20,7 @@ type Props = {
   onCreate:()=>void; onResolve:(action:BlockerAction,row:Blocker)=>void;
   onQuestionReview:(id:string)=>void; onStageConfirmed:()=>void;
   onReturnAvailabilityChange?:(state:RefinementReturnState)=>void;
+  validationRequest?:number;
   focus?:{itemId?:string;questionId?:string;field?:string;scope?:boolean;nonce:number};
 };
 type Issue = {kind:string;field?:string;path?:string;item_id?:string;question_id?:string;message:string;client?:boolean};
@@ -87,6 +89,7 @@ export function RequirementTable(props:Props){
   const [stale,setStale]=useState(false),[reload,setReload]=useState(0),[archived,setArchived]=useState(()=>!!sessionStorage.getItem(key+'-previous'));
   const [focusedAnswer,setFocusedAnswer]=useState(''),[expandedBehavior,setExpandedBehavior]=useState<Record<string,boolean>>({}),[expandedDetail,setExpandedDetail]=useState<Record<string,boolean>>({});
   const [focusMode,setFocusMode]=useState(false);
+  const validationSeen=useRef<number|undefined>(undefined);
   const lock=useRef(false),root=useRef<HTMLElement>(null),current=useRef<Sheet|null>(null),baseline=useRef<Sheet|null>(null),intent=useRef({signature:'',key:''}),navigate=useNavigation();
   current.current=sheet;
   useEffect(()=>{let live=true;void api<PreparationStatus>('/projects/'+project.id+'/refinement-preparation').then(value=>{if(live)setPreparationInfo(value);}).catch(()=>{if(live)setPreparationInfo(null);});return()=>{live=false;};},[project.id,project.revision,reload]);
@@ -123,11 +126,20 @@ export function RequirementTable(props:Props){
     if(issue.kind==='question')setFocusedAnswer(issue.question_id||'');
     if(issue.kind==='requirement'&&issue.item_id&&issue.field&&Object.keys(fields).includes(issue.field))setExpandedBehavior(value=>({...value,[issue.item_id!]:true}));
     if(issue.kind==='requirement'&&issue.item_id&&(issue.path||issue.field||'').startsWith('detail_contract'))setExpandedDetail(value=>({...value,[issue.item_id!]:true}));
-    requestAnimationFrame(()=>{const row=root.current?.querySelector<HTMLElement>('[data-cell-key="'+CSS.escape(issueKey(issue))+'"]')||root.current?.querySelector<HTMLElement>('[data-requirement-id="'+CSS.escape(issue.item_id||'')+'"]');let parent=row;while(parent&&parent!==root.current){if(parent instanceof HTMLDetailsElement)parent.open=true;parent=parent.parentElement;}const input=row?.querySelector<HTMLElement>('textarea,select,input')||row?.querySelector<HTMLElement>('button')||(issue.kind==='scope'?root.current?.querySelector<HTMLElement>('.sheet-requirement select'):null);(input||row)?.scrollIntoView({block:'center',behavior:'instant'});input?.focus({preventScroll:true});});
+    requestAnimationFrame(()=>{const row=root.current?.querySelector<HTMLElement>('[data-cell-key="'+CSS.escape(issueKey(issue))+'"]')||root.current?.querySelector<HTMLElement>('[data-requirement-id="'+CSS.escape(issue.item_id||'')+'"]');let parent=row;while(parent&&parent!==root.current){if(parent instanceof HTMLDetailsElement)parent.open=true;parent=parent.parentElement;}const review=issue.field==='implementation'?row?.querySelector<HTMLElement>('.answer-implementation input[type="checkbox"]:not(:checked),.answer-implementation select'):null;const input=review||row?.querySelector<HTMLElement>('textarea,select,input')||row?.querySelector<HTMLElement>('button')||(issue.kind==='scope'?root.current?.querySelector<HTMLElement>('.sheet-requirement select'):null);(input||row)?.scrollIntoView({block:'center',behavior:'instant'});input?.focus({preventScroll:true});});
   }
   function locateSection(key:string){const row=root.current?.querySelector<HTMLElement>('[data-section="'+key+'"]');row?.scrollIntoView({block:'start',behavior:'instant'});row?.focus({preventScroll:true});}
   function locatePending(direction:1|-1=1){const id=sheet&&nextPendingAnswer(pendingSheetAnswers(project,sheet).map(q=>q.id),focusedAnswer,direction,sheetQuestions(project).map(q=>q.id));if(id)locate({kind:'question',question_id:id,message:''});}
-  useEffect(()=>{if(!sheet||!props.focus)return;const focus=props.focus;locate(focus.questionId?{kind:'question',question_id:focus.questionId,message:''}:focus.field?{kind:'context',field:focus.field,message:''}:focus.itemId?{kind:linkedClauseItems(project).some(i=>i.id===focus.itemId)?'clause':'requirement',item_id:focus.itemId,message:''}:{kind:'scope',message:''});},[props.focus?.nonce,!!sheet]);
+  useEffect(()=>{if(!sheet||!props.focus)return;const focus=props.focus;locate(focus.questionId?{kind:'question',question_id:focus.questionId,field:focus.field,message:''}:focus.field?{kind:'context',field:focus.field,message:''}:focus.itemId?{kind:linkedClauseItems(project).some(i=>i.id===focus.itemId)?'clause':'requirement',item_id:focus.itemId,message:''}:{kind:'scope',message:''});},[props.focus?.nonce,!!sheet]);
+  useEffect(()=>{
+    if(!props.active||!sheet||loaded!==project.revision||props.validationRequest===undefined||validationSeen.current===props.validationRequest)return;
+    validationSeen.current=props.validationRequest;
+    const missing=requiredIssues(sheet,sheetQuestions(project).filter(q=>inScopeQuestion(project,q,sheet.scope)),project);
+    if(missing.length){setIssues(missing.map(issue=>({...issue,client:true})));setError('还有 '+missing.length+' 项必填信息未完成，已定位第一处。');locate(missing[0]);return;}
+    const pending=pendingSheetAnswers(project,sheet);
+    if(pending.length){setNotice('已定位尚未落实到正文的回答，请核对原文位置后继续。');locate({kind:'question',question_id:pending[0].id,field:'implementation',message:''});return;}
+    requestAnimationFrame(()=>{const button=root.current?.querySelector<HTMLButtonElement>('.refinement-sheet-footer .primary');button?.scrollIntoView({block:'center'});button?.focus({preventScroll:true});});
+  },[props.validationRequest,props.active,!!sheet,loaded,project.revision]);
   function loadLatest(){if(sheet){sessionStorage.setItem(key+'-previous',JSON.stringify(sheet));setArchived(true);}const fresh=initial(project,states),next=sheet?mergeSuggestions(sheet,baseline.current,fresh):fresh;baseline.current=fresh;next.merge_conflicts=[];setSheet(next);setStale(false);setDirty(false);markSaved();sessionStorage.removeItem(key);setIssues([]);setError('');sessionStorage.setItem(key,JSON.stringify(next));sessionStorage.setItem(key+'-base',JSON.stringify(fresh));setNotice('已更新建议，保留你修改过的单元格；请核对后确认。原表格也保留为副本。');}
   async function confirm(){
     if(lock.current||!sheet||props.busy||loaded!==project.revision)return;
@@ -151,6 +163,7 @@ export function RequirementTable(props:Props){
       if(pending.length||result.destination==='refinement'){
         sessionStorage.setItem(key,JSON.stringify(accepted));sessionStorage.setItem(key+'-base',JSON.stringify(accepted));
         setNotice('回答和条款已保存，'+(pending.length?pending.length+' 项回答':'仍有回答')+'待落实到正文。可以用“AI 补充建议”一次起草，再核对原文位置；当前表格已保留。');
+        if(pending.length)locate({kind:'question',question_id:pending[0],field:'implementation',message:''});
         return;
       }
       props.onStageConfirmed();
@@ -186,8 +199,8 @@ export function RequirementTable(props:Props){
     <DraftPreparationNotice missing={missingAcceptance.map(item=>({id:item.id,title:item.title}))} preparation={preparationInfo}/>
     {(error||loadError)&&<div role="alert" className="sheet-banner-error">{error||loadError}{!!issues.length&&<button type="button" onClick={()=>locate(issues[0])}>定位第一处</button>}{loadError&&<button type="button" onClick={()=>setReload(x=>x+1)}>重新读取</button>}</div>}
     {stale&&<div className="sheet-banner-error">{(sheet.merge_conflicts?.length?sheet.merge_conflicts:['项目有新内容，本地填写已保留。']).map((message,n)=><p key={n}>{message}</p>)}<button type="button" disabled={disabled} onClick={loadLatest}>保留我的修改，继续核对</button></div>}
-    {notice&&<p className="sheet-notice" role="status">{notice}</p>}
     <div className="refinement-sheet-scroll" tabIndex={0} aria-label="滚动核对全部信息"><table aria-label="需求确认表"><colgroup><col style={{width:'20%'}}/><col style={{width:'59%'}}/><col style={{width:'21%'}}/></colgroup><thead><tr><th>需确认的信息</th><th>当前内容 · 可直接修改</th><th>填写提示与来源</th></tr></thead><tbody>
+      {latestDraftReview(project)&&<tr><td colSpan={3}><details className="sheet-draft-review"><summary>查看 AI 整理结果与未载入内容</summary><DraftPackageStatus project={project} onLocate={id=>locate({kind:'requirement',item_id:id,message:''})} onCreate={()=>void saveDraft().then(()=>navigate(props.onCreate))}/></details></td></tr>}
       <tr className="sheet-group" data-section="context" tabIndex={-1}><th colSpan={3}>1. 项目摘要 <small>已有聊天和资料整理的内容直接展示，确认前可修改</small></th></tr>
       {renderRow('适用场景','这次属于哪种需求','profile',<div className="sheet-inline"><select aria-label="需求类型" value={sheet.profile.scenario} disabled={disabled} onChange={e=>{const profile={...sheet.profile,scenario:e.target.value as ScopeProfile['scenario']};const states={...sheet.states};for(const k of ['current_state','preserve_scope'])if(!sheet.values[k]?.trim())states[k]={status:isScopeFieldRequired(k,profile)?'unknown':'not_applicable'};replace({...sheet,profile,states});}}><option value="unspecified">尚未确定</option><option value="new_product">全新产品</option><option value="new_module">新增模块</option><option value="modify_existing">修改已有功能</option></select>{sheet.profile.scenario==='new_module'&&<select aria-label="模块关联" disabled={disabled} value={sheet.profile.dependencies} onChange={e=>{const profile={...sheet.profile,dependencies:e.target.value as ScopeProfile['dependencies']};const states={...sheet.states};for(const k of ['current_state','preserve_scope'])if(!sheet.values[k]?.trim())states[k]={status:isScopeFieldRequired(k,profile)?'unknown':'not_applicable'};replace({...sheet,profile,states});}}><option value="unknown">关联尚未确定</option><option value="independent">独立模块</option><option value="shared">涉及其他模块</option></select>}</div>,false,'新产品和独立模块不要求填写现状与保持项。')}
       {Object.entries(scopeLabels).map(([field,label])=>{const state=sheet.states[field]||{status:'unknown'},optional=!isScopeFieldRequired(field,sheet.profile),proposal=project.product_context_proposal?.[field],fromAI=!String(project.product_context?.[field]||'').trim()&&!!proposal;
@@ -198,7 +211,7 @@ export function RequirementTable(props:Props){
       {reqs.map(item=>{const row=sheet.rows[item.id];if(!row)return null;const included=sheet.scope.includes(item.id),confirmed=states.find(s=>s.requirement_id===item.id)?.current;return <React.Fragment key={item.id}>
         <tr className="sheet-requirement" data-requirement-id={item.id}><th scope="row">{item.title}</th><td><label className="sheet-inline">本期范围<select aria-label={item.title+' 本期范围'} disabled={disabled} value={included?'included':'excluded'} onChange={e=>replace({...sheet,scope:e.target.value==='included'?[...sheet.scope,item.id]:sheet.scope.filter(id=>id!==item.id)})}><option value="included">本期包含</option><option value="excluded">暂不纳入本期</option></select></label></td><td><span className="sheet-origin">{confirmed?'已确认内容':row.candidate_id?'AI 修订建议':'待确认草稿'}</span><button type="button" onClick={()=>props.onSources((project.items.find(i=>i.id===row.candidate_id)||item).source_refs||[])}>查看来源</button></td></tr>
         {included?<>
-          {renderRow(item.title,'需求内容','requirement-'+item.id+'-statement',<textarea rows={4} aria-label={item.title+' 需求内容'} disabled={disabled} value={row.statement} onChange={e=>updateRow(item.id,{statement:e.target.value})}/>,true)}
+          {renderRow(item.title,'需求内容','requirement-'+item.id+'-statement',<textarea rows={4} aria-label={item.title+' 需求内容'} disabled={disabled} value={row.statement} onChange={e=>updateRow(item.id,{statement:e.target.value})}/>,true,<DraftRowReview project={project} requirementId={item.id} candidateId={row.candidate_id} disabled={disabled} onSources={props.onSources} onRetry={()=>void saveDraft().then(()=>navigate(()=>props.onRecommend(item.id,aiInstructions('请只重新整理这条需求，保留已有资料和人工内容，未知决定保持待确认。',{...sheet,rows:{[item.id]:row}},baseline.current))))}/>)}
           {renderRow(item.title,'本次改动','requirement-'+item.id+'-change_type',<select aria-label={item.title+' 本次改动'} disabled={disabled} value={row.change_type} onChange={e=>updateRow(item.id,{change_type:e.target.value})}>{Object.entries(changeLabels).map(([v,l])=><option key={v} value={v}>{l}</option>)}</select>,true)}
           {renderRow(item.title,'业务说明','requirement-'+item.id+'-behavior-summary',<>
             <button type="button" aria-expanded={!!expandedBehavior[item.id]} aria-label={(expandedBehavior[item.id]?'收起':'展开')+'业务说明：'+item.title} onClick={()=>setExpandedBehavior(value=>({...value,[item.id]:!value[item.id]}))}>{expandedBehavior[item.id]?'收起业务说明':'展开业务说明'}</button>
@@ -223,7 +236,7 @@ export function RequirementTable(props:Props){
         <LinkedClauseEditor item={item} row={row} disabled={disabled} onChange={patch=>updateClause(item.id,patch)}/>,true,
         <><span className="sheet-origin">{item.selection_status==='candidate'?'待采纳规则 · 随本次确认采纳':'已保存规则 · 随本次重新核对'}</span><p>请确认条款与已填写回答一致；不同业务范围的规则分别保留。</p><button type="button" onClick={()=>props.onSources(item.source_refs||[])}>查看规则来源：{item.title}</button>{questions.filter(q=>inScopeQuestion(project,q,sheet.scope)&&clearAnswer(sheet.answers[q.id]||'')&&(q.related_refs||[]).includes(item.id)).map(q=><p key={q.id}>关联回答：{q.question}<br/>{sheet.answers[q.id]}<button type="button" onClick={()=>locate({kind:'question',question_id:q.id,message:''})}>返回这条回答</button></p>)}</>);})}
     </tbody></table></div>
-    <footer className="refinement-sheet-footer"><div><strong>{working?'正在检查并确认…':actionCopy.status}</strong><small>{actionCopy.detail}</small></div><button type="button" disabled={disabled} onClick={()=>void saveDraft()}>保存草稿</button><button type="button" className="primary" disabled={disabled||!!loadError} onClick={()=>void confirm()}>{working?'正在确认…':actionCopy.label}</button></footer>
+    <footer className="refinement-sheet-footer"><div title={actionCopy.detail}><strong role={notice&&!working?'status':undefined}>{working?'正在检查并确认…':notice||actionCopy.status}</strong><small>{actionCopy.detail}</small></div><button type="button" disabled={disabled} onClick={()=>void saveDraft()}>保存草稿</button><button type="button" className="primary" disabled={disabled||!!loadError} onClick={()=>void confirm()}>{working?'正在确认…':actionCopy.label}</button></footer>
     {archived&&<button type="button" className="sheet-restore" disabled={disabled} onClick={()=>{try{const old=JSON.parse(sessionStorage.getItem(key+'-previous')||'null');if(old){replace(old);setStale(old.revision!==project.revision);setNotice('已恢复上次草稿。');}}catch{}}}>恢复上次表格草稿</button>}
   </section>;
 }

@@ -15,7 +15,7 @@ import { canRecoverDraft } from './task-failure';
 import { mergeProjectWrite } from './project-update';
 import { contextSnapshot } from './scope-draft';
 import { BlockerPanel } from './blockers';
-import { BlockerFocus, blockerDestination, focusBlockerElement, stageBlockers } from './blocker-navigation';
+import { BlockerFocus, blockerDestination, focusBlockerElement, stageBlockers, firstActionableBlocker } from './blocker-navigation';
 import { ProgressControls, useTaskProgress } from './task-progress';
 import { StageNavigation, StageLock, stageAccess, intakeStatusLabel, isScopeQuestion, questionPhase } from './workflow-access';
 import { ConnectedDestination, ConnectedWorkspace } from './pm-prototype/ConnectedWorkspace';
@@ -350,7 +350,7 @@ export function Workspace({ id, active, assistantEntryNonce, assistantEntryTask 
     }catch(e){setError((e as Error).message);}
   });}
   function returnToBlockers(){if(!blockerTask)return;if(blockerTask.phase<3){openMain({step:'refine',review:true});return;}guard(()=>{const target=blockerTask.phase;setPhase(target);sessionStorage.setItem('ra-phase-'+id,String(target));setBlockerTask(null);setTimeout(()=>focusBlockerElement('blockers-'+id+'-'+target),80);});}
-  function blockedCheckpoint(latest:Project){setP(latest);projectRef.current=latest;setTimeout(()=>focusBlockerElement('blockers-'+id+'-'+phase),80);}
+  function blockedCheckpoint(latest:Project){setP(latest);projectRef.current=latest;const target=firstActionableBlocker(latest,stageBlockers(latest,phase));if(target)resolveBlocker(target.action,target.row,phase);else setTimeout(()=>focusBlockerElement('blockers-'+id+'-'+phase),80);}
   function openHelp(target:Obj){guard(()=>{
     if(target.kind==='document'){
       const artifact=Object.values(projectRef.current?.documents||{}).find(document=>document.id===target.id);
@@ -494,7 +494,7 @@ export function Workspace({ id, active, assistantEntryNonce, assistantEntryTask 
             discussionPanel={p.documents[docType]&&<DocumentDiscussionPanel summaryOnly onOpenQuestion={openQuestion} project={p} tasks={tasks} runs={runs} document={p.documents[docType]} busy={busy} running={running} mutate={mutate} focusQuestion={documentQuestion} onRefresh={retry} onSources={refs=>shared.onSource(refs||[])} onScope={()=>openMain({step:'refine',scope:true})} onClarify={questionId=>act(()=>planAction('clarify',undefined,{kind:'question',id:questionId,label:p.questions.find(q=>q.id===questionId)?.question||'章节补充问题'}))}/>}/>
           <ProductCheckpoint onBlocked={blockedCheckpoint} p={p} phase={4} busy={busy||running} mutate={mutate} go={go} getProject={()=>projectRef.current||p}/>
         </div>
-        <section hidden={phase!==5||!stageAccess(p,5).allowed} id={'confirmation-'+id}><ConfirmationPanel onOpenDocument={kind=>openDetails(4,kind)} onClarify={openQuestion} p={p} busy={busy} setBusy={setBusy} setError={setError} setTab={navigate} setStage={setStage} setShowAdvanced={setShowAdvanced} root={root} act={act} refresh={refresh} onReview={()=>act(()=>planAction('review'))} onResolveReview={()=>openReviewFindings()}/></section>
+        <section hidden={phase!==5||!stageAccess(p,5).allowed} id={'confirmation-'+id}><ConfirmationPanel onResolveBlocker={(action,row)=>resolveBlocker(action,row,5)} onOpenDocument={kind=>openDetails(4,kind)} onClarify={openQuestion} p={p} busy={busy} setBusy={setBusy} setError={setError} setTab={navigate} setStage={setStage} setShowAdvanced={setShowAdvanced} root={root} act={act} refresh={refresh} onReview={()=>act(()=>planAction('review'))} onResolveReview={()=>openReviewFindings()}/></section>
         </div>
       </section>
     </div>

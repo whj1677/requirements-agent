@@ -76,7 +76,7 @@ export function ProductCheckpoint({p,phase,busy,mutate,go,getProject,onAnalyze,a
         save:async()=>{await saveDrafts(draftKey);return phase===1||dirty?await save(true):getProject?.()||p;},
         read:()=>api<Project>('/projects/'+p.id),
         check:(revision,hash)=>mutate('/stage-checks/'+(phase+1),{expected_revision:revision,expected_hash:hash}),
-        blocked:latest=>{onBlocked?.(latest);focusBlockerElement('blockers-'+p.id+'-'+phase);}
+        blocked:latest=>{if(onBlocked)onBlocked(latest);else focusBlockerElement('blockers-'+p.id+'-'+phase);}
       });
       go(next);
     }catch(e){setError((e as Error).message);throw e;}finally{checkingRef.current=false;setChecking(false);}

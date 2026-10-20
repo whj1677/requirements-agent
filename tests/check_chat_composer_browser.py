@@ -253,6 +253,11 @@ async def run(args):
                   element.dispatchEvent(new ClipboardEvent('paste',{clipboardData:data,bubbles:true,cancelable:true}));
                 }''', encoded)
                 await page.locator('.connected-workspace:visible .connected-steps button').nth(1).click()
+                await page.locator('.connected-workspace:visible .connected-entry-error').get_by_text('聊天框还有未发送的文字或附件。请先发送，或移除本轮输入，再进入完善需求。', exact=True).wait_for()
+                assert not store.get(image_save_pid)['sources'], 'entering refinement silently saved an unsent attachment'
+                # Entering refinement preserves unsent chat input. Leaving for a
+                # different project still exercises the actual save-before-leave dialog.
+                await page.get_by_role('button', name='图片待识别隔离项目').click()
                 leave_dialog = page.get_by_role('dialog', name='未保存的修改')
                 await leave_dialog.wait_for()
                 await leave_dialog.get_by_role('button', name='保存后离开').click()

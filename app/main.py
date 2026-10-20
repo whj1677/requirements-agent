@@ -694,8 +694,7 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
         p=store.get(pid)
         require(p['revision']==expected_revision,'STALE_REVISION','页面已过期',409)
         if purpose=='chat_attachment':
-            require(Path(file.filename or '').suffix.lower() in
-                    ('.txt','.md','.docx','.doc','.xlsx','.xls','.pptx','.ppt','.pdf','.png','.jpg','.jpeg','.webp'),
+            require(Path(file.filename or '').suffix.lower() in SOURCE_EXTENSIONS,
                     'SOURCE_FAILED','请选择支持的文档或 PNG、JPEG、WebP 图片')
         s=await asyncio.to_thread(save_source,store,Path(file.filename or 'unknown').name,data,
                                   'goal' if purpose=='chat_attachment' else purpose)

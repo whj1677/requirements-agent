@@ -221,13 +221,13 @@ async def exercise(page, store, fixtures, output, report, expect):
     await expect(connected.locator('.refinement-sheet-footer').get_by_role('button', name='确认并进入交付', exact=True)).to_be_visible()
     await delivery.click()
     await expect(connected).to_have_attribute('data-step', 'refine')
-    await expect(connected.locator('.connected-error')).to_contain_text('确认并进入交付')
+    await expect(connected.locator('.refinement-sheet-footer').get_by_role('button', name='确认并进入交付', exact=True)).to_be_focused()
     await expect(field).to_have_value(changed)
     assert store.get(doc_id) == initial, 'Editing or blocked navigation changed server state'
     report['checks'].append('Unsaved edit cannot use the top delivery step to bypass explicit table confirmation')
 
     await connected.locator('.refinement-sheet-footer').get_by_role('button', name='保存草稿', exact=True).click()
-    await expect(connected.locator('.sheet-notice')).to_contain_text('草稿已保存在当前浏览器')
+    await expect(connected.locator('.refinement-sheet-footer').get_by_role('status')).to_contain_text('草稿已保存在当前浏览器')
     await delivery.click()
     await expect(connected).to_have_attribute('data-step', 'refine')
     await expect(field).to_have_value(changed)

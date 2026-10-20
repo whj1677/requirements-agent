@@ -7,7 +7,7 @@ const EXTENSION: Record<string, string> = {
   'image/jpeg': '.jpg',
   'image/webp': '.webp',
 }
-const DOCUMENT_EXTENSIONS = new Set(['.txt', '.md', '.docx', '.doc', '.xlsx', '.xls', '.pptx', '.ppt', '.pdf'])
+const DOCUMENT_EXTENSIONS = new Set(['.txt', '.md', '.docx', '.doc', '.xlsx', '.xls', '.pptx', '.ppt', '.pdf', '.html', '.htm'])
 
 let generatedNameSerial = 0
 

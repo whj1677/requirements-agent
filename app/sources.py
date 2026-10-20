@@ -24,7 +24,7 @@ from .material_images import word_images, image_mime
 MAX_BYTES = 12 * 1024 * 1024
 MAX_TEXT_CHARS = 2_000_000
 MAX_EXCERPTS = 20_000
-SOURCE_EXTENSIONS = ['.txt', '.md', '.docx', '.doc', '.xlsx', '.xls', '.pptx', '.ppt', '.pdf', '.png', '.jpg', '.jpeg', '.webp']
+SOURCE_EXTENSIONS = ['.txt', '.md', '.docx', '.doc', '.xlsx', '.xls', '.pptx', '.ppt', '.pdf', '.html', '.htm', '.png', '.jpg', '.jpeg', '.webp']
 
 
 def validate_extraction(rows, status):
@@ -131,6 +131,25 @@ def parse_bytes(title, data):
     if ext in ('.txt', '.md'):
         text = data.decode('utf-8-sig')
         rows = [(f'行 {n}', t) for n, t in enumerate(text.splitlines(), 1) if t.strip()]
+    elif ext in ('.html', '.htm'):
+        soup = BeautifulSoup(data, 'html.parser')
+        incomplete = bool(soup.find(['script', 'img', 'iframe', 'object', 'embed', 'canvas', 'svg', 'video', 'audio', 'form']))
+        title_text = soup.title.get_text(' ', strip=True) if soup.title else ''
+        for node in soup(['head', 'title', 'script', 'style', 'template', 'noscript', 'iframe', 'object', 'embed']):
+            node.decompose()
+        for node in soup.find_all(True):
+            if node.attrs is not None and (node.has_attr('hidden') or
+                    str(node.get('aria-hidden', '')).lower() == 'true' or
+                    re.search(r'(?:display\s*:\s*none|visibility\s*:\s*hidden)', node.get('style', ''), re.I)):
+                node.decompose()
+        text = soup.get_text('\n', strip=True)
+        require(bool(text.strip()), 'SOURCE_FAILED', 'HTML 未提取到静态正文；脚本生成、图片或嵌入内容尚未读取，请提供文字版或截图')
+        rows = ([("网页标题", title_text)] if title_text else []) + [
+            (f'HTML 文本段 {n}', line) for n, line in enumerate(text.splitlines(), 1) if line.strip()]
+        status = 'partial' if incomplete else 'read'
+        reason = '已提取本地 HTML 静态文字；未执行脚本、未访问外部资源，页面视觉未核验'
+        if incomplete:
+            reason += '；脚本生成内容、图片或嵌入对象尚未读取'
     elif ext == '.docx':
         check_package(data)
         doc = Document(io.BytesIO(data))
@@ -178,6 +197,7 @@ def parse_bytes(title, data):
         raise Problem('OFFICE_REQUIRED', '旧版 Office 文件需要本机 Office 读取')
     elif ext == '.pdf':
         reader = PdfReader(io.BytesIO(data))
+        require(not reader.is_encrypted, 'SOURCE_FAILED', 'PDF 需要密码或读取权限；当前未提取内容，请提供有权读取的文字版或截图')
         require(len(reader.pages) <= 200, 'SOURCE_FAILED', 'PDF 超过 200 页')
         for i, page in enumerate(reader.pages, 1):
             try:
@@ -188,6 +208,8 @@ def parse_bytes(title, data):
                 rows.append((f'第 {i} 页', text))
             else:
                 status, reason = 'partial', reason + f'第 {i} 页未提取文字；'
+        require(bool(rows), 'SOURCE_FAILED', 'PDF 未提取到文字，可能是扫描页或图片；尚未读取其内容，请提供文字版或截图')
+        reason += '已提取可读取的逐页文字；图片、扫描内容与页面视觉未核验'
     elif ext in ('.png', '.jpg', '.jpeg', '.webp'):
         image = Image.open(io.BytesIO(data))
         require(image.format in ('PNG', 'JPEG', 'WEBP') and image.width * image.height <= 25_000_000, 'SOURCE_FAILED', '图片格式或像素数不支持')
@@ -196,7 +218,7 @@ def parse_bytes(title, data):
         rows = [('整图', '图片原始像素；尚未视觉分析')]
         status = 'awaiting_vision'
     else:
-        raise Problem('SOURCE_FAILED', '支持 Word、Excel、PowerPoint、TXT、MD、PDF、PNG、JPEG、WebP')
+        raise Problem('SOURCE_FAILED', '支持 Word、Excel、PPT/PPTX、TXT、MD、PDF、HTML/HTM、PNG、JPEG、WebP')
     validate_extraction(rows, status)
     return rows, status, reason, image_mime
 

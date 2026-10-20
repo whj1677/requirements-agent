@@ -15,7 +15,7 @@ sys.path.insert(0, str(ROOT))
 from tests.check_answer_implementation_browser import enter, run
 from tests.check_detail_prd_browser import seed, TITLE
 
-VIEWPORTS = ((1920, 1080), (1536, 864), (1280, 720), (1280, 640), (1093, 614))
+VIEWPORTS = ((1920, 1080), (1536, 864), (1366, 650), (1280, 720), (1280, 640), (1093, 614), (1093, 550), (946, 540))
 
 
 def laptop_fixture(store):
@@ -91,8 +91,9 @@ async def exercise(page, store, _initial, _chapter, output, report, expect):
         await statement.fill(last_note)
         input_handle = await statement.element_handle()
         normal = await layout_metrics(page, work, f'{width}x{height}-normal', report)
-        if (width, height) == (1093, 614):
-            assert normal['table']['visibleHeight'] >= 190, 'Laptop toolbar leaves too little room for requirement editing'
+        if width >= 1001 and height <= 900:
+            assert normal['table']['visibleHeight'] >= height * .5, 'At least half the short laptop viewport must remain available for editing'
+        assert await statement.evaluate('input => parseFloat(getComputedStyle(input).fontSize) >= 14'), 'Laptop space must not come from shrinking editable text'
         await page.screenshot(path=str(output/f'{width}x{height}-normal.png'))
         await work.get_by_role('button', name='专注核对', exact=True).click()
         await expect(work.get_by_role('button', name='退出专注核对', exact=True)).to_have_attribute('aria-pressed', 'true')
@@ -106,8 +107,9 @@ async def exercise(page, store, _initial, _chapter, output, report, expect):
         await expect(statement).to_have_value(last_note)
         await layout_metrics(page, work, f'{width}x{height}-restored', report)
         await work.get_by_role('button', name='保存草稿', exact=True).click()
+        await expect(work.locator('.refinement-sheet-footer').get_by_role('status')).to_contain_text('保存在当前浏览器')
         assert store.get(pid) == initial, 'View controls or browser draft save changed server data'
-    report['checks'].append('五种有效视口直达第六条需求；普通/专注/退出三态无横向溢出，底部按钮完整可见且命中；1093×614 普通模式正文至少190px')
+    report['checks'].append('八种有效视口直达第六条需求；普通/专注/退出三态无横向溢出，底部按钮完整可见且命中；短笔记本普通模式正文至少占窗口一半，编辑字号不低于14px')
     report['checks'].append('专注模式进入和退出均保持同一个输入DOM及精确人工文字；保存草稿不写后端')
 
     await page.set_viewport_size(dict(width=1280, height=640))
@@ -211,6 +213,13 @@ async def exercise(page, store, _initial, _chapter, output, report, expect):
     await page.screenshot(path=str(output/'enum-validation-after-fix.png'))
     assert store.get(pid) == initial
     report['checks'].append('真实确认点击遇到缺枚举时自动展开折叠组/对象并聚焦；输入修复后仍展开；全程不发写请求且后端数据未改')
+    from tests.check_refinement_usability_browser import long_table
+    await page.set_viewport_size(dict(width=946,height=540))
+    await long_table(page,store,output,report,expect)
+    work=page.locator('.connected-workspace:visible')
+    await layout_metrics(page,work,'946x540-pending-navigation',report)
+    assert await work.locator('.sheet-navigation').evaluate('nav=>nav.scrollWidth<=nav.clientWidth+1'), 'Pending-answer navigation must wrap instead of being clipped on short laptops'
+    report['checks'].append('946×540 长表含12项待落实回答，上一项下一项可点击，定位栏不被横向裁切')
     report['followup_failures'] = followup_failures
     assert not followup_failures, '; '.join(followup_failures)
 
