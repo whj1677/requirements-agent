@@ -188,6 +188,8 @@ async def run(args):
                     await dialog.wait_for()
                     sources = attachment_sources(store, desktop['id'])
                     assert len(sources) == 2 and provider.calls == 2
+                    await dialog.locator('.task-source-scope > summary').click()
+                    await dialog.get_by_text('查看来源编号',exact=True).click()
                     plan_text = await dialog.inner_text()
                     assert all(source['id'] in plan_text for source in sources)
                     await page.screenshot(path=str(args.output / 'desktop-document-plan.png'))

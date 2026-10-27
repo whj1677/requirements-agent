@@ -34,6 +34,9 @@ async def review_generated_draft(store, provider, original, staged, run, config,
         require(store.get_record(pid, rid, 'run')['status'] != 'cancelled',
                 'CANCELLED', '任务已取消；未发送决定复核请求')
         messages = request['messages']
+        if config.get('structured_output_protocol') == 'responses-json-schema-v1':
+            messages[0] = dict(messages[0], content=messages[0]['content']+'\n可信任务头：'+dumps(dict(
+                stage='decision_semantics', transport_protocol='responses-json-schema-v1', schema=request['schema'])))
         check_context(messages, config)
         if budget:
             budget.available()

@@ -138,3 +138,13 @@ def test_non_prd_reader_is_unchanged(project):
     before = reader_document(artifact)
     artifact['prewrite_snapshot'] = copy.deepcopy(project['documents']['prd']['prewrite_snapshot'])
     assert reader_document(artifact) == before
+
+def test_semantic_review_includes_generated_prewrite_section_without_assuming_canonical_id(project):
+    from app.semantic_quality import validate_document_findings
+    artifact = project['documents']['prd']
+    before = copy.deepcopy(artifact)
+    validate_document_findings([], project, [])
+    # The generated warnings remain visible; avoiding the crash must not remove
+    # their frozen text or mutate the signed canonical document.
+    assert any('.prewrite_snapshot.findings[' in location for location in readable_document_blocks(artifact))
+    assert artifact == before

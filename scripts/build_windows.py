@@ -4,6 +4,7 @@ Run with the project Python after installing packaging/requirements-build.txt.
 All generated files go under --output. No daily service, data or .env is read.
 """
 import argparse
+import base64
 from datetime import datetime, timezone
 import hashlib
 import html
@@ -12,13 +13,14 @@ import json
 import os
 from pathlib import Path
 import platform
+import re
 import shutil
 import subprocess
 import sys
 from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
-VERSION = '1.2.6'
+VERSION = '1.2.7'
 KIT = 'requirements-agent-codex-kit-v1.1'
 LEGACY_MODULES = ('activation', 'licensing', 'license_trust')
 DOCUMENTS = ('user-guide.md', 'windows-installation.md')
@@ -48,6 +50,10 @@ def required_inputs(root):
     files += sorted(path for path in (root / 'app').glob('*')
                     if path.suffix in {'.py', '.js', '.ps1'} and path.stem not in LEGACY_MODULES)
     files += [root / 'docs' / name for name in DOCUMENTS]
+    for name in DOCUMENTS:
+        for reference in re.findall(r'!\[[^\]]*\]\(([^)]+)\)',(root/'docs'/name).read_text('utf-8')):
+            image=guide_image(root,reference)
+            files.append(image)
     files += sorted(path for path in (root / 'packaging').rglob('*')
                     if path.is_file() and path.suffix.lower() in {'.py', '.iss', '.isl', '.txt'}
                     and '__pycache__' not in path.parts)
@@ -126,6 +132,15 @@ def installed_requirements(root):
     return found
 
 
+def guide_image(root,reference):
+    address=urlsplit(reference)
+    if address.scheme or address.netloc:raise RuntimeError('Guide images must be bundled local assets')
+    path=root/'docs'/address.path
+    if path.is_symlink() or not path.resolve().is_relative_to((root/'docs/images').resolve()) or not path.is_file() or path.suffix.lower() not in {'.png','.jpg','.jpeg','.webp'}:
+        raise RuntimeError('Guide image missing or outside the allowed image folder')
+    return path
+
+
 def render_customer_guides(root, destination):
     """Make local HTML guides usable without a Markdown editor or a server."""
     import markdown
@@ -138,6 +153,11 @@ def render_customer_guides(root, destination):
         text = source.read_text('utf-8')
         shutil.copy2(source, destination / name)
         document = BeautifulSoup(markdown.markdown(text, extensions=['tables', 'fenced_code', 'toc']), 'html.parser')
+        for image in document.find_all('img',src=True):
+            path=guide_image(root,image['src']);relative=path.relative_to(root/'docs')
+            copied=destination/relative;copied.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(path,copied)
+            mime={'.png':'image/png','.jpg':'image/jpeg','.jpeg':'image/jpeg','.webp':'image/webp'}[path.suffix.lower()]
+            image['src']='data:'+mime+';base64,'+base64.b64encode(path.read_bytes()).decode('ascii')
         for link in document.find_all('a', href=True):
             address = urlsplit(link['href'])
             if address.scheme or address.netloc or not address.path:
@@ -159,7 +179,7 @@ def render_customer_guides(root, destination):
         page += 'h1{font-size:30px;line-height:1.4}h2{margin-top:36px;font-size:23px}h3{margin-top:28px}'
         page += 'pre{overflow:auto;background:#f1f4f7;padding:16px;border-radius:6px}code{font-family:Consolas,monospace}'
         page += 'table{width:100%;border-collapse:collapse}th,td{padding:10px 12px;border:1px solid #d7dde5;text-align:left}'
-        page += 'th{background:#f1f4f7}li{margin:8px 0}@media(max-width:700px){main{margin:0;padding:20px}}'
+        page += 'th{background:#f1f4f7}li{margin:8px 0}img{max-width:100%;height:auto;border:1px solid #d7dde5;border-radius:6px}@media(max-width:700px){main{margin:0;padding:20px}}'
         page += '</style></head><body><main><nav><a href="windows-installation.html">安装与模型配置</a>'
         page += '<a href="user-guide.html">五步业务使用说明</a></nav>' + str(document) + '</main></body></html>'
         (destination / (name[:-3] + '.html')).write_text(page, 'utf-8')

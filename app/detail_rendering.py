@@ -16,6 +16,8 @@ from .core import digest
 GROUP_TITLES = {'fields': '字段属性', 'interactions': '交互逻辑',
                 'flow': '业务流程说明', 'state_transitions': '状态变化'}
 VERSION = 'detail-rendering-4'
+FLOW_PALETTE=dict(line='#526d7b',edge_text='#385466',decision='#fff6e0',
+                  node='#edf5f8',border='#456778',text='#183849')
 
 
 def detail_hash(item):
@@ -286,18 +288,30 @@ def flow_layout(flow):
                 font_size=font_size,line_height=line_height,edge_font_size=12,edge_line_height=15)
 
 
-def flow_svg(flow, title='业务流程'):
+def _label_canvas(layout):
+    """Reserve export-only room for full connector IDs without moving nodes."""
+    width,height=layout['width'],layout['height']
+    for route in layout['routes']:
+        for index,line in enumerate(route['lines']):
+            width=max(width,math.ceil(route['x']+len(line)*layout['edge_font_size']+16))
+            height=max(height,math.ceil(route['y']+index*layout['edge_line_height']+8))
+    return dict(layout,width=width,height=height)
+
+
+def flow_svg(flow, title='业务流程', *, palette=None,fit_labels=False):
+    colors=palette or FLOW_PALETTE
     layout = flow_layout(flow)
+    if fit_labels:layout=_label_canvas(layout)
     width, height = layout['width'], layout['height']
     def esc(value):
         return html.escape(str(value), quote=True)
     parts = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" role="img">',
              '<title>'+esc(title)+'</title><rect width="100%" height="100%" fill="#ffffff"/>',
-             '<defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8 Z" fill="#526d7b"/></marker></defs>']
+             f'<defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8 Z" fill="{colors["line"]}"/></marker></defs>']
     for route in layout['routes']:
         parts.append('<g><title>'+esc(route['id']+'：'+(route['condition'] or '顺序继续'))+'</title>')
         points = ' '.join(f'{x},{y}' for x, y in route['points'])
-        parts.append(f'<polyline points="{points}" fill="none" stroke="#526d7b" stroke-width="1.8" marker-end="url(#arrow)"/>')
+        parts.append(f'<polyline points="{points}" fill="none" stroke="{colors["line"]}" stroke-width="1.8" marker-end="url(#arrow)"/>')
         parts.append('</g>')
     # Paint labels after every connector so later return lines cannot overwrite
     # an earlier edge number. Full conditions remain accessible as SVG titles.
@@ -305,25 +319,26 @@ def flow_svg(flow, title='业务流程'):
         parts.append('<g><title>'+esc(route['id']+'：'+(route['condition'] or '顺序继续'))+'</title>')
         for n, line in enumerate(route['lines']):
             y = route['y']+n*layout['edge_line_height']
-            parts.append(f'<text x="{route["x"]}" y="{y}" font-family="Microsoft YaHei,Noto Sans CJK SC,sans-serif" font-size="{layout["edge_font_size"]}" fill="#385466" paint-order="stroke" stroke="white" stroke-width="4">{esc(line)}</text>')
+            parts.append(f'<text x="{route["x"]}" y="{y}" font-family="Microsoft YaHei,Noto Sans CJK SC,sans-serif" font-size="{layout["edge_font_size"]}" fill="{colors["edge_text"]}" paint-order="stroke" stroke="white" stroke-width="4">{esc(line)}</text>')
         parts.append('</g>')
     for box in layout['boxes'].values():
         x, y, w, h = box['x'], box['y'], box['width'], box['height']
-        fill = '#fff6e0' if box['kind'] == 'decision' else '#edf5f8'
+        fill = colors['decision'] if box['kind'] == 'decision' else colors['node']
         if box['kind'] == 'decision':
             points = f'{x+w/2},{y} {x+w},{y+h/2} {x+w/2},{y+h} {x},{y+h/2}'
-            parts.append(f'<polygon points="{points}" fill="{fill}" stroke="#456778" stroke-width="1.6"/>')
+            parts.append(f'<polygon points="{points}" fill="{fill}" stroke="{colors["border"]}" stroke-width="1.6"/>')
         else:
             radius = 30 if box['kind'] in ('start', 'end') else 7
-            parts.append(f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="{radius}" fill="{fill}" stroke="#456778" stroke-width="1.6"/>')
+            parts.append(f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="{radius}" fill="{fill}" stroke="{colors["border"]}" stroke-width="1.6"/>')
         start_y = y+(h-len(box['lines'])*layout['line_height'])/2+layout['font_size']
         for n, line in enumerate(box['lines']):
-            parts.append(f'<text x="{x+w/2}" y="{start_y+n*layout["line_height"]}" text-anchor="middle" font-family="Microsoft YaHei,Noto Sans CJK SC,sans-serif" font-size="{layout["font_size"]}" fill="#183849">{esc(line)}</text>')
+            parts.append(f'<text x="{x+w/2}" y="{start_y+n*layout["line_height"]}" text-anchor="middle" font-family="Microsoft YaHei,Noto Sans CJK SC,sans-serif" font-size="{layout["font_size"]}" fill="{colors["text"]}">{esc(line)}</text>')
     parts.append('</svg>')
     return ''.join(parts), layout
 
 
-def _flow_image(layout):
+def _flow_image(layout, palette=None):
+    colors=palette or FLOW_PALETTE
     from PIL import Image, ImageDraw, ImageFont
     scale = 2.5
     image = Image.new('RGB', (math.ceil(layout['width']*scale), math.ceil(layout['height']*scale)), 'white')
@@ -339,29 +354,30 @@ def _flow_image(layout):
     def xy(points):
         return [(round(x*scale), round(y*scale)) for x, y in points]
     for route in layout['routes']:
-        points = route['points']; draw.line(xy(points), fill='#526d7b', width=3)
+        points = route['points']; draw.line(xy(points), fill=colors['line'], width=3)
         x, y = points[-1]; px, py = next((a,b) for a,b in reversed(points[:-1]) if (a,b)!=(x,y))
         angle = math.atan2(y-py, x-px)
         arrow = [(x,y), (x-10*math.cos(angle-.4), y-10*math.sin(angle-.4)), (x-10*math.cos(angle+.4), y-10*math.sin(angle+.4))]
-        draw.polygon(xy(arrow), fill='#526d7b')
+        draw.polygon(xy(arrow), fill=colors['line'])
     for route in layout['routes']:
         for n, line in enumerate(route['lines']):
-            draw.text((route['x']*scale, (route['y']+n*layout['edge_line_height'])*scale), line, font=small, anchor='ls', fill='#385466', stroke_width=3, stroke_fill='white')
+            draw.text((route['x']*scale, (route['y']+n*layout['edge_line_height'])*scale), line, font=small, anchor='ls', fill=colors['edge_text'], stroke_width=3, stroke_fill='white')
     for box in layout['boxes'].values():
         x,y,w,h=box['x'],box['y'],box['width'],box['height']
-        fill='#fff6e0' if box['kind']=='decision' else '#edf5f8'
+        fill=colors['decision'] if box['kind']=='decision' else colors['node']
         if box['kind']=='decision':
-            draw.polygon(xy([(x+w/2,y),(x+w,y+h/2),(x+w/2,y+h),(x,y+h/2)]), fill=fill, outline='#456778', width=2)
+            draw.polygon(xy([(x+w/2,y),(x+w,y+h/2),(x+w/2,y+h),(x,y+h/2)]), fill=fill, outline=colors['border'], width=2)
         else:
-            draw.rounded_rectangle(xy([(x,y),(x+w,y+h)]), radius=(30 if box['kind'] in ('start','end') else 7)*scale, fill=fill, outline='#456778', width=2)
+            draw.rounded_rectangle(xy([(x,y),(x+w,y+h)]), radius=(30 if box['kind'] in ('start','end') else 7)*scale, fill=fill, outline=colors['border'], width=2)
         start_y=y+(h-len(box['lines'])*layout['line_height'])/2+layout['font_size']
         for n,line in enumerate(box['lines']):
-            draw.text(((x+w/2)*scale,(start_y+n*layout["line_height"])*scale),line,font=font,anchor='ms',fill='#183849')
+            draw.text(((x+w/2)*scale,(start_y+n*layout["line_height"])*scale),line,font=font,anchor='ms',fill=colors['text'])
     return image, font_file, scale
 
 
-def flow_png(flow):
-    image, _, _ = _flow_image(flow_layout(flow))
+def flow_png(flow, *, palette=None,fit_labels=False):
+    layout=flow_layout(flow)
+    image, _, _ = _flow_image(_label_canvas(layout) if fit_labels else layout,palette)
     out=io.BytesIO();image.save(out,format='PNG')
     return out.getvalue()
 

@@ -124,7 +124,7 @@ def apply_batch_preview(project, preview, store):
     displayed_ids.update(ac['id'] for row in preview['rows'] for ac in row['acceptance_items'])
     for row in preview['rows']:
         latest = _question_results(project, row['requirement_id'], displayed_ids, row['confirmed_question_ids'],
-                                    check_implementations=False)
+                                    answer_implementations=preview.get('answer_implementations'),check_implementations=False)
         latest = {result['question_id']: result for result in latest}
         for result in row['question_results']:
             if result['confirm']:

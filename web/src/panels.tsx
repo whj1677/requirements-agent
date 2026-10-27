@@ -32,8 +32,11 @@ export function ConfirmationPanel({ p, busy, setBusy, setError, setTab, setStage
 // Bind to the submitted document type, never infer it from a translated label
 // or from whichever tab happens to be open when the task finishes.
 export function documentTaskForType(tasks: UserTask[], docType: string): UserTask | undefined {
-  return tasks.filter(task => (task.action === 'document' || task.retry_input?.target?.kind === 'document')
-    && task.retry_input?.document_type === docType).at(-1);
+  return tasks.filter(task => {
+    const local=task as UserTask&{assembly_origin?:string;document_type?:string};
+    const type=task.retry_input?.document_type||(local.assembly_origin==='saved_content'?local.document_type:undefined);
+    return (task.action === 'document' || task.retry_input?.target?.kind === 'document')&&type===docType;
+  }).at(-1);
 }
 
 export function DocumentStudio({
@@ -155,7 +158,7 @@ export function DocumentStudio({
       </summary>
         <div className="review-sidebar-content">
           <p>依据已保存文档与实际检查状态核对。</p>
-          <section className="review-focus"><h4>下载前需处理</h4>
+          <section className="review-focus"><h4>正式交付前需处理</h4>
             <p>{unanswered.length} 项待回答 · {pending.length} 条回答待核对纳入</p>
             {problems.map((problem: Obj, index: number) => <div className="review-problem" key={problem.question_id || index}>
               <b>{problem.title || problem.message}</b>

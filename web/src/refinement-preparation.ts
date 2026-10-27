@@ -18,7 +18,7 @@ export type PreparationDependencies = {
   receipt:()=>PreparationSubmission|null; saveReceipt:(request:PreparationSubmission|null)=>void;
 };
 const running = (task:UserTask) => ['queued','running'].includes(task.status);
-const standardOrganize = (task:UserTask) => task.action==='organize'&&!task.retry_input?.target&&!task.retry_input?.benchmark;
+const standardOrganize = (task:UserTask) => task.action==='organize'&&task.retry_input?.draft_request?.mode!=='question'&&!task.retry_input?.target&&!task.retry_input?.benchmark;
 const uncertainError = (error:unknown) => {
   const e=error as {status?:number;kind?:string};
   return e.status===0||e.kind==='network'||e.kind==='empty'||e.kind==='text'||(e.status!==undefined&&e.status>=500);

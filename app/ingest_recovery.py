@@ -11,21 +11,24 @@ from .understanding import normalize_classification_labels
 
 
 def derive(project, task, run, evidence):
-    require(task['action'] == 'organize' and task['status'] == 'failed' and
-            not task.get('benchmark') and not task.get('retry_input', {}).get('target') and
-            run['stage'] == 'ingest' and run['status'] == 'failed' and
+    runtime = task['action'] in ('clarify', 'change') and run['stage'] == task['action']
+    require((runtime or task['action'] == 'organize' and run['stage'] == 'ingest'
+            and not task.get('retry_input', {}).get('target')) and task['status'] == 'failed' and
+            not task.get('benchmark') and not run.get('requirement_recommendation_scope') and
+            not run.get('draft_request') and run['status'] == 'failed' and
             not run.get('benchmark') and not run.get('result_applied') and
             run.get('user_task_id') == task['id'] and task['run_ids'][-1] == run['id'],
             'RECOVERY_UNAVAILABLE', '该任务不支持本地恢复，请保留原输入继续核对。', 409)
     require(execution_hash(project) == run.get('input_state_hash'), 'STALE_REVISION',
             '聊天、资料或草稿已有变化，不能将旧结果写入当前版本；已有内容保留。', 409)
     attempts = run.get('attempts', [])
-    require(len(attempts) == 1 and not attempts[0].get('repair_of'), 'RECOVERY_UNAVAILABLE',
+    require((len(attempts) >= 1 if runtime else len(attempts) == 1) and not attempts[0].get('repair_of'), 'RECOVERY_UNAVAILABLE',
             '该输出涉及多轮修复，不能直接恢复到当前草稿。', 409)
     attempt = attempts[0]
     require(evidence.get('call_id') == attempt['call_id'] and evidence.get('run_id') == run['id'] and
-            evidence.get('stage') == 'ingest' and evidence.get('response_received') and
+            evidence.get('stage') == run['stage'] and evidence.get('response_received') and
             evidence.get('http_status') == 200 and evidence.get('finish_reason') == 'stop' and
+            not evidence.get('transport_rejection') and evidence.get('response_status') in (None, 'completed') and
             not evidence.get('evidence_limitations') and not attempt.get('evidence_limitations'),
             'RECOVERY_UNAVAILABLE', '原始输出证据不完整，不能安全恢复；已保存资料保留。', 409)
     request = json.loads(evidence['request_input'])
@@ -39,6 +42,28 @@ def derive(project, task, run, evidence):
     require(all((e['source_id'], e['id']) in current and
                 e['text'] == current[(e['source_id'], e['id'])]['text'] for e in excerpts),
             'RECOVERY_UNAVAILABLE', '原始调用引用的来源内容已变化，不能恢复。', 409)
+    if runtime:
+        from .core import strict_model_json
+        from .model_json import schema_closers
+        from .response_normalization import normalize
+        from .source_quotes import normalize_scope_quotes
+        header = json.loads(request[0]['content'].split('可信任务头：', 1)[1])
+        require(not header.get('response_protocol'), 'RECOVERY_UNAVAILABLE', '业务表格请从原任务核对恢复。', 409)
+        raw = evidence.get('final_output')
+        syntax = {}
+        try:
+            value = strict_model_json(raw)
+        except (ValueError, TypeError):
+            recovered = identical_members(raw) or schema_closers(raw, header['schema'])
+            require(recovered is not None, 'RECOVERY_UNAVAILABLE', '原始输出内容不完整或有冲突，不能无损恢复。', 409)
+            value, syntax = recovered
+        value, slots = normalize(value, project, excerpts, run['stage'])
+        value, quotes = normalize_scope_quotes(value, excerpts)
+        value, classifications = normalize_classification_labels(value, excerpts)
+        validate_response(value, run['stage'], project, excerpts, run['document_type'])
+        return value, dict(rule='original-runtime-output-recovery-1', syntax=syntax,
+            slots=slots, quotes=quotes, classification_corrections=classifications,
+            raw_hash=digest(raw), derived_response_hash=digest(value))
     normalized = identical_members(evidence.get('final_output'))
     require(normalized is not None, 'RECOVERY_UNAVAILABLE',
             '重复字段内容有冲突或输出不完整，无法无损恢复；不自动选择或改写业务内容。', 409)
@@ -62,7 +87,7 @@ def recover(store, pid, tid, revision):
     task = store.get_record(pid, tid, 'user_task')
     require(bool(task.get('run_ids')), 'RECOVERY_UNAVAILABLE', '任务没有可恢复的输出。', 409)
     run = store.get_record(pid, task['run_ids'][-1], 'run')
-    require(len(run.get('attempts', [])) == 1, 'RECOVERY_UNAVAILABLE', '没有唯一的原始输出可供恢复。', 409)
+    require(bool(run.get('attempts')), 'RECOVERY_UNAVAILABLE', '没有原始输出可供恢复。', 409)
     call_id = run['attempts'][0]['call_id']
     import re
     require(bool(re.fullmatch(r'CALL-[A-Za-z0-9_-]+', call_id)), 'RECOVERY_UNAVAILABLE', '调用证据身份无效。', 409)
@@ -100,3 +125,21 @@ def recover(store, pid, tid, revision):
         store.record(pid, 'local_recovery', record, record_id, db)
     store.update_record(pid, record_id, 'local_recovery', output_state_hash=execution_hash(project))
     return store.get_record(pid, record_id, 'local_recovery')
+
+
+def available(store, project, task):
+    """Expose recovery only when the saved first output passes current gates."""
+    if task['status'] != 'failed' or task['action'] not in ('clarify', 'change') or not task.get('run_ids'):
+        return False
+    from .core import Problem
+    import re
+    try:
+        run = store.get_record(project['id'], task['run_ids'][-1], 'run')
+        call_id = run['attempts'][0]['call_id']
+        if not re.fullmatch(r'CALL-[A-Za-z0-9_-]+', call_id):
+            return False
+        evidence = json.loads((store.folder/'evidence'/'model-calls'/(call_id+'.json')).read_text('utf-8'))
+        derive(project, task, run, evidence)
+        return True
+    except (Problem, OSError, ValueError, KeyError, TypeError, IndexError):
+        return False

@@ -120,6 +120,28 @@ def test_plain_prose_revision_cannot_silently_erase_details(tmp_path):
     assert candidate['detail_contract']==p['items'][0]['detail_contract']
 
 
+@pytest.mark.parametrize('bad_source',[False,True])
+def test_invalid_replacement_detail_preserves_existing_definition_and_independent_fields(tmp_path,bad_source):
+    p,local,_,_,excerpts,_=setup(tmp_path)
+    p['items'][0]['detail_contract']=sample_detail()
+    before=copy.deepcopy(p)
+    row=draft_row();row['detail_contract']=sample_detail()
+    row['detail_contract']['flow']['field_refs']=['F1']
+    if bad_source:
+        row['detail_contract']['fields'][0]['evidence']={'meaning':dict(status='source',sources=[dict(source='S404',locator='L1')])}
+    value,report=adapt(packet(row),p,excerpts,'clarify',local)
+    assert p==before
+    if bad_source:
+        assert not value['proposals'] and report['rejected'][0]['code']=='BUSINESS_DRAFT_SOURCE'
+    else:
+        assert report['status']=='partial' and not report['rejected']
+        assert report['field_rejected'][0]['path']==['requirements',0,'detail_contract']
+        assert report['field_rejected'][0]['requirement_id']==p['items'][0]['id']
+        candidate=next(i for i in value['proposals'] if i['kind']=='requirement')
+        assert candidate['detail_contract']==p['items'][0]['detail_contract']
+        assert any(i['kind']=='acceptance' for i in value['proposals'])
+
+
 def test_detail_candidate_cannot_relabel_acceptance_as_rule(tmp_path):
     p,local,_,_,excerpts,_=setup(tmp_path)
     row=draft_row();row['detail_contract']=sample_detail()
@@ -278,3 +300,47 @@ def test_normalized_candidate_keeps_wait_without_exit_blocked(tmp_path):
     candidate=next(i for i in value['proposals'] if i.get('detail_contract'))
     issues=detail_issues(candidate)
     assert any('N5' in issue['path'] and issue['code']=='DETAIL_FLOW_WAIT' for issue in issues),issues
+
+
+def test_exact_text_envelope_preserves_proposal_and_references(tmp_path):
+    p,local,_,_,excerpts,_=setup(tmp_path)
+    row=draft_row();row['detail_contract']=sample_detail()
+    field=row['detail_contract']['fields'][0]
+    field['constraints']={'text':'保留这条建议原文。','basis':'recommendation','sources':[{'source':'S1','locator':'L1'}]}
+    field.setdefault('evidence',{})['constraints']={'status':'proposal'}
+    raw=packet(row);before=copy.deepcopy(raw)
+    value,report=adapt(raw,p,excerpts,'clarify',local)
+    assert report['accepted'] and not report['rejected'],report
+    candidate=next(i for i in value['proposals'] if i.get('detail_contract'))
+    result=candidate['detail_contract']['fields'][0]
+    assert result['constraints']=='保留这条建议原文。'
+    assert result['evidence']['constraints']['status']=='proposal'
+    assert result['evidence']['constraints']['source_refs']
+    assert report['detail_normalized'][0]['code']=='BUSINESS_DRAFT_DETAIL_VALUE_ENVELOPE'
+    assert raw==before
+
+
+@pytest.mark.parametrize('change',['conflict','extra','forged','wrong_type'])
+def test_text_envelope_cannot_hide_conflicts_or_forged_sources(tmp_path,change):
+    p,local,_,_,excerpts,_=setup(tmp_path)
+    row=draft_row();row['detail_contract']=sample_detail();field=row['detail_contract']['fields'][0]
+    field['constraints']={'text':'原文。','basis':'recommendation','sources':[]}
+    field.setdefault('evidence',{})['constraints']={'status':'proposal'}
+    if change=='conflict':field['evidence']['constraints']['status']='source'
+    if change=='extra':field['constraints']['approved']=True
+    if change=='forged':field['constraints']['sources']=[{'source':'S99','locator':'L1'}]
+    if change=='wrong_type':field['constraints']['text']=['不能合并']
+    _,report=adapt(packet(row),p,excerpts,'clarify',local)
+    assert not report['accepted'] and report['rejected']
+
+
+def test_generation_schema_requires_enum_values_and_plain_text_stays_supported():
+    import jsonschema
+    schema=model_schema(generation=True)['properties']['fields']['items']
+    field=sample_detail()['fields'][0];field['evidence']={key:{'status':'proposal'} for key in ('name','meaning','data_type','source','required','default_value','constraints','visibility','editability')}
+    jsonschema.validate(field,schema)
+    field['data_type']='enum'
+    with pytest.raises(jsonschema.ValidationError):jsonschema.validate(field,schema)
+    field['enum_values']=[]
+    with pytest.raises(jsonschema.ValidationError):jsonschema.validate(field,schema)
+    field['enum_values']=['已保存','未保存'];jsonschema.validate(field,schema)

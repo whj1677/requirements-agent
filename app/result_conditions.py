@@ -14,6 +14,9 @@ POSITIVE = r'满足|充足|充裕|足够|通过|合格'
 NEGATIVE = r'不满足|不足|不够|不通过|未通过|失败'
 REJECTION = re.compile(r'(?:服务|系统|请求)[^，,。；;\n]{0,8}(?:明确)?(?:拒绝|失败)|(?:服务)?明确拒绝|拒绝受理')
 UNKNOWN = re.compile(r'结果未知|未知结果|超时|响应丢失')
+_OUTCOME_VALUE=r'(?:成功|失败|结果未知|未知结果)'
+OUTCOME_ENUM=re.compile(r'(?:派单结果|结果|状态)(?:字段)?(?:枚举)?(?:取值)?为'+_OUTCOME_VALUE+
+    r'(?:[、/／]'+_OUTCOME_VALUE+r'){1,3}(?:三选一|之一|枚举)(?=[，,。；;]|$)')
 NORMAL = re.compile(r'正常(?:成功|处理|受理|结果)?分支|成功(?:分支|场景)|正常成功(?:场景|情况下)|'
                     r'(?:服务|系统)(?:(?:正常受理|已受理|受理成功)(?:且|并且?)(?:已)?处理成功|处理成功|执行成功)|'
                     r'已确认(?:成功|完成)')
@@ -73,8 +76,9 @@ def quoted_prior_assertion(text, position):
     return False
 
 
-def subject(text):
-    match=SUBJECTS.search(text or '')
+def subject(text, *, last=False):
+    matches=list(SUBJECTS.finditer(text or ''))
+    match=(matches[-1] if last else matches[0]) if matches else None
     return ('资源' if match.group()=='云资源' else match.group()) if match else None
 
 
@@ -107,8 +111,16 @@ def scopes(text,expected_subject=None):
 
 
 def confirmed_result(sentence):
-    match=re.search(r'(?:查询|收到|获得)[^，,。；]{0,12}(?:确认|明确)[^，,。；]{0,12}(?:成功|拒绝|失败|未写入|未提交|未创建)',sentence)
-    return match if match and not re.search(r'未|没有|尚未',sentence[:match.start()]) else None
+    pattern=(r'(?:查询|收到|获得)(?P<lookup>[^，,。；]{0,12}?)(?:确认|明确)[^，,。；]{0,12}?(?:成功|拒绝|失败|未写入|未提交|未创建)'
+             r'|查到(?P<found>[^，,。；]{0,12}?)已确认(?=则|时|后|的|记录|[，,。；：:]|$)')
+    for match in re.finditer(pattern,sentence):
+        boundary=max(sentence.rfind('，',0,match.start()),sentence.rfind(',',0,match.start()))+1
+        prefix=sentence[boundary:match.start()]
+        if re.search(r'(?:未|尚未|没有|不能|无法|未能)\s*$',prefix):continue
+        lookup=match.group('lookup') if match.group('lookup') is not None else match.group('found')
+        if re.search(r'未|没有|尚未|不能|无法',lookup):continue
+        return match
+    return None
 
 
 def uncertainty_occurrence(target):
@@ -123,6 +135,17 @@ def uncertainty_occurrence(target):
     return bool(re.fullmatch(r'(?:请求|操作|提交)?时(?:发生)?'
                 r'(?:(?:网络|连接)(?:中断|断开)(?:导致(?:提交)?)?)?'
                 r'(?:结果未知|未知结果|超时|响应丢失)\s*', clause))
+
+
+def uncertainty_event(text):
+    """An enum option names a possible value, not an event that just occurred.
+
+    Exclude only the literal's own bounded declaration. Another unknown/timeout
+    in the same sentence still governs assertions, as does inherited context.
+    """
+    declarations=list(OUTCOME_ENUM.finditer(text))
+    return next((match for match in UNKNOWN.finditer(text)
+        if not any(decl.start()<=match.start()<decl.end() for decl in declarations)),None)
 
 
 def outcome_sentences(text,fallback_subject):
@@ -140,10 +163,12 @@ def outcome_sentences(text,fallback_subject):
             obj=subject(sentence) or fallback_subject
             tentative=bool(re.match(r'(?:方案)?建议[：:]|假设[：:]|待(?:澄清|核对|确认)[：:]',sentence))
             confirmed=confirmed_result(sentence)
+            preceding_context=context
             if confirmed and (not context or not obj or not context['subject'] or obj==context['subject']):context=None
-            if UNKNOWN.search(sentence) and not confirmed and not tentative:
+            if uncertainty_event(sentence) and not confirmed and not tentative:
                 context=dict(subject=obj,quote=sentence)
-            inherited=context if (context and (not obj or not context['subject'] or obj==context['subject'])
+            carried=preceding_context if confirmed else context
+            inherited=carried if (carried and (not obj or not carried['subject'] or obj==carried['subject'])
                 and not normal_branch(sentence,obj) and not rejection_branch(sentence)) else None
             yield sentence,inherited
 
@@ -158,7 +183,7 @@ def facts(text, *, location, object_id=None, source_refs=(), fallback_operation=
         if not op:continue
         base=dict(object_id=object_id,location=location,source_refs=list(source_refs),origin=origin,
                   subject=local_subject,operation=op,quote=sentence,scope=sorted(scopes(sentence)))
-        unknown=UNKNOWN.search(sentence) or context
+        unknown=uncertainty_event(sentence) or context
         # A query with an affirmative confirmed result can resolve uncertainty.
         confirmed=confirmed_result(sentence)
         if unknown and not confirmed and not tentative:
@@ -182,9 +207,12 @@ def facts(text, *, location, object_id=None, source_refs=(), fallback_operation=
             # Bind this effect to its target/local clause, not another object's
             # successful branch mentioned before a comma.
             target=re.split(r'[，,]',sentence[effect.end():])[0]
-            effect_subject=subject(target) or subject(part) or fallback_subject or local_subject
+            effect_subject=subject(target) or subject(part,last=True) or fallback_subject or local_subject
             current=dict(base,operation=OPERATIONS[effect.group()],subject=effect_subject,
                          scope=sorted(scopes(sentence,effect_subject)))
+            confirmed_subject=subject(confirmed.group()) if confirmed else None
+            resolved=bool(confirmed and effect.start()>=confirmed.start() and
+                (not confirmed_subject or not effect_subject or confirmed_subject==effect_subject))
             if uncertainty_occurrence(target):
                 continue
             if denied:
@@ -201,7 +229,7 @@ def facts(text, *, location, object_id=None, source_refs=(), fallback_operation=
                 continue
             if rejection and not negative and not non_asserted:
                 result.append(dict(current,role='rejection_effect',guard=None,conditions=['service_rejects']))
-            if unknown and not confirmed and not non_asserted and not rejection_branch(part):
+            if unknown and not resolved and not non_asserted and not rejection_branch(part):
                 result.append(dict(current,role='unknown_certainty',guard=None,conditions=[],outcome='no_effect' if negative else 'effect'))
                 continue
             for guard,pattern in GUARDS.items():

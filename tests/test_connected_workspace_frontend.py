@@ -117,6 +117,35 @@ def test_normal_entry_ignores_old_refinement_delivery_and_direct_mode_without_di
     ''')
 
 
+def test_refinement_navigation_never_prepares_models_even_when_inputs_or_tasks_change():
+    run_ts(ENTRY_HARNESS + r'''
+      for(const label of ['2完善需求','进入完善需求']) {
+        const h=createHarness();await h.flush();
+        await h.update({project:{...project,revision:18,sources:[{id:'SRC-single-instruction'}]},
+          tasks:[{id:'TASK-single',action:'clarify',status:'partial',label:'完善这条需求建议'}]});
+        await h.click(label);assert.equal(h.step,'refine');assert.equal(h.gate,false);
+        assert(!h.events.some(event=>event[0]==='prepare'||event[0]==='write'),
+          'ordinary navigation must not prepare an AI task or rewrite saved input');
+        await h.click('1提供信息');await h.click(label);assert.equal(h.step,'refine');
+        assert(!h.events.some(event=>event[0]==='prepare'));
+        await h.click('让 AI 先起草整表');
+        assert.equal(h.events.filter(event=>event[0]==='prepare').length,1,
+          'the explicit AI action remains available');
+      }
+    ''')
+
+
+def test_legacy_refinement_view_restore_cannot_prepare_or_resume_model_work():
+    run_ts(ENTRY_HARNESS + r'''
+      for(const savedEntry of ['auto','manual']) {
+        const h=createHarness({nonce:null,savedStep:'refine',savedEntry});await h.flush();
+        assert.equal(h.step,'refine');assert.equal(h.gate,false);
+        assert(!h.events.some(event=>event[0]==='prepare'||event[0]==='write'),
+          'legacy restoration must only read the saved draft');
+      }
+    ''')
+
+
 def test_entry_nonce_resets_mounted_view_but_preserves_user_navigation_and_written_draft():
     run_ts(ENTRY_HARNESS + r'''
       const h=createHarness({nonce:1});await h.flush();

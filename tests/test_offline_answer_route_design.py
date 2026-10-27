@@ -172,8 +172,8 @@ def test_public_saved_answer_to_mock_candidates_and_explicit_each_adoption(route
     q=candidate_state['questions'][0]
     assert q['understanding_status']=='candidate_ready' and not q['applied_item_ids']
     assert candidate_state['items'][:2]==before['items']
-    header=json.loads(requests[0]['messages'][0]['content'].split('可信任务头：',1)[1])
-    context=json.loads(requests[0]['messages'][1]['content'][0]['text'])
+    header=json.loads(requests[0]['input'][0]['content'].split('可信任务头：',1)[1])
+    context=json.loads(requests[0]['input'][1]['content'][0]['text'])
     assert header['question_action_contract']['answered_decision_ids']==['Q-0001']
     assert header['schema']['$defs']['Question']['properties']['target_question_id']['enum']==[None]
     assert {(r['question_id'],r['target_item_id']) for r in context['stage_focus']['answer_binding_tasks']}=={

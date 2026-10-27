@@ -49,6 +49,50 @@ def normalize_redundant_metadata(value):
                    ('fields', 'interactions', 'state_transitions')]
     collections += [('flow.' + section, flow.get(section)) for section in ('nodes', 'edges')]
 
+    # Some providers copy the outer business VALUE envelope into a detail text
+    # slot. Unwrap only an exact, typed envelope with compatible evidence. Keep
+    # its text, proposal/fact status and every reference; normal source and
+    # detail validators still run afterwards. Conflicting shapes stay rejected.
+    schema = model_schema()['properties']
+    for section, rows in collections:
+        if not isinstance(rows, list):
+            continue
+        parts = section.split('.')
+        shape = schema[parts[0]]
+        if len(parts) > 1:
+            shape = shape['properties'][parts[1]]
+        properties = shape['items']['properties']
+        for row in rows:
+            if not isinstance(row, dict) or not isinstance(row.get('evidence', {}), dict):
+                continue
+            for key, value in list(row.items()):
+                if (properties.get(key, {}).get('type') != 'string' or key in ('id','interaction_id','from','to')
+                        or not isinstance(value, dict) or set(value) != {'text','basis','sources'}
+                        or not isinstance(value['text'], str) or value['basis'] not in ('fact','recommendation')
+                        or not isinstance(value['sources'], list)):
+                    continue
+                refs = value['sources']
+                if not all(isinstance(ref, dict) and set(ref)=={'source','locator'}
+                           and all(isinstance(v,str) for v in ref.values()) for ref in refs):
+                    continue
+                status = 'source' if value['basis']=='fact' else 'proposal'
+                prior = row.get('evidence', {}).get(key, {})
+                if (not isinstance(prior, dict) or prior.get('status', status)!=status
+                        or set(prior)-{'status','sources','reason'}
+                        or not isinstance(prior.get('sources', []), list)
+                        or status=='source' and not refs):
+                    continue
+                if any(ref not in refs for ref in prior.get('sources', [])):
+                    continue
+                evidence = dict(prior, status=status)
+                if refs:
+                    evidence['sources'] = copy.deepcopy(refs)
+                row.setdefault('evidence', {})[key] = evidence
+                row[key] = value['text']
+                diagnostics.append(dict(path='detail_contract.'+section+'.'+str(row.get('id',''))+'.'+key,
+                    code='BUSINESS_DRAFT_DETAIL_VALUE_ENVELOPE', raw=copy.deepcopy(value),
+                    reason='将业务文本封装恢复到原属性；原文、事实或建议状态及全部引用保持不变，仍须正常校验'))
+
     def remove(row, section, key, reason):
         diagnostics.append(dict(path='detail_contract.' + section + '.' + str(row.get('id', '')) + '.' + key,
             code='BUSINESS_DRAFT_DETAIL_REDUNDANT_METADATA', raw=copy.deepcopy(row[key]), reason=reason))
@@ -126,6 +170,9 @@ def model_schema(*, generation=False):
         schema['properties']['fields']['description'] = '仅实际输入、显示和业务结果字段；未定规则参数放对应交互和问题，不造配置项'
         schema['properties']['interactions']['description'] = '按独立输入和处理结果组织；同一编辑过程不机械拆开打开、保存、取消'
         fields = schema['properties']['fields']['items']['properties']
+        schema['properties']['fields']['items']['allOf']=[dict(
+            **{'if':dict(properties={'data_type':{'const':'enum'}},required=['data_type']),
+               'then':dict(required=['enum_values'],properties={'enum_values':dict(type='array',minItems=1,items=dict(type='string',minLength=1))})})]
         fields['meaning'] = dict(fields['meaning'], description='字段表示什么、用于什么业务；产生方式未定不改变已知用途，仅在含义本身未知时标 unknown')
         fields['source'] = dict(fields['source'], description='字段数据来自何处、由谁产生；未定产生方式在本属性标 unknown，不连带改写其他已知属性')
         nodes = schema['properties']['flow']['properties']['nodes']['items']['properties']

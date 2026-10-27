@@ -24,6 +24,8 @@ import { RefinementPreparation, PreparationDependencies, PreparationState, Prepa
 import { DocumentDiscussionPanel } from './document-discussion';
 import { documentDiscussionContext, documentDiscussionSectionForQuestion } from './document-discussion-context';
 import { ChapterDiscussion, ChapterSubmission, ChapterTarget } from './chapter-discussion';
+import {documentPreparation} from './document-preparation';
+import {prewriteCanDraft} from './prewrite-review';
 type Obj = Record<string, any>;
 export type Compat = { status: 'ok' | 'incompatible' | 'unverified'; missing: string[] };
 const categoryText: Record<ErrorCategory, string> = { 'not-found': '项目不存在或已被删除', 'route-missing': '所需接口缺失，前后端版本可能不兼容', network: '无法连接服务', 'non-json': '服务返回了无法识别的内容', session: '页面连接状态已失效，请重新加载', forbidden: '访问被拒绝', conflict: '内容版本已变化', server: '暂时无法加载此项目', unknown: '暂时无法加载此项目' };
@@ -40,7 +42,11 @@ export function Workspace({ id, active, assistantEntryNonce, assistantEntryTask 
   const [chapterSubmission, setChapterSubmission] = useState<ChapterSubmission>();
   const [taskContinuation, setTaskContinuation] = useState<{id: string; retry: boolean}>();
   const [, setShowAdvanced]=useState(false),[,setStage]=useState('ingest');
-  const [pending, setPending] = useState<{ plan: ActionPlan; input: ActionInput; key: string; preparationToken?:number } | null>(null), [actionError, setActionError] = useState('');
+  const [pending, setPending] = useState<{ plan: ActionPlan; input: ActionInput; key: string; preparationToken?:number; documentPreparation?:boolean } | null>(null), [actionError, setActionError] = useState('');
+  const documentPreparationKey=id+'-document-preparation';
+  const [documentPreparationNotice,setDocumentPreparationNotice]=useState('');
+  const [documentReviewRequested,setDocumentReviewRequested]=useState(false);
+  const documentPreparationNavigation=useRef<{taskId:string;resolving?:boolean}|null>(null);
   const [actionStale, setActionStale] = useState(false), [reviewFocusNonce, setReviewFocusNonce] = useState(0);
   const [optionDecision, setOptionDecision] = useState<Obj | null>(null), [previewOption, setPreviewOption] = useState<Obj | null>(null);
   const [focusRefs, setFocusRefs] = useState<Obj[]>([]);
@@ -51,7 +57,7 @@ export function Workspace({ id, active, assistantEntryNonce, assistantEntryTask 
   const progress = useTaskProgress();
   const progressControls = useRef<ProgressControls>({cancel:async()=>{},refresh:async()=>{},open:()=>{}});
   useEffect(()=>progress.register(id,progressControls),[id,progress]);
-  useEffect(()=>{if(p)progress.publish({projectId:id,projectName:p.name,tasks,busy,uncertain:Boolean(fatal)||stale.includes('任务列表')});},[id,p?.name,tasks,busy,Boolean(fatal),stale.includes('任务列表'),progress]);
+  useEffect(()=>{if(p)progress.publish({projectId:id,projectName:p.name,tasks,busy,uncertain:Boolean(fatal)||stale.includes('任务列表'),inlineDraft:active&&connectedRef.current?.dataset.step==='refine'&&!detailRef.current?.open});},[id,p?.name,tasks,busy,active,Boolean(fatal),stale.includes('任务列表'),progress]);
   const analysisNavigation=useRef<{taskId:string;ingestCount:number;itemCount:number;questionCount:number;resolving?:boolean;connected?:boolean}|null>(null);
   const prewriteNavigation=useRef<{taskId:string;resolving?:boolean}|null>(null);
   const [preparation,setPreparation]=useState<PreparationState>({state:'idle'});
@@ -78,6 +84,8 @@ export function Workspace({ id, active, assistantEntryNonce, assistantEntryTask 
     // records and idempotency receipts and are not cancelled or repeated.
     preparationController.current?.cancel();
     prewriteNavigation.current=null;
+    documentPreparationNavigation.current=null;
+    setDocumentReviewRequested(false);
     showMain();setChapter(null);setHelp(null);setSourcesOpen(false);setHistoryOpen(false);
     setCandidateOpen(false);setAcceptanceOpen(false);setRenameOpen(false);setPending(null);
     setDocumentQuestion(undefined);setBlockerTask(null);setError('');
@@ -86,6 +94,7 @@ export function Workspace({ id, active, assistantEntryNonce, assistantEntryTask 
   }, [assistantEntryNonce]);
   function openMain(next:Omit<ConnectedDestination,'nonce'>){guard(()=>{showMain();setConnectedDestination(previous=>({...next,nonce:(previous?.nonce||0)+1}));});}
   function openDetails(n:number,documentKind?:string,afterOpen?:()=>void){go(n,()=>{if(documentKind){setDocType(documentKind);setSelectedDocId('');setDocumentQuestion(undefined);}setConnectedDestination(previous=>({step:'delivery',nonce:(previous?.nonce||0)+1}));if(detailRef.current)detailRef.current.open=true;requestAnimationFrame(()=>{detailRef.current?.scrollIntoView({block:'start'});afterOpen?.();});});}
+  function revealDocument(kind:string){requestAnimationFrame(()=>globalThis.document.getElementById('document-reading-'+id+'-'+kind)?.scrollIntoView({block:'start'}));}
   function go(n:number,afterGo?:()=>void){if(n<3){openMain({step:n===0?'information':'refine',review:n>0});return;}if(n===3)n=4;guard(()=>{analysisNavigation.current=null;if(n!==phase){setFocusQuestionId('');setFocusAnswerId('');setFocusRequirementId('');setBlockerTask(null);setBlockerFocus(undefined);if(n>phase)scrollPositions.current[n]=0;}setPhase(n);sessionStorage.setItem('ra-phase-'+id,String(n));afterGo?.();});}
   function enterDirect(text?:string){go(1,()=>setDirectEntryDraft(current=>({text:text??sessionStorage.getItem('ra-chat-draft-'+id)??'',nonce:(current?.nonce||0)+1})));}
   // Locked editors stay mounted. Return to the prerequisite without requiring a
@@ -141,6 +150,21 @@ export function Workspace({ id, active, assistantEntryNonce, assistantEntryTask 
   function retry() { void act(refresh); }
   async function act(fn: () => Promise<unknown>) { if(busyRef.current)return;busyRef.current=true;const finish=beginActivity('正在处理当前操作');setBusy(true);setError('');try{await fn();finish();}catch(e){const message=(e as Error).message;setError(message);finish(message,true);}finally{busyRef.current=false;setBusy(false);} }
   useEffect(() => { if (active) refresh().catch(onRefreshFail); }, [active]);
+  useEffect(()=>{
+    if(!active||busy||!documentReviewRequested)return;
+    setDocumentReviewRequested(false);openMain({step:'refine',review:true});
+  },[active,busy,documentReviewRequested]);
+  useEffect(()=>{
+    const intent=documentPreparationNavigation.current,task=tasks.find(t=>t.id===intent?.taskId);
+    if(!active||busy||!intent||intent.resolving||!task||['queued','running'].includes(task.status))return;
+    intent.resolving=true;
+    void refresh().then(()=>{
+      if(documentPreparationNavigation.current!==intent||!currentView.current.active)return;
+      documentPreparationNavigation.current=null;
+      setDocumentPreparationNotice(['succeeded','partial'].includes(task.status)?'生成文档前的 AI 补全已结束。请核对下方草稿，确认并进入交付后再生成文档；不满意的内容可直接修改。':'本次自动补全尚未完成，已有内容保留。请查看任务详情，或在表格中重试 AI 补全。');
+      openMain({step:'refine',review:true});
+    }).catch(e=>{intent.resolving=false;onRefreshFail(e);});
+  },[tasks,active,busy]);
   useEffect(()=>{if(!active)preparationController.current?.cancel();},[active]);
   useEffect(()=>()=>{preparationController.current?.cancel();},[]);
   useEffect(()=>{preparationController.current?.observe(tasks);},[tasks]);
@@ -211,7 +235,7 @@ export function Workspace({ id, active, assistantEntryNonce, assistantEntryTask 
       // This atomic endpoint returns inline validation issues with HTTP 200.
       // A rejected table wrote nothing and must not produce a saved/refresh notice.
       if(path==='/refinement-confirmation'&&result?.confirmed===false)return result;
-      const written=path==='/refinement-confirmation'&&result?.confirmed===true?result.project:result;
+      const written=(path==='/refinement-confirmation'&&result?.confirmed===true)||path==='/documents/prd/local-review'?result.project:result;
       // Preserve the server-confirmed value even if the follow-up read fails.
       // Derived readiness remains visibly stale until the full projection loads.
       if(current&&written?.id===id&&Array.isArray(written.items)&&written.revision>=current.revision){const confirmed=mergeProjectWrite(current,written) as Project;projectRef.current=confirmed;setP(confirmed);}
@@ -223,9 +247,24 @@ export function Workspace({ id, active, assistantEntryNonce, assistantEntryTask 
     const current=projectRef.current;
     if (!current) return;
     if (actionBlockReason) throw Error(actionBlockReason);
+    let preparingDocument=false;
+    if(action==='document'){
+      const reviewDraft=retryInput?.allow_review_draft===true&&prewriteCanDraft(current.prewrite_review);
+      if(sessionStorage.getItem(documentPreparationKey)&&!reviewDraft){
+        setDocumentPreparationNotice('AI 补全草稿尚待确认。请先核对并点击“确认并进入交付”，再生成文档。');
+        setDocumentReviewRequested(true);return;
+      }
+      const state=await api<{revision:number;rows:Obj[]}>(root+'/requirement-confirmation/state');
+      if(state.revision!==current.revision||projectRef.current?.revision!==current.revision)throw Error('内容正在更新，请稍后重新生成文档。');
+      const preparation=documentPreparation(current,state.rows,reviewDraft);
+      if(preparation.issues.length){
+        action='organize';text=preparation.instruction;retryInput={draft_request:{mode:'required'}};preparingDocument=true;
+      }
+    }
     const input: ActionInput = { action, message: text, document_type: docType, option_id: optionId || null, max_calls: null, ...(target?{target:{kind:target.kind,id:target.id,...(target.section_id?{section_id:target.section_id}:{})}}:{}),...retryInput,expected_revision:current.revision };
     const plan = await api<ActionPlan>(root + '/actions/plan', 'POST', input);
-    setActionError(''); setActionStale(false); setPending({ input, plan, key: crypto.randomUUID() });
+    if(preparingDocument){plan.label='生成文档前，AI 自动补全必填草稿';plan.context_scope+=' 补全后返回确认表，人工核对确认后再生成文档。';}
+    setActionError(''); setActionStale(false); setPending({ input, plan, key: crypto.randomUUID(),documentPreparation:preparingDocument });
   }
   async function benchmarkOperation<T>(operation:()=>Promise<T>):Promise<T>{
     if(busyRef.current||running)throw Error('当前操作正在执行，请等待后再对标。');
@@ -247,7 +286,8 @@ export function Workspace({ id, active, assistantEntryNonce, assistantEntryTask 
     const snapshot=projectRef.current;
     const ingestCount=snapshot?.messages.filter(m=>m.role==='assistant'&&m.stage==='ingest').length||0;
     try { const task=await api<UserTask>(root + '/actions', 'POST', { ...pending.input, plan_hash: pending.plan.plan_hash, idempotency_key: pending.key, authorize: pending.plan.recipients.some(r => r.needs_authorization) });
-      if(active&&pending.input.action==='organize'&&!pending.input.target&&(phase===0||!detailRef.current?.open))analysisNavigation.current={taskId:task.id,ingestCount,itemCount:snapshot?.items.length||0,questionCount:snapshot?.questions.length||0,connected:!detailRef.current?.open};
+      if(pending.documentPreparation){sessionStorage.setItem(documentPreparationKey,task.id);documentPreparationNavigation.current={taskId:task.id};setDocumentPreparationNotice('正在为生成文档补全必填草稿，完成后请核对确认。');}
+      if(active&&pending.input.action==='organize'&&!pending.input.target&&!pending.input.draft_request&&connectedRef.current?.dataset.step!=='refine'&&(phase===0||!detailRef.current?.open))analysisNavigation.current={taskId:task.id,ingestCount,itemCount:snapshot?.items.length||0,questionCount:snapshot?.questions.length||0,connected:!detailRef.current?.open};
       if(pending.input.benchmark)setBenchmarkSubmission({taskId:task.id,message:pending.input.message});
       if(pending.input.action==='interview'&&task.retry_input?.action==='interview'&&task.retry_input.message===pending.input.message&&
         JSON.stringify((task.retry_input.attachment_source_ids||[]).slice().sort())===JSON.stringify((pending.input.attachment_source_ids||[]).slice().sort())){
@@ -266,7 +306,8 @@ export function Workspace({ id, active, assistantEntryNonce, assistantEntryTask 
     if(pending.preparationToken!==undefined){await preparationController.current?.replan();return;}
     const old=pending;
     busyRef.current=true;setBusy(true);setActionError('');
-    try{await refresh();await planAction(old.input.action,old.input.option_id||undefined,old.input.target,old.input.message,old.input);}
+    try{await refresh();if(old.documentPreparation)await planAction('document',undefined,undefined,'',{document_type:old.input.document_type});
+      else await planAction(old.input.action,old.input.option_id||undefined,old.input.target,old.input.message,old.input);}
     catch(e){setActionError((e as Error).message);}
     finally{busyRef.current=false;setBusy(false);}
   }
@@ -453,27 +494,29 @@ export function Workspace({ id, active, assistantEntryNonce, assistantEntryTask 
     {!staleNotice && stale.length > 0 && <div className="notice banner" role="status">部分状态未能更新（{stale.join('、')}）；页面显示的是已取得的最近内容。<button onClick={retry}>重试</button></div>}
     {error && <div className="error banner" role="alert">{error}<button onClick={() => act(refresh)}>刷新内容并保留输入</button><button onClick={() => setError('')}>关闭</button></div>}
     {taskContinuation&&<div className="notice banner" role="status">已保留所选任务，请从需求助手继续处理。<button disabled={busy||!!actionBlockReason} onClick={continueSelectedTask}>{taskContinuation.retry?'核对并重试所选任务':'继续查看所选任务'}</button></div>}
+    {documentPreparationNotice&&<div className="notice banner" role="status">{documentPreparationNotice}</div>}
     <ConnectedWorkspace assistantEntryNonce={assistantEntryNonce} deliveryBlockers={p.confirmation_blockers?.map(localDiscussionBlocker)} workspaceRef={connectedRef} active={active} id={id} project={p} tasks={tasks} busy={busy} running={running} actionBlockReason={actionBlockReason} mutate={mutate}
       destination={connectedDestination} onMainNavigation={showMain}
+      onRefinementConfirmed={()=>{sessionStorage.removeItem(documentPreparationKey);setDocumentPreparationNotice('必填草稿已由你确认，可以继续生成文档。');}}
       preparation={preparation} onPrepareRefinement={retry=>{analysisNavigation.current=null;return preparationController.current!.prepare(retry);}}
       onCancelPreparation={()=>preparationController.current?.cancel()}
-      onOrganize={instruction=>act(()=>planAction('organize',undefined,undefined,instruction||''))}
+      onOrganize={(instruction,draftRequest)=>act(()=>planAction('organize',undefined,undefined,instruction||'',draftRequest?{draft_request:draftRequest}:undefined))}
       onClarify={questionId=>act(()=>planAction('clarify',undefined,questionId?{kind:'question',id:questionId}:undefined))}
       onRecommendRequirement={(requirementId,instruction)=>act(()=>planAction('clarify',undefined,{kind:'item',id:requirementId},instruction))}
       onSources={refs=>{setFocusRefs(refs||[]);setSourcesOpen(true);}}
-      chatPanel={(beforeSend,onDirect,onViewDraft)=><IntakeChat p={p} model={models.model||{}} busy={busy||running||['checking','running','authorization'].includes(preparation.state)} blocked={actionBlockReason} tasks={tasks} status={null}
+      chatPanel={(beforeSend,onDirect,onViewDraft,onPrepareDraft)=><IntakeChat p={p} model={models.model||{}} busy={busy||running||['checking','running','authorization'].includes(preparation.state)} blocked={actionBlockReason} tasks={tasks} status={null}
         beforeSend={async()=>{await beforeSend();return projectRef.current||p;}}
         onRefreshProject={async()=>{await refresh();return projectRef.current||p;}}
         onPrepareInterview={async(message,currentProject,attachmentSourceIds)=>{if(projectRef.current?.revision!==currentProject.revision)throw Error('项目内容已更新，请刷新后重新核对本次对话范围。');await planAction('interview',undefined,undefined,message,{attachment_source_ids:attachmentSourceIds});}}
         onRefresh={retry} onStarted={async task=>{setTasks(current=>[...current.filter(t=>t.id!==task.id),task]);recordProgressSubmission(task);await refresh().catch(onRefreshFail);}}
         onSources={()=>setSourcesOpen(true)} onOrganize={()=>{void beforeSend().then(()=>act(()=>planAction('organize'))).catch(e=>setError((e as Error).message));}}
         onDirectSave={saveDirectInput} onDirectEntry={onDirect} go={n=>{if(n===1)onViewDraft();}}
-        onContinue={onViewDraft} continuing={['checking','running','authorization'].includes(preparation.state)}
+        onContinue={onPrepareDraft} continuing={['checking','running','authorization'].includes(preparation.state)}
         onReferenceSources={referenceSources} onReferenceImport={importBenchmark} onBenchmark={prepareBenchmark} benchmarkSubmission={benchmarkSubmission} interviewSubmission={interviewSubmission}/>}
       onCreateRequirement={()=>setCandidateOpen(true)} onCreateAcceptance={requirementId=>{setAcceptanceRequirement(requirementId||'');setAcceptanceOpen(true);}}
-      onDelivery={()=>openDetails(5)} onDocuments={()=>openDetails(4)} onRefresh={retry}
+      onDelivery={()=>openDetails(5)} onDocuments={()=>openDetails(4,docType,()=>revealDocument(docType))} onRefresh={retry}
       onPrewrite={()=>act(()=>planAction('prewrite',undefined,undefined,'',{document_type:'prd'}))}
-      onGeneratePrd={allowReviewDraft=>{openDetails(4,'prd');void act(()=>planAction('document',undefined,undefined,'',{document_type:'prd',allow_review_draft:!!allowReviewDraft}));}}
+      onGeneratePrd={allowReviewDraft=>{openDetails(4,'prd');if(allowReviewDraft){void act(async()=>{await mutate('/documents/prd/local-review',{expected_revision:p.revision,idempotency_key:crypto.randomUUID(),review_draft_confirmed:true});revealDocument('prd');});return;}void act(()=>planAction('document',undefined,undefined,'',{document_type:'prd',allow_review_draft:false}));}}
       onResolveBlocker={(action,row)=>resolveBlocker(action,row,5)}
       taskPanel={task=><TaskStatus task={task} busy={busy} uncertain={Boolean(fatal)||stale.includes('任务列表')} onRefresh={retry}
         onCancel={()=>act(async()=>{await api(root+'/actions/'+task.id+'/cancel','POST');await refresh();})} onRetry={()=>retryUserTask(task)}

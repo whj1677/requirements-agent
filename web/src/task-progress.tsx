@@ -1,7 +1,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import type { UserTask } from './api';
 import { dismissProgress, emptyProgress, ProgressEntry, ProgressSnapshot, reconcileProgress,
-  taskCurrentStage, taskElapsed, taskGenerated, taskNeedsAttention, taskRunning, taskStageLabels, taskStateLabels } from './task-progress-state';
+  taskCurrentStage, taskElapsed, taskGenerated, taskNeedsAttention, taskRunning, taskStageLabels, taskStateLabels,inlinePrewriteFailure } from './task-progress-state';
 import './task-progress.css';
 import { TaskFailureNotice, taskFailure, canRecoverDraft } from './task-failure';
 
@@ -87,7 +87,10 @@ export function TaskProgressProvider({ children }: { children: React.ReactNode }
     if (!target) { setOperationError('请先进入对应项目。'); return; }
     target.open(entry.task, retry, () => setState(s => ({ ...s, expanded: false })));
   }
-  return <ProgressContext.Provider value={bridge}><ProgressPresentContext.Provider value={Boolean(entry)}>{children}{entry && <aside className={'ai-progress' + (state.expanded ? ' ai-progress-expanded' : '')} aria-label="AI 任务进度" onKeyDown={event => { if (state.expanded && event.key === 'Escape') { event.stopPropagation(); collapse(); } }}>
+  const inlineDone=entry?.inlineDraft&&!state.expanded&&(
+    entry.task.retry_input?.draft_request&&taskGenerated(entry.task)||
+    entry.task.status==='awaiting_user'&&['prewrite','document'].includes(entry.task.action)||inlinePrewriteFailure(entry.task));
+  return <ProgressContext.Provider value={bridge}><ProgressPresentContext.Provider value={Boolean(entry)&&!inlineDone}>{children}{entry && !inlineDone && <aside className={'ai-progress' + (state.expanded ? ' ai-progress-expanded' : '')} aria-label="AI 任务进度" onKeyDown={event => { if (state.expanded && event.key === 'Escape') { event.stopPropagation(); collapse(); } }}>
     {state.expanded ? <>
       <header className="ai-progress-header"><h2 ref={heading} tabIndex={-1}>AI 任务进度</h2><button type="button" onClick={collapse}>收起进度</button></header>
       <div className="ai-progress-body">

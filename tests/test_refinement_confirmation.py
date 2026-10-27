@@ -168,7 +168,7 @@ def grouped(store):
     return store.get(p['id'])
 
 
-def test_group_leaf_answers_are_explicit_and_saved_once_with_direct_bindings(tmp_path):
+def test_group_leaf_answers_are_explicit_and_saved_once_with_direct_bindings(tmp_path,monkeypatch):
     store = Store(tmp_path); p = grouped(store)
     body = payload(p, answers=[dict(question_id='Q-leaf-1', answer='只能查看自己的记录。'),
                               dict(question_id='Q-leaf-2', answer='可查看运维发布的模板。')])
@@ -178,6 +178,9 @@ def test_group_leaf_answers_are_explicit_and_saved_once_with_direct_bindings(tmp
         body['answer_implementations']['Q-leaf-' + str(n)] = [
             dict(item_id=line['requirement_id'], field='behavior.permissions',
                  quote=line['behavior']['permissions'])]
+    def unexpected_inference(*args,**kwargs):
+        raise AssertionError('Explicitly reviewed witnesses must reach every batch stage without deriving replacements')
+    monkeypatch.setattr('app.answer_implementation.derive_changed_witnesses',unexpected_inference)
     with api(store) as client:
         result = post(client, p, body).json()
         assert result['confirmed'], result

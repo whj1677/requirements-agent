@@ -11,7 +11,7 @@ export function useDialog(open: boolean, onClose: () => void) {
     const previous = document.activeElement as HTMLElement | null;
     const own=Array.from(document.querySelectorAll<HTMLElement>('[role="dialog"]')).filter(el=>el.offsetParent!==null).at(-1);
     const first=own?.querySelector<HTMLElement>('input,textarea,button');
-    first?.focus();
+    first?.focus({preventScroll:true});
     const escape = (event: KeyboardEvent) => {
       const top=Array.from(document.querySelectorAll<HTMLElement>('[role="dialog"]')).filter(el=>el.offsetParent!==null).at(-1);
       if(top!==own)return;
@@ -28,7 +28,7 @@ export function useDialog(open: boolean, onClose: () => void) {
     document.addEventListener('keydown', escape);
     return () => {
       document.removeEventListener('keydown', escape);
-      requestAnimationFrame(() => { if (previous?.isConnected) previous.focus(); });
+      requestAnimationFrame(() => { if (previous?.isConnected) previous.focus({preventScroll:true}); });
     };
   }, [open]);
 }

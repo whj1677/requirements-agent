@@ -327,3 +327,32 @@ def test_legacy_direct_ingest_without_acceptance_can_upgrade_once(prepared):
     store.update_record(pid, run_id, 'run', preparation_draft_schema=DRAFT_SCHEMA)
     result = view(store, pid)
     assert result['status'] == 'ready_with_limits' and not result['auto_allowed']
+
+def test_slow_preparation_read_does_not_block_other_workbench_requests(tmp_path, monkeypatch):
+    import asyncio
+    import threading
+    import httpx
+    import app.refinement_preparation as preparation
+    from app.main import create_app
+
+    entered, release = threading.Event(), threading.Event()
+    def slow_view(store, pid):
+        entered.set()
+        assert release.wait(3), 'Another request could not run while preparation was reading'
+        return {'project_id': pid, 'status': 'empty'}
+    monkeypatch.setattr(preparation, 'view', slow_view)
+    app = create_app(tmp_path)
+
+    async def exercise():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://127.0.0.1:8765') as client:
+            pending = asyncio.create_task(client.get('/api/projects/P-read-only/refinement-preparation'))
+            try:
+                assert await asyncio.to_thread(entered.wait, 1)
+                assert not pending.done()
+                session = await client.get('/api/session')
+                assert session.status_code == 200 and not pending.done()
+            finally:
+                release.set()
+                result = await pending
+            assert result.status_code == 200
+    asyncio.run(exercise())

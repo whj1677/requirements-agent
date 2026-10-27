@@ -694,12 +694,18 @@ def validate_document_findings(findings,p,checks):
     ids={c['check_id'] for c in checks}
     blocks={};by_kind={};titles={};titles_by_kind={}
     for kind,artifact in p.get('documents',{}).items():
-        visible=readable_document_blocks(artifact)
+        from .document_reader import reader_document
+        reader=reader_document(artifact,include_locations=True)
+        visible={block['source_location']:block.get('text') or ''
+                 for section in reader['sections'] for block in section['blocks']}
         blocks.update(visible)
         by_kind[kind]=list(visible.values())
         section_titles={section['section_id']:section['title'] for section in artifact['content']['sections']}
-        titles.update({location:section_titles[location.split('.')[1]] for location in visible})
-        titles_by_kind[kind]=set(section_titles.values())
+        # Reader-generated sections (such as frozen prewrite warnings) have
+        # source locations outside the canonical section ID namespace.
+        titles.update({block['source_location']:section['title']
+                       for section in reader['sections'] for block in section['blocks']})
+        titles_by_kind[kind]=set(section_titles.values())|{section['title'] for section in reader['sections']}
     for finding in findings:
         message=finding['message']
         claimed=DOCUMENT_CHECK.findall(message)

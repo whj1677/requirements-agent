@@ -78,5 +78,12 @@ def test_existing_detail_is_not_silently_replaced_when_new_output_is_invalid(tmp
     row['detail_contract']['flow']['evidence']={}
     before=copy.deepcopy(project)
     canonical,report=adapt(packet(row),project,excerpts,'clarify',local)
-    assert not canonical['proposals'] and report['rejected']
+    assert report['status']=='partial' and not report['complete'] and not report['rejected']
+    assert report['field_rejected'][0]['path']==['requirements',0,'detail_contract']
+    assert report['field_rejected'][0]['raw']==row['detail_contract']
+    candidate=next(item for item in canonical['proposals'] if item['kind']=='requirement')
+    assert candidate['detail_contract']==original
     assert project==before and project['items'][0]['detail_contract']==original
+    saved=copy.deepcopy(project);apply_response(saved,canonical,identity_only=True)
+    assert saved['items'][:len(project['items'])]==project['items']
+    assert all(item['selection_status']=='candidate' for item in saved['items'][len(project['items']):])

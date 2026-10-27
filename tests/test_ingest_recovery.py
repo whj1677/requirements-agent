@@ -37,7 +37,7 @@ def test_nested_identical_members_preserve_types_values_and_order():
     assert paths==[['a',0,'source_refs'],['n']]
 
 
-@pytest.mark.parametrize('stage,conflict', [('ingest',False),('ingest',True),('review',False),('review',True),('clarify',False)])
+@pytest.mark.parametrize('stage,conflict', [(s,c) for s in ('ingest','review','clarify','change','interview','prd') for c in (False,True)])
 def test_provider_only_normalizes_allowed_complete_identical_responses_and_keeps_raw(tmp_path,monkeypatch,stage,conflict):
     raw='{"stage":"'+stage+'","summary":"原句","summary":"'+('不同' if conflict else '原句')+'"}'
     original=httpx.AsyncClient
@@ -45,7 +45,7 @@ def test_provider_only_normalizes_allowed_complete_identical_responses_and_keeps
     monkeypatch.setattr(httpx,'AsyncClient',lambda **kw:original(transport=transport,**kw))
     provider=Provider(tmp_path/'absent.env');provider.keys['https://api.deepseek.com']='test-key'
     proof=ModelCallEvidence(tmp_path,'CALL-test','RUN-test',stage,'synthetic','https://api.deepseek.com',None,'test-key')
-    if stage in ('ingest','review') and not conflict:
+    if not conflict:
         result,meta=asyncio.run(provider.request(DEFAULT,[],evidence=proof))
         assert result['summary']=='原句'
         assert meta['syntax_normalization']['paths']==[['summary']]

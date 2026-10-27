@@ -68,7 +68,8 @@ def review_project(p):
 
 
 def _resolve(p, oid, path):
-    obj=next((i for i in p.get('items',[])+p.get('questions',[]) if i['id']==oid),None)
+    obj=(p.get('product_context') if oid=='product_context' else
+         next((i for i in p.get('items',[])+p.get('questions',[]) if i['id']==oid),None))
     if obj is None:return None
     for part in path.split('.'):
         if isinstance(obj,dict):obj=obj.get(part)
@@ -96,6 +97,33 @@ def normalize_quotes(p,response):
             changes.append(dict(path=f'findings[{fi}].evidence_quotes[{qi}].quote',
                 object_id=quote['object_id'],source_path=quote['path'],before=quote['quote'],after=source))
             quote['quote']=source
+    return value,changes
+
+
+def normalize_decisions(p,response):
+    """Required decisions cannot remain nonblocking suggestions.
+
+    Match only an exact question, optionally followed by a parenthesized list
+    of choices. No keyword or semantic matching creates a new association.
+    """
+    value=copy.deepcopy(response);changes=[]
+    findings=value.get('findings',[])
+    for decision in value.get('result',{}).get('required_decisions',[]):
+        matches=[]
+        for index,finding in enumerate(findings):
+            question=finding.get('decision_question')
+            if not isinstance(question,str) or not question or not _clause_refs(p,finding.get('related_refs',[])):
+                continue
+            tail=decision[len(question):] if decision.startswith(question) else None
+            if decision==question or (tail and question.endswith(('?','？'))
+                    and re.fullmatch(r'\s*[（(][^?？]+[）)]\s*',tail)):
+                matches.append((index,finding))
+        if len(matches)!=1:continue
+        index,finding=matches[0]
+        if finding.get('severity')=='blocker' and finding['decision_question']==decision:continue
+        changes.append(dict(path=f'findings[{index}]',before=dict(severity=finding['severity'],decision_question=finding['decision_question']),
+            after=dict(severity='blocker',decision_question=decision)))
+        finding.update(severity='blocker',decision_question=decision)
     return value,changes
 
 
@@ -249,15 +277,21 @@ def apply_result(p,response,run_id,*,previous_response=None,previous_review=_UNS
             related_refs=copy.deepcopy(f['related_refs']),source_refs=copy.deepcopy(f['source_refs']),
             quotes=_quotes(p,f),options=copy.deepcopy(f.get('decision_options') or []),kind='semantic',status='open',hard_block=False,
             finding_type=f['type'],evidence_identity=evidence_identity)
+        if f.get('recommended_answer'):
+            card['recommended_answer']=f['recommended_answer']
         correction_warning=(needs_changes and not model_has_blockers and f['severity']=='warning'
             and bool(_clause_refs(p,f['related_refs'])))
         question=f.get('decision_question')
         # Older compatible reviewers only have required_decisions. Bind by an
         # explicit object ID; never guess which of several findings it belongs to.
         if not question:
-            matches=[d for d in decisions if any(ref in d for ref in f['related_refs'])]
+            # Shared clauses do not prove that two findings ask the same thing.
+            # An explicitly bound decision belongs to that finding alone.
+            explicitly_bound={x.get('decision_question') for x in response['findings'] if x is not f}
+            matches=[d for d in decisions if d not in explicitly_bound and any(ref in d for ref in f['related_refs'])
+                and sum(any(ref in d for ref in x['related_refs']) for x in response['findings'])==1]
             if len(matches)==1:question=matches[0]
-            elif len(decisions)==1 and len({digest(x) for x in response['findings'] if x['severity']=='blocker'})==1:
+            elif len(decisions)==1 and decisions[0] not in explicitly_bound and f['severity']=='blocker' and len({digest(x) for x in response['findings'] if x['severity']=='blocker'})==1:
                 question=decisions[0]
         if not question and (f['severity']=='blocker' or correction_warning) and _clause_refs(p,f['related_refs']):
             # A known-source correction still requires a displayed human change
@@ -335,6 +369,9 @@ def status(p):
     if not report['current'] and report['status'] not in ('running','failed'):report['status']='stale'
     questions={q['id']:q for q in p.get('questions',[])}
     for row in report.get('findings',[]):
+        from .prewrite_correction import plan as correction_plan
+        correction=correction_plan(p,row)
+        if correction:row['saved_correction']=correction
         q=questions.get(row.get('question_id'))
         if row.get('status')!='resolved' and q and q.get('status')=='answered':
             row['status']=('awaiting_recheck' if not report['current'] else 'open') if q.get('understanding_status')=='applied' else 'answered'
@@ -369,6 +406,8 @@ def document_change_summary(previous,new):
 
 
 def register(app,store):
+    from .prewrite_correction import register as register_corrections
+    register_corrections(app,store)
     @app.post('/api/projects/{pid}/prewrite-review/findings/{finding_id}/response')
     async def respond(pid:str,finding_id:str,body:dict):
         require(body.get('mode') in ('defer','dispute') and isinstance(body.get('reason'),str)

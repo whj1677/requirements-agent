@@ -49,6 +49,9 @@ def test_document_tasks_bind_to_submitted_type_without_label_or_tab_guessing():
         retry_input:{document_type:'mrd',target:{kind:'document',id:'DOC-mrd',section_id:'S1'}}});
       assert.equal(documentTaskForType([...tasks,local],'mrd').id,'MRD-section');
       assert.equal(documentTaskForType([...tasks,local],'prd').id,'PRD-current');
+      const assembled=task('local-PRD','prd','succeeded',{retry_input:undefined,assembly_origin:'saved_content',document_type:'prd'});
+      assert.equal(documentTaskForType([...tasks,assembled],'prd').id,'local-PRD');
+      assert.equal(documentTaskForType([...tasks,assembled],'mrd').id,'MRD');
       assert.equal(JSON.stringify(tasks),before);
     ''')
 
