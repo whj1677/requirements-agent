@@ -45,7 +45,7 @@ def test_recommendation_display_priority_does_not_adopt_or_resurrect_stale_answe
 
 
 def test_correction_reuses_explicit_saved_answer_without_confirming_new_question():
-    run_ts(r''' 
+    run_ts(r'''
       import assert from 'node:assert/strict';
       import {build} from 'esbuild';
       const result=await build({entryPoints:['src/pm-prototype/prewrite-batch-state.ts'],bundle:true,write:false,format:'esm',platform:'node'});
