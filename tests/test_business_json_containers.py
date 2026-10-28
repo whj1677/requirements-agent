@@ -12,6 +12,26 @@ from tests.test_deepseek_responses import completed, mock_transport
 from tests.test_requirement_recommendation import project, target
 
 
+def test_schema_unique_row_siblings_are_lifted_without_changing_values(tmp_path):
+    import copy
+    from app.business_draft import normalize_row_containers,adapt
+    from tests.test_business_draft import setup
+    p,local,_,_,excerpts,_=setup(tmp_path)
+    row=draft_row();broken=copy.deepcopy(row)
+    for key in ('acceptance','questions'):broken['behavior'][key]=broken.pop(key)
+    before=copy.deepcopy(broken)
+    fixed,moves=normalize_row_containers(broken)
+    assert fixed==row and broken==before and len(moves)==2
+    value,report=adapt(packet(broken),p,excerpts,'clarify',local)
+    assert report['container_normalized'] and not report['rejected'] and value['proposals']
+    # Ambiguous duplicated owner or unknown members must not be guessed away.
+    for key in ('acceptance','other'):
+        bad=copy.deepcopy(broken)
+        if key=='acceptance':bad['acceptance']=[]
+        else:bad['behavior'][key]='not a declared row field'
+        assert normalize_row_containers(bad)==(bad,[])
+
+
 def text(value):
     return json.dumps(value,ensure_ascii=False,separators=(',',':'))
 

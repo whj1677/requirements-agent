@@ -13,6 +13,7 @@ const built=await build({entryPoints:['src/pm-prototype/ConnectedWorkspace.tsx']
 const same=(left,right)=>!!left&&!!right&&left.length===right.length&&left.every((value,index)=>Object.is(value,right[index]));
 const memory=new Map();
 globalThis.sessionStorage={getItem:key=>memory.get(key)??null,setItem:(key,value)=>memory.set(key,String(value)),removeItem:key=>memory.delete(key)};
+globalThis.window={sessionStorage:globalThis.sessionStorage};
 globalThis.requestAnimationFrame=fn=>{fn();return 1;};
 const original='已保存的储能云平台电价模板需求原文。';
 const project={id:'P-entry',name:'已有需求和文档的项目',revision:17,sources:[],items:[],questions:[],
@@ -47,7 +48,7 @@ function createHarness({nonce=1,savedStep='refine',savedEntry='auto',deferDraft=
   let chatBeforeSend;
   let props={id:project.id,project,tasks:[],assistantEntryNonce:nonce,active:true,busy:false,running:false,
     actionBlockReason:'',mutate:async(path,body)=>{events.push(['write',path,body]);return {...draftResponse,...body,project};},
-    onOrganize:fail,onClarify:fail,onSources:()=>{},onCreateRequirement:()=>{},onCreateAcceptance:()=>{},
+    onOrganize:(message,request)=>events.push(['prepare',message,request]),onClarify:fail,onSources:()=>{},onCreateRequirement:()=>{},onCreateAcceptance:()=>{},
     onDelivery:()=>{},onDocuments:()=>{},onRefresh:()=>{},onRecommendRequirement:fail,onResolveBlocker:fail,
     onPrepareRefinement:async()=>{events.push(['prepare']);},onCancelPreparation:()=>events.push(['cancel-preparation']),
     chatPanel:before=>{chatBeforeSend=before;return React.createElement('div',{},'已保存的讨论仍在聊天入口');}};
@@ -62,6 +63,7 @@ function createHarness({nonce=1,savedStep='refine',savedEntry='auto',deferDraft=
   function button(label){const values=walk(view,node=>node.type==='button'&&text(node.props.children)===label);
     assert.equal(values.length,1,'find actual shipped button '+label);return values[0];}
   return {flush,events,registry,releaseDraft,update:async extra=>{props={...props,...extra};changed=true;await flush();},
+    suggest:async()=>{const table=walk(view,node=>typeof node.props?.onSuggest==='function')[0];assert(table,'rendered refinement table has an explicit AI action');table.props.onSuggest('合成明确补全',{mode:'all'});await flush();},
     click:async label=>{button(label).props.onClick({currentTarget:{closest:()=>null}});await flush();},
     input:async value=>{const input=walk(view,node=>node.type==='textarea'&&node.props.id==='connected-draft-P-entry')[0];
       input.props.onChange({target:{value}});await flush();},
@@ -119,7 +121,7 @@ def test_normal_entry_ignores_old_refinement_delivery_and_direct_mode_without_di
 
 def test_refinement_navigation_never_prepares_models_even_when_inputs_or_tasks_change():
     run_ts(ENTRY_HARNESS + r'''
-      for(const label of ['2完善需求','进入完善需求']) {
+      for(const label of ['2完善需求']) {
         const h=createHarness();await h.flush();
         await h.update({project:{...project,revision:18,sources:[{id:'SRC-single-instruction'}]},
           tasks:[{id:'TASK-single',action:'clarify',status:'partial',label:'完善这条需求建议'}]});
@@ -128,7 +130,7 @@ def test_refinement_navigation_never_prepares_models_even_when_inputs_or_tasks_c
           'ordinary navigation must not prepare an AI task or rewrite saved input');
         await h.click('1提供信息');await h.click(label);assert.equal(h.step,'refine');
         assert(!h.events.some(event=>event[0]==='prepare'));
-        await h.click('让 AI 先起草整表');
+        await h.suggest();
         assert.equal(h.events.filter(event=>event[0]==='prepare').length,1,
           'the explicit AI action remains available');
       }

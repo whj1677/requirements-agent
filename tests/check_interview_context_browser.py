@@ -94,7 +94,7 @@ async def until(predicate, timeout=15):
 
 async def open_goal(page, recorder, *, saved=False):
     workspace=page.locator('.connected-workspace:visible')
-    await recorder.click(workspace.get_by_role('button',name='不使用 AI，直接完善',exact=True))
+    await recorder.click(workspace.get_by_role('button',name='2 完善需求',exact=True))
     table=workspace.get_by_role('table',name='需求确认表',exact=True)
     await expect(table).to_be_visible()
     field=table.locator('tr[data-cell-key="context-intent"]')

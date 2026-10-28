@@ -195,6 +195,13 @@ def facts(text, *, location, object_id=None, source_refs=(), fallback_operation=
         for effect in EFFECT.finditer(sentence):
             prefix=sentence[:effect.start()]
             part=ASSERTION_BREAK.split(prefix)[-1]
+            # Rendering a value returned by a query is not a business write.
+            # Keep this narrow: a timeout followed by an invented success or
+            # an update of stored records must still be checked below.
+            if (effect.group()=='更新'
+                    and re.match(r'显示(?=[，,。；;\s]|$)',sentence[effect.end():])
+                    and re.search(r'以(?:系统)?返回(?:的)?结果\s*$',prefix)):
+                continue
             # Retaining local edit input is not the business transaction's effect.
             if re.match(r'\s*(?:输入|草稿|编辑内容)',sentence[effect.end():]):continue
             # A saved answer is workflow evidence, not a transaction outcome.

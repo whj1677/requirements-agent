@@ -43,3 +43,18 @@ def test_unchanged_explicit_target_does_not_add_duplicate_acceptance(tmp_path):
     p,local,ex,old,row=fixture(tmp_path);row['acceptance'][0].update(text=old['statement'],basis='fact')
     value,report=adapt(packet(row),p,ex,'clarify',local)
     assert not report['rejected'] and not any(i['kind']=='acceptance' for i in value['proposals'])
+
+
+def test_prompt_only_offers_real_acceptance_targets_not_requirement_revisions(tmp_path):
+    import json
+    from app.provider import DEFAULT,assemble
+    from app.business_draft import PROTOCOL
+    p,local,_,old,_=fixture(tmp_path)
+    revision=copy.deepcopy(p['items'][0]);revision.update(id='REQ-REV',target_item_id=p['items'][0]['id'],selection_status='candidate')
+    p['items'].append(revision)
+    messages,_,_=assemble(p,'clarify','',dict(DEFAULT,business_draft_protocol=PROTOCOL),tmp_path,requirement_recommendation_scope=local)
+    header=json.loads(messages[0]['content'].split('可信任务头：')[1]);context=json.loads(messages[1]['content'][0]['text'])
+    targets=header['schema']['properties']['requirements']['items']['properties']['acceptance']['items']['properties']['target_ref']['enum']
+    aliases=_item_aliases(p)
+    assert aliases[old['id']] in targets and aliases[revision['id']] not in targets
+    assert aliases[revision['id']] not in context['current_rows'][0]['editable_acceptance_refs']

@@ -65,6 +65,20 @@ def normalize_redundant_metadata(value):
         for row in rows:
             if not isinstance(row, dict) or not isinstance(row.get('evidence', {}), dict):
                 continue
+            # Some replies repeat the evidence for an explicit uniqueness
+            # constraint under an absent optional property. Keep the actual
+            # constraint and its identical source proof; do not invent a value
+            # or discard unknown/conflicting evidence.
+            evidence=row.get('evidence',{})
+            if (section=='fields' and 'uniqueness' not in row
+                    and '唯一' in str(row.get('constraints',''))
+                    and evidence.get('uniqueness')==evidence.get('constraints')
+                    and isinstance(evidence.get('uniqueness'),dict)
+                    and evidence['uniqueness'].get('status') in ('source','proposal')):
+                diagnostics.append(dict(path='detail_contract.fields.'+str(row.get('id',''))+'.evidence.uniqueness',
+                    code='BUSINESS_DRAFT_DETAIL_REDUNDANT_EVIDENCE',raw=copy.deepcopy(evidence['uniqueness']),
+                    reason='未提供独立唯一性属性；相同依据已完整保留在明确的唯一性约束中，未改变属性原文或来源'))
+                evidence.pop('uniqueness')
             for key, value in list(row.items()):
                 if (properties.get(key, {}).get('type') != 'string' or key in ('id','interaction_id','from','to')
                         or not isinstance(value, dict) or set(value) != {'text','basis','sources'}

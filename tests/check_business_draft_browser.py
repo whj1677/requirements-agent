@@ -127,7 +127,7 @@ async def journey(j):
     await expect(content).to_have_value(MANUAL)
     await j.page.reload(wait_until='networkidle')
     await expect(j.work().get_by_role('button',name='和助手聊需求',exact=True)).to_have_attribute('aria-pressed','true')
-    await j.work().get_by_role('button',name='不使用 AI，直接完善',exact=True).click()
+    await j.work().get_by_role('button',name='2 完善需求',exact=True).click()
     await expect(content).to_have_value(MANUAL)
     await expect(field).to_have_value(old)
     assert j.project()==initial and j.provider.calls==0

@@ -129,7 +129,7 @@ async def run(args):
                         await page.goto(ORIGIN, wait_until='networkidle')
                         await page.locator('aside.sidebar button[title="'+NAME+'"]').click()
                         work = page.locator('.connected-workspace:visible')
-                        direct = work.get_by_role('button', name='不使用 AI，直接完善', exact=True)
+                        direct = work.get_by_role('button', name='2 完善需求', exact=True)
                         if not await direct.is_visible():
                             await work.get_by_role('button', name='直接填写需求', exact=True).click()
                         await direct.click()

@@ -66,7 +66,7 @@ async def run(args):
                     await page.goto(ORIGIN,wait_until='networkidle')
                     await page.locator('aside.sidebar button[title="电价管理"]').click()
                     work=page.locator('.connected-workspace:visible')
-                    await work.get_by_role('button',name='不使用 AI，直接完善',exact=True).click()
+                    await work.get_by_role('button',name='2 完善需求',exact=True).click()
                     table=work.get_by_role('table',name='需求确认表',exact=True)
                     await expect(table).to_be_visible()
                     rid,title,_=TARGETS[0]

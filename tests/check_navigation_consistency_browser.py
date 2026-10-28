@@ -238,7 +238,7 @@ async def exercise(page, store, fixtures, output, report, expect):
     await page.reload(wait_until='networkidle')
     workspace, connected, details = await open_project(page, initial, expect)
     await expect(connected.get_by_role('textbox', name='你的想法', exact=True)).to_be_visible()
-    await connected.get_by_role('button', name='不使用 AI，直接完善', exact=True).click()
+    await connected.get_by_role('button', name='2 完善需求', exact=True).click()
     await expect(connected.get_by_role('table', name='需求确认表', exact=True)).to_be_visible()
     field = connected.get_by_role('textbox', name='希望达到的目标', exact=True)
     await expect(field).to_have_value(changed)

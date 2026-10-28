@@ -197,7 +197,7 @@ class Journey:
         await self.rec.click(self.page.locator('aside.sidebar button[title="'+NAME+'"]'))
         # Wait for the actual information draft load, not an arbitrary delay.
         # Concurrent browser scenarios can make a fixed 180 ms sleep too short.
-        await expect(self.work().get_by_role('button',name='不使用 AI，直接完善',exact=True).filter(visible=True)).to_be_enabled()
+        await expect(self.work().get_by_role('button',name='2 完善需求',exact=True).filter(visible=True)).to_be_enabled()
 
     async def chat(self,text=TEXT):
         await self.rec.click(self.work().get_by_role('button',name='和助手聊需求',exact=True))
@@ -210,7 +210,7 @@ class Journey:
         await self.page.wait_for_timeout(200)
 
     def primary(self):
-        return self.work().get_by_role('button',name='整理并进入完善需求',exact=True).filter(visible=True).first
+        return self.work().get_by_role('button',name=re.compile('^(整理并进入完善需求|让 AI 更新草稿)$')).filter(visible=True).first
 
     async def information(self):
         await expect(self.page.locator('.request-feedback .feedback-spinner')).to_have_count(0,timeout=15000)
@@ -291,7 +291,7 @@ async def main_flow(j):
     j.report['checks'].append('从空项目实际访谈，一次点击自动整理并显示进度；成功后自动到候选表，不自动采纳或确认范围')
     await j.information()
     before=j.calls()
-    await j.rec.click(j.work().get_by_role('button',name='不使用 AI，直接完善',exact=True).filter(visible=True))
+    await j.rec.click(j.work().get_by_role('button',name='2 完善需求',exact=True).filter(visible=True))
     await j.ready()
     assert j.calls()==before and len(j.tasks())==1
     await j.rec.note('5. 返回后再次进入\n信息没有变化，直接使用已有草稿，不重复整理。',3)
@@ -336,7 +336,7 @@ async def reuse_flow(j):
     await j.information(); await j.chat(TEXT+'补充：记录需显示填写时间，具体格式待确认。')
     state=await j.api('/refinement-preparation'); assert state['input_hash']!=first_hash and state['needs_organize']
     count=len(j.report['api_requests'])
-    await j.work().get_by_role('button',name='不使用 AI，直接完善',exact=True).click()
+    await j.work().get_by_role('button',name='2 完善需求',exact=True).click()
     await expect(j.page.get_by_role('table',name='需求确认表')).to_be_visible()
     assert j.calls()==before and len(j.tasks())==1
     assert not any(r['method']=='POST' and r['path'].endswith(('/actions','/actions/plan')) for r in j.report['api_requests'][count:])
@@ -353,7 +353,7 @@ async def navigation_only_flow(j):
     for label in ('top','card'):
         before=copy.deepcopy(j.project());count=len(j.report['api_requests'])
         button=(j.nav().get_by_role('button',name=re.compile('完善需求')) if label=='top'
-                else j.work().get_by_role('button',name='不使用 AI，直接完善',exact=True))
+                else j.work().get_by_role('button',name='2 完善需求',exact=True))
         await button.click()
         await expect(j.page.get_by_role('table',name='需求确认表')).to_be_visible()
         assert not j.provider.requests and not j.tasks() and not j.project()['items']
@@ -391,7 +391,7 @@ async def single_then_navigation_flow(j):
         await j.information()
         if label=='reload':await j.page.reload(wait_until='networkidle');await j.in_information()
         start=len(j.report['api_requests'])
-        button=(j.work().get_by_role('button',name='不使用 AI，直接完善',exact=True) if label=='card'
+        button=(j.work().get_by_role('button',name='2 完善需求',exact=True) if label=='card'
                 else j.nav().get_by_role('button',name=re.compile('完善需求')))
         await button.click();await expect(table).to_be_visible()
         assert len(j.provider.requests)==requests and len(j.store.records(j.pid,'user_task'))==tasks
@@ -448,7 +448,7 @@ async def failure_flow(j):
 async def manual_flow(j):
     await j.rec.click(j.work().get_by_role('button',name='直接填写需求',exact=True))
     await j.rec.fill(j.work().get_by_role('textbox',name='填写当前需求的原文底稿',exact=True),TEXT)
-    await j.rec.click(j.work().get_by_role('button',name='不使用 AI，直接完善',exact=True).filter(visible=True).first)
+    await j.rec.click(j.work().get_by_role('button',name='2 完善需求',exact=True).filter(visible=True).first)
     await expect(j.nav().get_by_role('button',name=re.compile('完善需求'))).to_have_attribute('aria-current','step')
     assert not j.provider.requests and not j.tasks() and j.project()['workspace_draft']['text']==TEXT
     assert not j.project()['items']
@@ -457,16 +457,17 @@ async def manual_flow(j):
     await j.in_information()
     await expect(j.work().get_by_role('button',name='和助手聊需求',exact=True)).to_have_attribute('aria-pressed','true')
     assert not j.provider.requests and not j.tasks()
-    await j.work().get_by_role('button',name='不使用 AI，直接完善',exact=True).click()
+    await j.work().get_by_role('button',name='2 完善需求',exact=True).click()
     await expect(j.page.get_by_role('table',name='需求确认表')).to_be_visible()
-    await expect(j.work().get_by_text('打开表格、刷新或再次进入不会自动调用 AI。',exact=False)).to_be_visible()
+    await expect(j.work().get_by_text('查看与确认不调用 AI',exact=True)).to_be_visible()
     assert not j.provider.requests and not j.tasks()
     await j.information()
-    await j.rec.click(j.work().get_by_role('button',name='不使用 AI，直接完善',exact=True).filter(visible=True))
+    await j.rec.click(j.work().get_by_role('button',name='2 完善需求',exact=True).filter(visible=True))
     await expect(j.page.get_by_role('table',name='需求确认表')).to_be_visible()
     assert not j.provider.requests and not j.tasks()
     j.report['checks'].append('首次明确手动完善选择跨刷新和返回重入保留，0 自动 Provider 请求')
-    await j.work().get_by_role('button',name='让 AI 先起草整表',exact=True).click()
+    await j.work().get_by_role('button',name='1 提供信息',exact=True).click()
+    await j.primary().click()
     dialog=j.page.get_by_role('dialog',name='核对本次任务')
     await expect(dialog).to_be_visible()
     await expect(dialog).to_contain_text('本次包含需你授权的内容')
@@ -515,7 +516,7 @@ async def cancel_switch_flow(j):
     assert not j.store.get(j.other)['items']
     await j.rec.click(j.page.locator('aside.sidebar button[title="'+NAME+'"]'))
     before=j.calls()
-    await j.rec.click(j.work().get_by_role('button',name='不使用 AI，直接完善',exact=True).filter(visible=True))
+    await j.rec.click(j.work().get_by_role('button',name='2 完善需求',exact=True).filter(visible=True))
     await j.ready(); assert j.calls()==before and len(j.tasks())==2
     j.report['checks'].append('切换项目后原项目完成不会拉走当前项目；返回后可用原草稿且不重复整理')
 
@@ -548,12 +549,13 @@ async def restore_refine_flow(j):
     await expect(j.work().get_by_role('button',name='和助手聊需求',exact=True)).to_have_attribute('aria-pressed','true')
     assert j.calls()==before and len(j.tasks())==1
     await expect(table).to_have_count(0)
-    await j.work().get_by_role('button',name='不使用 AI，直接完善',exact=True).click()
+    await j.work().get_by_role('button',name='2 完善需求',exact=True).click()
     await expect(table).to_be_visible()
     await expect(table.get_by_role('textbox',name=TITLE+' 需求内容',exact=True)).to_have_value(manual)
     assert j.calls()==before and len(j.tasks())==1
     j.provider.hold()
-    await j.work().get_by_role('button',name='让 AI 先起草整表',exact=True).click()
+    await j.work().get_by_role('button',name='1 提供信息',exact=True).click()
+    await j.primary().click()
     await wait_until(j.provider.entered.is_set,'Explicit AI action did not prepare legacy draft')
     assert j.calls()==before+1 and len(j.tasks())==2
     j.provider.release.set()
@@ -563,7 +565,7 @@ async def restore_refine_flow(j):
     await j.page.reload(wait_until='networkidle')
     await j.in_information()
     assert j.calls()==before+1 and len(j.tasks())==2
-    await j.work().get_by_role('button',name='不使用 AI，直接完善',exact=True).click()
+    await j.work().get_by_role('button',name='2 完善需求',exact=True).click()
     await expect(table).to_be_visible(timeout=20000)
     await expect(table.get_by_role('textbox',name=TITLE+' 需求内容',exact=True)).to_have_value(manual)
     assert j.calls()==before+1 and len(j.tasks())==2
@@ -584,7 +586,7 @@ async def restore_authorization_flow(j):
         await j.primary().click();await expect(dialog).to_be_visible()
         assert not j.provider.requests and not j.tasks()
         await dialog.get_by_role('button',name='返回保留输入',exact=True).click()
-    await j.work().get_by_role('button',name='不使用 AI，直接完善',exact=True).click()
+    await j.work().get_by_role('button',name='2 完善需求',exact=True).click()
     await expect(j.page.get_by_role('table',name='需求确认表')).to_be_visible()
     await j.page.reload(wait_until='networkidle');await j.in_information()
     assert not j.provider.requests and not j.tasks()
@@ -624,7 +626,7 @@ async def restore_cancel_flow(j):
     await j.page.wait_for_timeout(600)
     await j.in_information()
     assert j.calls()==1 and len(j.tasks())==1
-    await j.rec.click(j.work().get_by_role('button',name='不使用 AI，直接完善',exact=True).filter(visible=True))
+    await j.rec.click(j.work().get_by_role('button',name='2 完善需求',exact=True).filter(visible=True))
     await j.ready()
     assert j.calls()==1 and len(j.tasks())==1
     j.report['checks'].append('刷新不自动恢复；主动整理期间用户返回提供信息后任务完成不拉回；再次进入复用结果，不新增调用')
@@ -639,15 +641,15 @@ async def restore_draft_read_failure_flow(j):
     retry=j.work().get_by_role('button',name='重新读取工作底稿',exact=True)
     await expect(retry).to_be_visible()
     await j.in_information()
-    await expect(j.work().get_by_role('button',name='不使用 AI，直接完善',exact=True)).to_be_disabled()
-    await expect(j.work().get_by_role('button',name='不使用 AI，直接完善',exact=True)).to_be_disabled()
+    await expect(j.work().get_by_role('button',name='2 完善需求',exact=True)).to_be_disabled()
+    await expect(j.work().get_by_role('button',name='2 完善需求',exact=True)).to_be_disabled()
     assert j.project()==before and not j.tasks() and not j.provider.requests
     assert not any(row['method']=='POST' and row['path'].endswith('/workspace-draft') for row in j.report['api_requests'])
     await retry.click()
-    await expect(j.work().get_by_role('button',name='不使用 AI，直接完善',exact=True)).to_be_enabled()
+    await expect(j.work().get_by_role('button',name='2 完善需求',exact=True)).to_be_enabled()
     assert not j.tasks() and not j.provider.requests and j.project()==before
     await expect(j.page.get_by_role('dialog',name='核对本次任务')).to_have_count(0)
-    await j.work().get_by_role('button',name='不使用 AI，直接完善',exact=True).click()
+    await j.work().get_by_role('button',name='2 完善需求',exact=True).click()
     await expect(j.page.get_by_role('table',name='需求确认表')).to_be_visible()
     assert j.project()==before
     assert not any(row['method']=='POST' and row['path'].endswith('/workspace-draft') for row in j.report['api_requests'])
@@ -667,7 +669,7 @@ async def pending_draft_read_flow(j):
         assert j.calls()==before and not j.tasks()
     finally:
         j.draft_read_gate.set()
-    await expect(j.work().get_by_role('button',name='不使用 AI，直接完善',exact=True).filter(visible=True)).to_be_enabled()
+    await expect(j.work().get_by_role('button',name='2 完善需求',exact=True).filter(visible=True)).to_be_enabled()
     await j.primary().click()
     await j.ready()
     assert j.calls()==before+1 and len(j.tasks())==1

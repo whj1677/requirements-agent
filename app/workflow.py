@@ -226,6 +226,9 @@ class Workflow:
         repair_original = None
         interview_anchor = None
         syntax_anchor = None
+        prewrite_repair = None
+        business_reference_repair = None
+        business_reference_plan = None
         interview_context_review = None
         business_draft_review = None
         failed_outputs = set()
@@ -288,7 +291,25 @@ class Workflow:
                         from .format_repair import anchor as format_anchor
                         require(format_anchor(evidence)==syntax_anchor,'SEMANTIC_BLOCKED',
                                 '格式修复改变了原回复的业务字面内容或顺序，结果未写入；原始证据保留。')
+                    if prewrite_repair is not None:
+                        from .prewrite_repair import apply as apply_review_patch
+                        patch=copy.deepcopy(value)
+                        value=apply_review_patch(prewrite_repair,patch)
+                        evidence.value['prewrite_metadata_repair']=dict(patch=patch,
+                            original_hash=digest(prewrite_repair['original']),output_hash=digest(value))
+                        evidence.save()
+                    if business_reference_repair is not None:
+                        from .business_reference_repair import apply as apply_business_refs
+                        patch=copy.deepcopy(value)
+                        value=apply_business_refs(business_reference_repair,patch)
+                        evidence.value['business_reference_repair']=dict(patch=patch,
+                            original_hash=digest(business_reference_repair['original']),output_hash=digest(value))
+                        evidence.save()
                     if business_protocol:
+                        if repair_count==0 and (run.get('draft_request') or {}).get('mode')=='prewrite':
+                            from .business_reference_repair import prepare as prepare_business_refs
+                            business_reference_plan=prepare_business_refs(value,excerpts)
+                            if business_reference_plan:raise Problem('BUSINESS_REFERENCE_INVALID','业务草稿存在无效来源编号，需要核对本轮材料。')
                         from .business_draft import adapt
                         raw_hash = digest(value)
                         value, business_draft_review = adapt(value, p, excerpts, run['stage'], run.get('requirement_recommendation_scope'),draft_request=run.get('draft_request'))
@@ -353,12 +374,12 @@ class Workflow:
                         original_hash=digest(value)
                         value,quote_changes=normalize_quotes(p,value)
                         if quote_changes:
-                            normalization=dict(rule='prewrite-full-property-terminal-punctuation-1',
+                            normalization=dict(rule='prewrite-verified-quotes-2',
                                 input_hash=original_hash,output_hash=digest(value),changes=quote_changes)
                             evidence.value.setdefault('response_normalizations',[]).append(normalization)
                             evidence.save()
                             attempt.setdefault('response_normalizations',[]).append(normalization)
-                            events.append(dict(time=now(),phase='按完整属性原文恢复引文末尾标点，原模型输出保留在调用证据。',call=calls))
+                            events.append(dict(time=now(),phase='已核对检查引文；无法核实的非阻塞提示明确标注，原输出保留',call=calls))
                     if run['stage']=='ingest':
                         if not run.get('benchmark'):
                             from .benchmark import ordinary_response
@@ -441,6 +462,35 @@ class Workflow:
                     # repair prompt for a business-only packet. No recursive retry.
                     if syntax_anchor is not None:
                         raise e
+                    if business_reference_repair is not None:
+                        raise e
+                    if e.code=='BUSINESS_REFERENCE_INVALID' and business_reference_plan and repair_count==0:
+                        from .business_reference_repair import messages as business_ref_messages, SCHEMA as business_ref_schema
+                        business_reference_repair=business_reference_plan
+                        messages=business_ref_messages(business_reference_repair)
+                        pending_repair=True;repair_parent=call_id
+                        authorization=dict(authorization,repair_protocol='business-reference-patch-1',
+                            repair_original_hash=digest(value),schema_hash=digest(business_ref_schema),
+                            prompt_hash=digest(messages[0]['content'].split('可信任务头：',1)[0]))
+                        self.store.update_run(pid,rid,repair_anchor_hash=digest(value))
+                        events.append(dict(time=now(),phase='正在核对并修复错误来源编号，业务原文和有效引用保持不变',call=calls))
+                        continue
+                    if prewrite_repair is not None:
+                        # A failed slot repair is never recursively rewritten.
+                        raise e
+                    if run.get('prewrite') and repair_count==0 and e.model_repair_allowed and e.code in (
+                            'REFERENCE_INVALID','PREWRITE_DECISION_BINDING_REQUIRED'):
+                        from .prewrite_repair import prepare as prepare_review_patch, messages as review_patch_messages, SCHEMA as review_patch_schema
+                        prewrite_repair=prepare_review_patch(p,value)
+                        if prewrite_repair:
+                            messages=review_patch_messages(prewrite_repair)
+                            pending_repair=True;repair_parent=call_id
+                            authorization=dict(authorization,repair_protocol='prewrite-metadata-patch-1',
+                                repair_original_hash=digest(value),schema_hash=digest(review_patch_schema),
+                                prompt_hash=digest(messages[0]['content'].split('可信任务头：',1)[0]))
+                            self.store.update_run(pid,rid,repair_anchor_hash=digest(value))
+                            events.append(dict(time=now(),phase='正在修复检查问题的关联与引文，保留原问题和修改建议',call=calls))
+                            continue
                     if run['stage']!='interview' and e.code=='SCHEMA_INVALID' and e.model_repair_allowed and repair_count==0:
                         from .format_repair import anchor as format_anchor, instruction as format_instruction
                         syntax_candidate=format_anchor(evidence)

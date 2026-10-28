@@ -71,7 +71,7 @@ async def enter(page, initial, expect):
     work = page.locator('.connected-workspace:visible')
     table = work.get_by_role('table', name='需求确认表', exact=True)
     if not await table.is_visible():
-        await work.get_by_role('button', name='不使用 AI，直接完善', exact=True).click()
+        await work.get_by_role('button', name='2 完善需求', exact=True).click()
     await expect(table).to_be_visible()
     return work, table
 

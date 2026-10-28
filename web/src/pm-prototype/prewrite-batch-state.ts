@@ -9,9 +9,17 @@ export const batchCompletion=(p:Project)=>{
   return c?.mode==='prewrite'&&c.applied_revision===p.revision?c:null;
 };
 /** A review recommendation is a displayed draft, never a saved human answer. */
-export function answerOffer(p:Project,f:Obj):{text:string;kind:'saved'|'draft'|'missing'}{
+export function answerOffer(p:Project,f:Obj):{text:string;kind:'saved'|'draft'|'missing';reused?:boolean}{
   const q=p.questions.find(q=>q.id===f.question_id);
   if(q?.answer?.trim())return {text:q.answer,kind:'saved'};
+  // A correction can explicitly cite an already answered question. Carry that
+  // exact answer into the review draft; never treat it as a new confirmation.
+  const message=String(f.message||'');
+  if(f.decision_kind==='correction'&&/已保存回答|已答决定|已答口径/.test(message)){
+    const ids=new Set(message.match(/Q-[A-Za-z0-9_-]+/g)||[]);
+    const prior=p.questions.filter(old=>old.id!==q?.id&&ids.has(old.id)&&old.status==='answered'&&old.answer?.trim());
+    if(prior.length===1)return {text:prior[0].answer,kind:'draft',reused:true};
+  }
   const completion=batchCompletion(p),draft=completion?.answers?.[q?.id||'']?.text;
   const recommendation=typeof q?.recommendation==='string'?q.recommendation:q?.recommendation?.text;
   const text=draft||f.recommended_answer||recommendation;
@@ -87,7 +95,12 @@ export function batchImplementations(p:Project,sheet:Sheet){
       const prior=(sheet.answer_implementations?.[q.id]||[]).filter(r=>r.item_id===item.id).map(r=>r.field);
       const original=p.items.find(i=>i.id===item.id)||{};
       const changed=['statement',...Object.keys(fields).map(f=>'behavior.'+f)].filter(path=>fieldText(item,path)!==fieldText(original,path));
-      const paths=[...new Set<string>(quoted.length?quoted:changed.length?changed:prior.length?prior:['statement'])];
+      // Review quotes may point at whole containers or source excerpts. Those
+      // are useful evidence but not editable string properties for confirmation.
+      const valid=(path:string)=>path==='statement'||Object.keys(fields).some(f=>path==='behavior.'+f)||/^detail_contract\.(?:fields|interactions|state_transitions|flow\.(?:nodes|edges))\.[A-Za-z0-9_-]{1,80}\.[a-z_]+$/.test(path);
+      const usable=(paths:string[])=>paths.filter(path=>valid(path)&&fieldText(item,path).trim());
+      const choices=[usable(quoted),usable(changed),usable(prior),['statement']];
+      const paths=[...new Set<string>(choices.find(paths=>paths.length)||[])];
       return paths.flatMap(field=>fieldText(item,field).trim()?[{item_id:item.id,field,quote:fieldText(item,field)}]:[]);
     });
     return [q.id,refs];

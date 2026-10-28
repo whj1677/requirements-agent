@@ -6,6 +6,20 @@ import pytest
 
 from app.business_draft import adapt, assemble, ROW
 from app.detail_draft import canonical_detail, input_detail, model_schema, normalize_redundant_metadata
+
+
+def test_redundant_uniqueness_evidence_keeps_the_exact_constraint_and_sources():
+    proof={'status':'source','sources':[{'source':'S1','locator':'L1'}]}
+    field={'id':'F1','constraints':'唯一且非空','evidence':{'constraints':proof,'uniqueness':copy.deepcopy(proof)}}
+    normalized,diagnostics=normalize_redundant_metadata({'fields':[field]})
+    assert normalized['fields'][0]['constraints']==field['constraints']
+    assert normalized['fields'][0]['evidence']=={'constraints':proof}
+    assert field['evidence']['uniqueness']==proof
+    assert diagnostics[0]['code']=='BUSINESS_DRAFT_DETAIL_REDUNDANT_EVIDENCE'
+    for changed in ({'status':'unknown'},{'status':'source','sources':[{'source':'S404','locator':'L1'}]}):
+        value=copy.deepcopy(field);value['evidence']['uniqueness']=changed
+        preserved,notes=normalize_redundant_metadata({'fields':[value]})
+        assert preserved['fields'][0]['evidence']['uniqueness']==changed and not notes
 from app.core import Problem
 from app.requirement_details import detail_issues, validate_detail
 from app.workflow import apply_response, replace_business_ids

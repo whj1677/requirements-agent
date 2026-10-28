@@ -95,6 +95,8 @@ async def exercise(page, store, _initial, _chapter, output, report, expect):
             assert normal['table']['visibleHeight'] >= height * .5, 'At least half the short laptop viewport must remain available for editing'
         assert await statement.evaluate('input => parseFloat(getComputedStyle(input).fontSize) >= 14'), 'Laptop space must not come from shrinking editable text'
         await page.screenshot(path=str(output/f'{width}x{height}-normal.png'))
+        menu=work.locator('.sheet-more-actions')
+        if await menu.get_attribute('open') is None:await menu.locator('summary').click()
         await work.get_by_role('button', name='专注核对', exact=True).click()
         await expect(work.get_by_role('button', name='退出专注核对', exact=True)).to_have_attribute('aria-pressed', 'true')
         assert await input_handle.evaluate('(input)=>input.isConnected'), 'Focus mode unmounted an edited input'

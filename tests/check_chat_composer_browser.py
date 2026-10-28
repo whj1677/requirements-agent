@@ -4,6 +4,8 @@ No daily project is loaded: every /api request is routed to a temporary
 create_app instance, and its provider has no network request path.
 """
 
+from tests.browser_navigation import select_project
+
 import argparse
 import asyncio
 import base64
@@ -104,7 +106,8 @@ async def composer_geometry(page, button_text='发送'):
         const el=root?.querySelector(selector)||document.querySelector(selector);
         if(el){const r=el.getBoundingClientRect();boxes[selector]={top:r.top,bottom:r.bottom,height:r.height,clientHeight:el.clientHeight,scrollHeight:el.scrollHeight,overflowY:getComputedStyle(el).overflowY,scrollTop:el.scrollTop};}
       }
-      return {viewport:{width:innerWidth,height:innerHeight},textarea:area&&{top:area.top,bottom:area.bottom},button:send&&{top:send.top,bottom:send.bottom},textarea_visible:clickable(textarea,area),button_visible:clickable(button,send),boxes};
+      const style=textarea&&getComputedStyle(textarea);
+      return {viewport:{width:innerWidth,height:innerHeight},textarea:area&&{top:area.top,bottom:area.bottom,height:area.height},input_style:style&&{fontSize:parseFloat(style.fontSize),borderWidth:parseFloat(style.borderTopWidth),background:style.backgroundColor,border:style.borderTopColor},button:send&&{top:send.top,bottom:send.bottom},textarea_visible:clickable(textarea,area),button_visible:clickable(button,send),boxes};
     }''', button_text)
 
 
@@ -159,7 +162,7 @@ async def run(args):
                     page.on('pageerror', lambda error: report['page_errors'].append(str(error)))
                     await page.goto(ORIGIN + '/', wait_until='networkidle')
                     if width <= 700:
-                        await page.get_by_label('切换项目').select_option(pid)
+                        await select_project(page,pid)
                     else:
                         await page.get_by_role('button', name=name).click()
                     await page.locator('.connected-workspace:visible').wait_for()
@@ -184,6 +187,8 @@ async def run(args):
                         row['chat_width']=await grid.locator('main').first.evaluate('e=>Math.round(e.getBoundingClientRect().width)')
                     for round_index in range(3):
                         geometry = await composer_geometry(page)
+                        assert geometry['input_style']['fontSize']>=16 and geometry['textarea']['height']>=80, 'Input text and writing area must remain readable'
+                        assert geometry['input_style']['borderWidth']>=1 and geometry['input_style']['border']!=geometry['input_style']['background'], 'Input needs its own visible boundary'
                         if 1001<=width<=1600 and height>=720:
                             assert geometry['boxes']['.chat-messages']['height']>=100, 'Chat history must retain usable reading space on a laptop'
                         row['checks'].append({'round': round_index + 1, 'before': geometry})
@@ -306,7 +311,7 @@ async def run(args):
                 page = await context.new_page()
                 page.on('pageerror', lambda error: report['page_errors'].append(str(error)))
                 await page.goto(ORIGIN + '/', wait_until='networkidle')
-                await page.get_by_label('切换项目').select_option(image_send_pid)
+                await select_project(page,image_send_pid)
                 await page.locator('.connected-workspace:visible').get_by_role('button', name='和助手聊需求').click()
                 await page.locator('.connected-workspace:visible textarea[aria-label="你的想法"]').evaluate('''(element, encoded) => {
                   const raw=atob(encoded), bytes=new Uint8Array(raw.length);

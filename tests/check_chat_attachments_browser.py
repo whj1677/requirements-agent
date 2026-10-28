@@ -4,6 +4,8 @@ All /api calls use an isolated create_app; static bytes come from --static-build
 The provider returns synthetic interview JSON and has no network request path.
 """
 
+from tests.browser_navigation import select_project
+
 import argparse
 import asyncio
 import base64
@@ -71,7 +73,7 @@ async def wait_chat_ready(page):
 async def open_chat(page, pid, name, width):
     await page.goto(ORIGIN + '/', wait_until='networkidle')
     if width <= 700:
-        await page.get_by_label('切换项目').select_option(pid)
+        await select_project(page,pid)
     else:
         await page.get_by_role('button', name=name).click()
     await page.locator('.connected-workspace:visible').get_by_role('button', name='和助手聊需求').click()
@@ -244,14 +246,14 @@ async def run(args):
                     assert await page.locator('.connected-chat .chat-pasted-image').count() == 2
                     # Entering refinement deliberately keeps unsent input in
                     # the assistant. Project switching exercises save-on-leave.
-                    await page.get_by_label('切换项目').select_option(desktop['id'])
+                    await select_project(page,desktop['id'])
                     leave = page.get_by_role('dialog', name='未保存的修改')
                     await leave.wait_for()
                     await leave.get_by_role('button', name='保存后离开').click()
                     await leave.wait_for(state='hidden')
                     assert len(attachment_sources(store, mobile['id'])) == 2 and provider.calls == 4
                     await page.reload(wait_until='networkidle')
-                    await page.get_by_label('切换项目').select_option(mobile['id'])
+                    await select_project(page,mobile['id'])
                     await page.locator('.connected-workspace:visible .connected-steps').get_by_role('button', name='提供信息').click()
                     await page.locator('.connected-workspace:visible').get_by_role('button', name='和助手聊需求').click()
                     await page.locator('.connected-chat .chat-pasted-image').first.wait_for()

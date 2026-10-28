@@ -228,6 +228,8 @@ def _input(project, excerpts, user_message, local_scope):
                     q.get('decision_answer_source_refs', []) + (group_answer or {}).get('source_refs', []), aliases)))
         rows.append(dict(row_key=key, scoped=item['id'] in project.get('product_context', {}).get('scope_ids', []),
                           **_item_input(item, aliases, item_aliases),
+                          editable_acceptance_refs=[item_aliases[i['id']] for i in clauses
+                              if i['kind']=='acceptance' and not i.get('target_item_id') and i.get('applies_to')=='to_be'],
                           related_clauses=[_item_input(i, aliases, item_aliases) for i in clauses], questions=questions))
     vision = []
     for message in project.get('messages', []):
@@ -325,6 +327,12 @@ def assemble(project, stage, user_message, config, folder=None, local_scope=None
             'all 模式还要补齐任务头列出的其他空摘要项；对确实不涉及的内容说明不涉及及理由，保留用户已有明确不适用/没有的选择。'
             '与本期确实无关的维度写清不涉及及原因，不留空。推荐回答涉及行为时，同时起草对应正文、行为和验收修订，内容一致但全部待确认；不能用 answer_refs 冒充该回答已保存或已落实。'
             '详细定义中必填属性也用具体 proposal；不以 unknown 占位代替有意义的草稿。profile、change_types、scope_rows 是待确认的建议，不是正式选择。')
+    # Candidate revision aliases are useful context, but never legal targets of
+    # an acceptance edit. Advertise the same boundary enforced by adaptation.
+    acceptance_refs=list(dict.fromkeys(ref for row in context['current_rows'] for ref in row['editable_acceptance_refs']))
+    target_schema=header['schema']['properties']['requirements']['items']['properties']['acceptance']['items']['properties']
+    target_schema['target_ref']=({'enum':acceptance_refs,
+        'description':'只能复制该行 editable_acceptance_refs 中的编号；新增验收省略本字段。'} if acceptance_refs else {'not':{}})
     system = PROMPT + detail_draft.PROMPT + completion_prompt + '\n可信任务头：' + dumps(header)
     from .platform_knowledge import attach as attach_platform_knowledge, protected_system
     attach_platform_knowledge(context, system, config, folder, project, user_message, stage, scope=local_scope)
@@ -686,6 +694,22 @@ def _extra_root_fields(value, draft_request=None):
     return structural
 
 
+def normalize_row_containers(row):
+    """Lift misplaced row-only siblings out of behavior, without value edits.
+
+    Only a complete, uniquely owned requirement row that passes its full schema
+    after the moves qualifies. Collisions, unknown keys and partial rows remain
+    visible validation failures; the caller retains the original model evidence.
+    """
+    if not isinstance(row,dict) or not isinstance(row.get('behavior'),dict):return row,[]
+    misplaced=set(row['behavior'])-set(BEHAVIOR)
+    if not misplaced or not misplaced<= {'acceptance','questions','detail_contract'} or misplaced&set(row):return row,[]
+    normalized=copy.deepcopy(row)
+    for key in misplaced:normalized[key]=normalized['behavior'].pop(key)
+    if list(jsonschema.Draft202012Validator(ROW).iter_errors(normalized)):return row,[]
+    return normalized,[dict(before='behavior.'+key,after=key) for key in sorted(misplaced)]
+
+
 def adapt(value, project, excerpts, stage, local_scope=None, draft_request=None):
     """Validate package shape, then isolate independent rows without silent loss."""
     require(stage == 'ingest' or stage == 'clarify' and local_scope,
@@ -708,7 +732,7 @@ def adapt(value, project, excerpts, stage, local_scope=None, draft_request=None)
     report = dict(protocol=PROTOCOL, status='ready_for_human_review', complete=True, review_required=True,
         source_validation='locator_checked_not_semantic_approval', raw_summary=value['summary'],
         draft_contract=DRAFT_SCHEMA, accepted=[], rejected=[], field_rejected=[],
-        question_rejected=[], structure_rejected=structure_rejected, detail_normalized=[],
+        question_rejected=[], structure_rejected=structure_rejected, detail_normalized=[], container_normalized=[],
         summary_fields={}, summary_rejected=[],
         limitations=copy.deepcopy(value['limitations']))
     keys = [row.get('row_key') if isinstance(row, dict) else None for row in value['requirements']]
@@ -722,6 +746,8 @@ def adapt(value, project, excerpts, stage, local_scope=None, draft_request=None)
         detail_normalized = []
         detail_missing = False
         try:
+            row,container_changes=normalize_row_containers(row)
+            if container_changes:report['container_normalized'].append(dict(row_key=key,moves=container_changes))
             row_shape = copy.deepcopy(ROW)
             row_shape['properties']['questions']['items'] = {}
             row_shape['additionalProperties'] = True

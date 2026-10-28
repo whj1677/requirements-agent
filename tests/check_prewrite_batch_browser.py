@@ -147,7 +147,7 @@ async def run(args):
                 await context.route('**/*',route);page=await context.new_page();page.on('pageerror',lambda e:report['page_errors'].append(str(e)))
                 try:
                     await page.goto(ORIGIN,wait_until='networkidle');await page.locator('aside.sidebar button[title="'+p['name']+'"]').click()
-                    work=page.locator('.connected-workspace:visible');await work.get_by_role('button',name='不使用 AI，直接完善',exact=True).click()
+                    work=page.locator('.connected-workspace:visible');await work.get_by_role('button',name='2 完善需求',exact=True).click()
                     await expect(work.get_by_role('button',name='保存草稿',exact=True)).to_be_enabled();await expect(page.locator('.request-feedback .feedback-spinner')).to_have_count(0)
                     await work.locator('.refinement-view-switch').get_by_role('button',name=re.compile('^成文检查')).click()
                     batch=work.get_by_role('region',name='成文检查确认表',exact=True)
@@ -170,10 +170,21 @@ async def run(args):
                         assert not provider.requests
                     elif not real:
                         empty=next((f for f in p['prewrite_review']['findings'] if f.get('question_id') and not next((q for q in p['questions'] if q['id']==f['question_id']),{}).get('answer')),None)
-                        if empty:
+                        if empty and not args.local_bms_snapshot:
                             row=batch.locator('tr[data-check-id="'+empty['id']+'"]')
                             await expect(row.get_by_text('本轮检查尚未生成回答草稿',exact=True)).to_be_visible()
                             assert not await row.get_by_text('AI 推荐草稿，确认后才保存为你的回答。',exact=True).count()
+                    if args.local_bms_snapshot:
+                        first=p['prewrite_review']['findings'][0]
+                        prior=next(q for q in p['questions'] if q.get('answer') and q['id'] in first['message'])
+                        answer=batch.get_by_role('textbox',name='检查点 1 的回答',exact=True)
+                        await expect(answer).to_have_value(prior['answer'])
+                        await page.reload(wait_until='networkidle')
+                        await page.locator('aside.sidebar button[title="'+p['name']+'"]').click()
+                        await work.get_by_role('button',name='2 完善需求',exact=True).click()
+                        await work.locator('.refinement-view-switch').get_by_role('button',name=re.compile('^成文检查')).click()
+                        await expect(answer).to_have_value(prior['answer'])
+                        report['saved_answer_survives_reentry']=True
                     evidence=work.locator('.prewrite-optional-details');await evidence.locator('summary').first.click()
                     assert await evidence.get_by_role('textbox').count()==0
                     assert await evidence.get_by_role('button',name=re.compile('整理|确认|生成')).count()==0

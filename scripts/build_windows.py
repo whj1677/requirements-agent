@@ -20,7 +20,7 @@ import sys
 from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
-VERSION = '1.2.7'
+VERSION = '1.2.8'
 KIT = 'requirements-agent-codex-kit-v1.1'
 LEGACY_MODULES = ('activation', 'licensing', 'license_trust')
 DOCUMENTS = ('user-guide.md', 'windows-installation.md')

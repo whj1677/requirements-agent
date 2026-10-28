@@ -214,7 +214,9 @@ def test_bridge_rejects_failed_or_malformed_success(manager, monkeypatch, respon
 def test_child_output_and_timeout_are_bounded(monkeypatch, program, code):
     popen = subprocess.Popen
     monkeypatch.setattr(licensing.subprocess, "Popen", lambda _args, **kwargs: popen([sys.executable, "-c", program], **kwargs))
-    monkeypatch.setattr(licensing, "BRIDGE_TIMEOUT_SECONDS", 0.3)
+    # Allow interpreter startup under the full browser/test workload. The
+    # hanging child still exceeds this bound; production limits are unchanged.
+    monkeypatch.setattr(licensing, "BRIDGE_TIMEOUT_SECONDS", 1.5)
     assert_code(code, lambda: licensing._bounded_process(Path("unused.exe"), b"{}"))
 
 

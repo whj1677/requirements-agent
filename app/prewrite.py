@@ -68,6 +68,13 @@ def review_project(p):
 
 
 def _resolve(p, oid, path):
+    source=next((s for s in p.get('sources',[]) if s['id']==oid),None)
+    if source is not None:
+        # A provider may use the real source/excerpt pair as a quote location.
+        # Resolve that exact pair only; never guess another item/property.
+        from .domain_context import active_source_ids
+        if oid not in active_source_ids(p):return None
+        return next((e.get('text') for e in source.get('excerpts',[]) if e['id']==path),None)
     obj=(p.get('product_context') if oid=='product_context' else
          next((i for i in p.get('items',[])+p.get('questions',[]) if i['id']==oid),None))
     if obj is None:return None
@@ -80,23 +87,39 @@ def _resolve(p, oid, path):
 
 
 def normalize_quotes(p,response):
-    """Recover only a punctuation suffix added to a complete source property.
+    """Verify review quotations without inventing replacement evidence.
 
-    Raw model bytes remain in evidence. No partial quote, word, object or path is
-    guessed, and ordinary review normalization is deliberately unaffected.
+    Recover a terminal punctuation suffix; qualify unverifiable optional notes
+    only when the review is already ready with no business decisions. Blocking
+    quotations remain strict. Raw bytes are retained in model-call evidence.
     """
     value=copy.deepcopy(response);changes=[]
     if not isinstance(value,dict):return value,changes
     for fi,finding in enumerate(value.get('findings',[])):
         if not isinstance(finding,dict):continue
+        retained=[]
         for qi,quote in enumerate(finding.get('evidence_quotes',[])):
+            retained.append(quote)
             if not isinstance(quote,dict) or not all(isinstance(quote.get(k),str) for k in ('object_id','path','quote')):continue
             source=_resolve(p,quote['object_id'],quote['path'])
+            optional=(value.get('result',{}).get('assessment')=='ready_for_human_review'
+                and not value.get('result',{}).get('required_decisions')
+                and finding.get('severity') in ('warning','info') and not finding.get('decision_question'))
+            if optional and (not isinstance(source,str) or quote['quote'] not in source):
+                # An unverifiable optional comment is not a failed business check.
+                # Keep the comment visibly qualified, never manufacture evidence.
+                retained.pop()
+                changes.append(dict(path=f'findings[{fi}].evidence_quotes[{qi}]',before=copy.deepcopy(quote),
+                    after=None,reason='unverified_optional_comment'))
+                notice='（本项部分引文未核实，仅供人工参考，不作为需求修改依据。）'
+                if not finding['message'].endswith(notice):finding['message']+=notice
+                continue
             if not isinstance(source,str) or not source or quote['quote'] in source:continue
             if quote['quote'] not in (source+'。',source+'.') or source.endswith(('。','.','？','?','！','!')):continue
             changes.append(dict(path=f'findings[{fi}].evidence_quotes[{qi}].quote',
                 object_id=quote['object_id'],source_path=quote['path'],before=quote['quote'],after=source))
             quote['quote']=source
+        if 'evidence_quotes' in finding:finding['evidence_quotes']=retained
     return value,changes
 
 
@@ -136,6 +159,9 @@ def validate_result(p,response):
         require(not f.get('decision_question') or _clause_refs(p,f.get('related_refs',[])),
             'PREWRITE_DECISION_BINDING_REQUIRED','待决定问题必须关联本期条款。')
         for quote in f.get('evidence_quotes',[]):
+            if any(s['id']==quote['object_id'] for s in p.get('sources',[])):
+                require(dict(source_id=quote['object_id'],excerpt_id=quote['path']) in f.get('source_refs',[]),
+                    'REFERENCE_INVALID','资料引文必须同时保留本检查项的真实来源引用。')
             source=_resolve(p,quote['object_id'],quote['path'])
             require(isinstance(source,str) and quote['quote'] in source,
                 'REFERENCE_INVALID','成文检查引文不在指定对象属性原文中：'+quote['object_id']+'.'+quote['path'])

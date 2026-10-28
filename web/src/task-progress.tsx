@@ -14,6 +14,7 @@ type ControlRef = React.MutableRefObject<ProgressControls>;
 type ProgressBridge = {
   publish: (snapshot: ProgressSnapshot, submittedId?: string) => void;
   register: (projectId: string, controls: ControlRef) => () => void;
+  activeProjectId?: string;
 };
 const noopBridge: ProgressBridge = { publish: () => {}, register: () => () => {} };
 const ProgressContext = createContext<ProgressBridge>(noopBridge);
@@ -60,8 +61,9 @@ export function TaskProgressProvider({ children }: { children: React.ReactNode }
     controls.current.set(projectId, ref);
     return () => { if (controls.current.get(projectId) === ref) controls.current.delete(projectId); };
   }, []);
-  const bridge = useMemo(() => ({ publish, register }), [publish, register]);
   const entry = state.entries.find(row => row.task.id === state.selected) || state.entries.at(-1);
+  const activeProjectId=entry?.projectId;
+  const bridge = useMemo(() => ({ publish, register, activeProjectId }), [publish, register,activeProjectId]);
   const anyRunning = state.entries.some(row => taskRunning(row.task));
   useEffect(() => { if (!anyRunning) return; const timer = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(timer); }, [anyRunning]);
   useEffect(() => { setOperationError(''); }, [entry?.task.id]);

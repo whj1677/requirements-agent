@@ -1,3 +1,5 @@
+import {session} from '../draft-storage';
+import {useDraftWriter} from '../use-draft-writer';
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { api, Project, Blocker, BlockerAction, type ActionInput } from '../api';
 import { useDirty, useNavigation } from '../editing';
@@ -42,6 +44,8 @@ export function aiInstructions(purpose:string,sheet:Sheet,base:Sheet|null){
   return purpose+(text.length<Math.min(10500,11500-purpose.length)?' 本表未提交的人工修改（仅供起草参考，仍待确认）：'+text:' 本表较长的人工修改保留在浏览器，未附带本次请求；请依据项目已保存聊天和资料提供建议，由用户对照修改。');
 }
 function issueKey(issue:Issue){return issue.kind==='context'?'context-'+issue.field:issue.kind==='question'?'question-'+issue.question_id:issue.kind==='clause'?'clause-'+issue.item_id:issue.kind==='requirement'?'requirement-'+issue.item_id+'-'+(issue.path||issue.field||'statement'):issue.kind;}
+const detailIssueCache=new WeakMap<object,ReturnType<typeof detailEditingIssues>>();
+function cachedDetailIssues(contract:Row['detail_contract']){if(!contract)return detailEditingIssues(contract);let issues=detailIssueCache.get(contract);if(!issues){issues=detailEditingIssues(contract);detailIssueCache.set(contract,issues);}return issues;}
 export function requiredIssues(sheet:Sheet,questions:Obj[],project:Project):Issue[]{
   const result:Issue[]=[];
   for(const key of Object.keys(scopeLabels)){
@@ -56,7 +60,7 @@ export function requiredIssues(sheet:Sheet,questions:Obj[],project:Project):Issu
     if(!row.acceptance_items.some(a=>a.statement.trim()))result.push({kind:'requirement',item_id:id,field:'acceptance',message:'请填写至少一条可验证的验收条件，也可以让 AI 先起草。'});
     if(row.acceptance_items.some(a=>a.invalid_candidate))result.push({kind:'requirement',item_id:id,field:'acceptance',message:'已使用的 AI 验收建议发生变化或不再可用。请在此格采用已保存内容、明确保留为人工修改，或使用新的建议。'});
     if(project.items.find(item=>item.id===id)?.detail_required&&!row.detail_contract)result.push({kind:'requirement',item_id:id,path:'detail_contract',message:'本需求需要详细定义，请先使用 AI 草稿或启用字段、交互与流程表。'});
-    result.push(...detailEditingIssues(row.detail_contract).map(issue=>({...issue,kind:'requirement',item_id:id})));
+    result.push(...cachedDetailIssues(row.detail_contract).map(issue=>({...issue,kind:'requirement',item_id:id})));
     result.push(...(row.detail_conflicts||[]).map(conflict=>({kind:'requirement',item_id:id,path:conflict.path,message:'详细定义有版本冲突，请比较你的修改和最新内容后选择。'})));
   }
   for(const q of questions)if(q.blocking!==false&&(!q.out_of_scope_reason||q.scope_exclusion)&&(!clearAnswer(sheet.answers[q.id]||'')||uncertain(sheet.answers[q.id]||'')))
@@ -83,10 +87,11 @@ export function LinkedClauseEditor({item,row,disabled,onChange}:{item:Obj;row:Li
 
 export function RequirementTable(props:Props){
   const {project}=props,key=project.id+'-refinement-sheet';
+  const writer=useDraftWriter(key,()=>setError('浏览器未能保存草稿，输入仍保留在本页。可以继续编辑并确认保存到项目；离开前请保留当前页面。'));
   const [sheet,setSheet]=useState<Sheet|null>(null),[states,setStates]=useState<Obj[]>([]),[loaded,setLoaded]=useState(-1);
   const [preparationInfo,setPreparationInfo]=useState<PreparationStatus|null>(null);
   const [working,setWorking]=useState(false),[loadError,setLoadError]=useState(''),[error,setError]=useState(''),[notice,setNotice]=useState(''),[reportedIssues,setIssues]=useState<Issue[]>([]),[dirty,setDirty]=useState(false);
-  const [stale,setStale]=useState(false),[reload,setReload]=useState(0),[archived,setArchived]=useState(()=>!!sessionStorage.getItem(key+'-previous'));
+  const [stale,setStale]=useState(false),[reload,setReload]=useState(0),[archived,setArchived]=useState(()=>!!session.getItem(key+'-previous'));
   const [focusedAnswer,setFocusedAnswer]=useState(''),[expandedBehavior,setExpandedBehavior]=useState<Record<string,boolean>>({}),[expandedDetail,setExpandedDetail]=useState<Record<string,boolean>>({});
   const [focusMode,setFocusMode]=useState(false);
   const validationSeen=useRef<number|undefined>(undefined);
@@ -120,20 +125,20 @@ export function RequirementTable(props:Props){
       setStates(response.rows);setLoaded(response.revision);
       const fresh=initial(project,response.rows),previous=current.current;
       let saved:Sheet|null=previous,base=baseline.current;
-      if(!saved){try{saved=JSON.parse(sessionStorage.getItem(key)||'null');base=JSON.parse(sessionStorage.getItem(key+'-base')||'null');}catch{}}
+      if(!saved){try{saved=JSON.parse(session.getItem(key)||'null');base=JSON.parse(session.getItem(key+'-base')||'null');}catch{}}
       if(previous?.revision===project.revision)return;
       if(saved?.rows&&saved?.values){
         const next=restoreSheet(saved,base,fresh);
-        if(saved.revision!==project.revision){sessionStorage.setItem(key+'-previous',JSON.stringify(saved));setArchived(true);}
+        if(saved.revision!==project.revision){session.setItem(key+'-previous',JSON.stringify(saved));setArchived(true);}
         baseline.current=fresh;setSheet(next);setStale(!!next.merge_conflicts?.length);
-        sessionStorage.setItem(key,JSON.stringify(next));sessionStorage.setItem(key+'-base',JSON.stringify(fresh));
+        session.setItem(key,JSON.stringify(next));session.setItem(key+'-base',JSON.stringify(fresh));
         setNotice(next.merge_conflicts?.length?'新建议已补入未修改的内容；有冲突的单元格保留你的修改，请核对下方提示。':saved.revision===project.revision?'已恢复当前浏览器中未提交的表格；尚未正式确认。':'AI 新建议已补入表格，你的手工修改已保留；核对后可一次确认。');
       }else{baseline.current=fresh;setSheet(fresh);}
     }).catch(e=>{if(live)setLoadError(e.message);});return()=>{live=false;};
   },[project.id,project.revision,reload]);
-  function replace(value:Sheet){const next=retainSheetImplementations(value,current.current);if(baseline.current)sessionStorage.setItem(key+'-base',JSON.stringify(baseline.current));setSheet(next);setDirty(true);setError('');sessionStorage.setItem(key,JSON.stringify(next));}
-  async function saveDraft(){if(current.current)sessionStorage.setItem(key,JSON.stringify(current.current));setDirty(false);markSaved();setNotice('表格草稿已保存在当前浏览器，尚未确认。');}
-  function discard(){sessionStorage.removeItem(key);setSheet(baseline.current);setDirty(false);setStale(false);setIssues([]);setError('');}
+  function replace(value:Sheet){const next=retainSheetImplementations(value,current.current);current.current=next;setSheet(next);setDirty(true);setError('');writer.schedule(()=>({[key]:current.current,[key+'-base']:baseline.current}));}
+  async function saveDraft(){writer.schedule(()=>({[key]:current.current,[key+'-base']:baseline.current}));if(!writer.flush())throw Error('浏览器未能保存草稿，输入仍在本页。请先确认保存到项目，或保留当前页面。');setDirty(false);markSaved();setNotice('表格草稿已保存在当前浏览器，尚未确认。');}
+  function discard(){writer.cancel();session.removeItem(key);setSheet(baseline.current);setDirty(false);setStale(false);setIssues([]);setError('');}
   const markSaved=useDirty(key,dirty,'需求确认表',saveDraft,discard);
   const canReturn=canReturnToDelivery(project,sheet,states,loaded,stale)&&!loadError&&!!sheet&&!pendingSheetAnswers(project,sheet).length;
   const pendingCount=sheet?pendingSheetAnswers(project,sheet).length:0;
@@ -164,7 +169,7 @@ export function RequirementTable(props:Props){
     if(pending.length){setNotice('已定位尚未落实到正文的回答，请核对原文位置后继续。');locate({kind:'question',question_id:pending[0].id,field:'implementation',message:''});return;}
     requestAnimationFrame(()=>{const button=root.current?.querySelector<HTMLButtonElement>('.refinement-sheet-footer .primary');button?.scrollIntoView({block:'center'});button?.focus({preventScroll:true});});
   },[props.validationRequest,props.active,!!sheet,loaded,project.revision]);
-  function loadLatest(){if(sheet){sessionStorage.setItem(key+'-previous',JSON.stringify(sheet));setArchived(true);}const fresh=initial(project,states),next=sheet?mergeSuggestions(sheet,baseline.current,fresh):fresh;baseline.current=fresh;next.merge_conflicts=[];setSheet(next);setStale(false);setDirty(false);markSaved();sessionStorage.removeItem(key);setIssues([]);setError('');sessionStorage.setItem(key,JSON.stringify(next));sessionStorage.setItem(key+'-base',JSON.stringify(fresh));setNotice('已更新建议，保留你修改过的单元格；请核对后确认。原表格也保留为副本。');}
+  function loadLatest(){if(sheet){session.setItem(key+'-previous',JSON.stringify(sheet));setArchived(true);}const fresh=initial(project,states),next=sheet?mergeSuggestions(sheet,baseline.current,fresh):fresh;baseline.current=fresh;next.merge_conflicts=[];setSheet(next);setStale(false);setDirty(false);markSaved();session.removeItem(key);setIssues([]);setError('');session.setItem(key,JSON.stringify(next));session.setItem(key+'-base',JSON.stringify(fresh));setNotice('已更新建议，保留你修改过的单元格；请核对后确认。原表格也保留为副本。');}
   async function confirm(){
     if(lock.current||!sheet||props.busy||loaded!==project.revision)return;
     if(canReturn){props.onStageConfirmed();return;}
@@ -181,11 +186,12 @@ export function RequirementTable(props:Props){
     lock.current=true;setWorking(true);
     try{const result=await props.mutate('/refinement-confirmation',{...payload,idempotency_key:intent.current.key});
       if(!result.confirmed){setIssues(result.issues||[]);setError(result.message||'请核对表格中提示的内容，本次没有写入。');if(result.issues?.length)locate(result.issues[0]);return;}
-      sessionStorage.removeItem(key);sheet.scope.forEach(id=>sessionStorage.removeItem(project.id+'-table-draft-'+id));
+      writer.cancel();session.removeItem(key);sheet.scope.forEach(id=>session.removeItem(project.id+'-table-draft-'+id));
       const written=result.project as Project;const confirmedStates=sheet.scope.map(id=>({requirement_id:id,current:true}));const accepted=initial(written,confirmedStates);baseline.current=accepted;setSheet(accepted);setStates(confirmedStates);setLoaded(written.revision);setStale(false);setDirty(false);markSaved();setIssues([]);
+      current.current=accepted;
       const pending=result.implementation_pending_ids||pendingSheetAnswers(written,accepted).map(q=>q.id);
       if(pending.length||result.destination==='refinement'){
-        sessionStorage.setItem(key,JSON.stringify(accepted));sessionStorage.setItem(key+'-base',JSON.stringify(accepted));
+        session.setItem(key,JSON.stringify(accepted));session.setItem(key+'-base',JSON.stringify(accepted));
         setNotice('回答和条款已保存，'+(pending.length?pending.length+' 项回答':'仍有回答')+'待落实到正文。可以用“AI 补充建议”一次起草，再核对原文位置；当前表格已保留。');
         if(pending.length)locate({kind:'question',question_id:pending[0],field:'implementation',message:''});
         return;
@@ -211,7 +217,7 @@ export function RequirementTable(props:Props){
       const key=(event.target as HTMLElement).closest('[data-cell-key^="question-"]')?.getAttribute('data-cell-key');
       if(key)setFocusedAnswer(key.slice('question-'.length));
     }}>
-    <header className="refinement-sheet-heading"><div><h2>完善需求</h2><p>核对表格与答案对应的原文位置。可以先保存；回答已落实后进入交付。</p></div><div className="sheet-view-actions"><span>{sheet.scope.length} 条本期需求 · {missing.length?'还有 '+missing.length+' 项待补充':pendingAnswers.length?pendingAnswers.length+' 项回答待落实':'必填信息已填入'}</span><button type="button" className="primary" title="AI 可一次起草需求、验收和答案对应的正文；你核对后确认。" disabled={disabled} onClick={()=>requestAI({mode:'all'},'请完整起草本表内容和每道未答问题的推荐回答，直接填入可核对的草稿，不要求用户逐格打字。已有人工内容保留；未明确决定给具体建议并标待确认。'+(pendingAnswers.length?'同时把已填写答案起草到直接关联正文与验收。':''))}>AI 补充建议</button><button type="button" disabled={disabled||!missing.length} onClick={()=>requestAI({mode:'required'},'请一次补全所有必填未填项，给出具体可确认草稿；缺少已定依据时提供标为推荐的方案，不以未知占位。当前缺项：'+JSON.stringify(missing.map(({kind,field,path,item_id,question_id})=>({kind,field,path,item_id,question_id}))).slice(0,1800))}>AI 补全必填项</button><button type="button" disabled={disabled} onClick={()=>void saveDraft().then(()=>navigate(props.onCreate))}>补充需求</button><button type="button" aria-pressed={focusMode} onClick={()=>setFocusMode(value=>!value)}>{focusMode?'退出专注核对':'专注核对'}</button></div></header>
+    <header className="refinement-sheet-heading"><div className="sheet-heading-copy"><h2>需求确认表</h2><span className="sheet-heading-summary">{sheet.scope.length} 条本期需求 · {missing.length?'还有 '+missing.length+' 项待补充':pendingAnswers.length?pendingAnswers.length+' 项回答待落实':'必填信息已填入'}</span></div><div className="sheet-view-actions"><button type="button" className="secondary" title="AI 可一次起草需求、验收和答案对应的正文；你核对后确认。" disabled={disabled} onClick={()=>requestAI({mode:'all'},'请完整起草本表内容和每道未答问题的推荐回答，直接填入可核对的草稿，不要求用户逐格打字。已有人工内容保留；未明确决定给具体建议并标待确认。'+(pendingAnswers.length?'同时把已填写答案起草到直接关联正文与验收。':''))}>AI 补充建议</button><details className="sheet-more-actions"><summary>更多操作</summary><button type="button" disabled={disabled||!missing.length} onClick={()=>requestAI({mode:'required'},'请一次补全所有必填未填项，给出具体可确认草稿；缺少已定依据时提供标为推荐的方案，不以未知占位。当前缺项：'+JSON.stringify(missing.map(({kind,field,path,item_id,question_id})=>({kind,field,path,item_id,question_id}))).slice(0,1800))}>AI 补全必填项</button><button type="button" disabled={disabled} onClick={()=>void saveDraft().then(()=>navigate(props.onCreate))}>补充需求</button><button type="button" aria-pressed={focusMode} onClick={()=>setFocusMode(value=>!value)}>{focusMode?'退出专注核对':'专注核对'}</button></details></div></header>
     <nav className="sheet-navigation" aria-label="需求表定位">
       {!!missing.length&&<button type="button" className="sheet-missing-jump" onClick={()=>locate(missing[0])}>待补充 · {missing.length}</button>}
       <button type="button" onClick={()=>locateSection('context')}>项目摘要</button>
@@ -219,7 +225,7 @@ export function RequirementTable(props:Props){
       <button type="button" className="sheet-pending-jump" onClick={()=>pendingAnswers.length?locatePending():locateSection('answers')}>待落实回答{pendingAnswers.length?' · '+pendingAnswers.length:''}</button>
       {!!clauseItems.length&&<button type="button" onClick={()=>locateSection('clauses')}>关联规则</button>}
       {!!reqs.length&&<label className="sheet-requirement-jump"><span>定位需求</span><select aria-label="定位到需求" value="" onChange={event=>{const id=event.target.value;if(id)locate({kind:'requirement',item_id:id,message:''});}}><option value="">选择需求…</option>{reqs.map((item,index)=><option key={item.id} value={item.id}>{index+1}. {item.title}{sheet.scope.includes(item.id)?'':'（本期不包含）'}</option>)}</select></label>}
-      <span className="sheet-pending-controls"><button type="button" disabled={!pendingAnswers.length} onClick={()=>locatePending(-1)}>上一项待落实</button><button type="button" disabled={!pendingAnswers.length} onClick={()=>locatePending(1)}>下一项待落实</button></span>
+      {!!pendingAnswers.length&&<span className="sheet-pending-controls"><button type="button" disabled={!pendingAnswers.length} onClick={()=>locatePending(-1)}>上一项待落实</button><button type="button" disabled={!pendingAnswers.length} onClick={()=>locatePending(1)}>下一项待落实</button></span>}
     </nav>
     <DraftPreparationNotice missing={missingAcceptance.map(item=>({id:item.id,title:item.title}))} preparation={preparationInfo}/>
     {(error||loadError)&&<div role="alert" className="sheet-banner-error">{error||loadError}{!!issues.length&&<button type="button" onClick={()=>locate(issues[0])}>定位第一处</button>}{loadError&&<button type="button" onClick={()=>setReload(x=>x+1)}>重新读取</button>}</div>}
@@ -262,6 +268,6 @@ export function RequirementTable(props:Props){
         <><span className="sheet-origin">{item.selection_status==='candidate'?'待采纳规则 · 随本次确认采纳':'已保存规则 · 随本次重新核对'}</span><p>请确认条款与已填写回答一致；不同业务范围的规则分别保留。</p><button type="button" onClick={()=>props.onSources(item.source_refs||[])}>查看规则来源：{item.title}</button>{questions.filter(q=>inScopeQuestion(project,q,sheet.scope)&&clearAnswer(sheet.answers[q.id]||'')&&(q.related_refs||[]).includes(item.id)).map(q=><p key={q.id}>关联回答：{q.question}<br/>{sheet.answers[q.id]}<button type="button" onClick={()=>locate({kind:'question',question_id:q.id,message:''})}>返回这条回答</button></p>)}</>);})}
     </tbody></table></div>
     <footer className="refinement-sheet-footer"><div title={actionCopy.detail}><strong role={notice&&!working?'status':undefined}>{working?'正在检查并确认…':notice||actionCopy.status}</strong><small>{actionCopy.detail}</small></div><button type="button" disabled={disabled} onClick={()=>void saveDraft()}>保存草稿</button><button type="button" className="primary" disabled={disabled||!!loadError} onClick={()=>void confirm()}>{working?'正在确认…':actionCopy.label}</button></footer>
-    {archived&&<button type="button" className="sheet-restore" disabled={disabled} onClick={()=>{try{const old=JSON.parse(sessionStorage.getItem(key+'-previous')||'null');if(old){replace(old);setStale(old.revision!==project.revision);setNotice('已恢复上次草稿。');}}catch{}}}>恢复上次表格草稿</button>}
+    {archived&&<button type="button" className="sheet-restore" disabled={disabled} onClick={()=>{try{const old=JSON.parse(session.getItem(key+'-previous')||'null');if(old){replace(old);setStale(old.revision!==project.revision);setNotice('已恢复上次草稿。');}}catch{}}}>恢复上次表格草稿</button>}
   </section>;
 }

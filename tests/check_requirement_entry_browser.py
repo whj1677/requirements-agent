@@ -175,7 +175,7 @@ class Journey:
         await expect(self.work().get_by_role('textbox',name='填写当前需求的原文底稿',exact=True)).to_have_value(SOURCE)
         # Explicit no-AI entry intentionally preserves this legacy fixture;
         # automatic preparation has its own actual-action browser suite.
-        await self.rec.click(self.work().get_by_role('button',name='不使用 AI，直接完善',exact=True))
+        await self.rec.click(self.work().get_by_role('button',name='2 完善需求',exact=True))
         await expect(self.work().get_by_role('table',name='需求确认表')).to_be_visible()
     async def select_task(self,title=TITLE):
         # The single table replaces the old support task panel. Acceptance
@@ -240,7 +240,7 @@ async def continuation_flow(j):
     assert j.project()==initial and not j.provider.requests
     await j.page.reload(wait_until='networkidle')
     await expect(j.work().get_by_role('button',name='和助手聊需求',exact=True)).to_have_attribute('aria-pressed','true')
-    await j.work().get_by_role('button',name='不使用 AI，直接完善',exact=True).click()
+    await j.work().get_by_role('button',name='2 完善需求',exact=True).click()
     await expect(field).to_have_value(CHANGE+' 人工补充：只核对本期资料。')
     assert j.project()==initial and not j.provider.requests
     j.report['checks'].append('摘要候选、需求定位和刷新恢复使用同一表；本地摘要编辑及保存不会单独确认字段或触发模型，刷新先回助手')
@@ -271,7 +271,7 @@ async def guards_flow(j):
     assert j.project()==frozen
     await j.work().get_by_role('button',name='保存草稿',exact=True).click()
     await j.page.reload(wait_until='networkidle')
-    await j.work().get_by_role('button',name='不使用 AI，直接完善',exact=True).click()
+    await j.work().get_by_role('button',name='2 完善需求',exact=True).click()
     await expect(scope).to_have_value('excluded'); await expect(text).to_have_value(draft)
     assert j.project()==frozen and not j.provider.requests
     j.report['checks'].append('关联验收与共享问题同表定位；表内跳转不丢草稿，离表取消保留输入；本期范围仅在浏览器保存，未隐式写入或采纳')
@@ -291,7 +291,7 @@ async def answer_guard_flow(j):
     await expect(answer).to_have_value(text)
     await j.page.reload(wait_until='networkidle')
     await expect(j.work().get_by_role('button',name='和助手聊需求',exact=True)).to_have_attribute('aria-pressed','true')
-    await j.work().get_by_role('button',name='不使用 AI，直接完善',exact=True).click()
+    await j.work().get_by_role('button',name='2 完善需求',exact=True).click()
     await expect(answer).to_have_value(text)
     await expect(table.locator('.answer-implementation input[type="checkbox"]')).to_have_count(0)
     await expect(j.work().locator('.refinement-sheet-footer .primary')).to_have_text('保存并继续核对')

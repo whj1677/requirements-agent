@@ -1,3 +1,4 @@
+import {session,taskFingerprint} from './draft-storage';
 import React, { useEffect, useRef, useState } from 'react';
 import { api, ApiError, BenchmarkInput, categorizeError, ErrorCategory, ActionInput, ActionPlan, BusinessAction, Blocker, BlockerAction, Project, Run, UserTask } from './api';
 import { ArtifactTabs } from './workbench';
@@ -30,8 +31,8 @@ type Obj = Record<string, any>;
 export type Compat = { status: 'ok' | 'incompatible' | 'unverified'; missing: string[] };
 const categoryText: Record<ErrorCategory, string> = { 'not-found': '项目不存在或已被删除', 'route-missing': '所需接口缺失，前后端版本可能不兼容', network: '无法连接服务', 'non-json': '服务返回了无法识别的内容', session: '页面连接状态已失效，请重新加载', forbidden: '访问被拒绝', conflict: '内容版本已变化', server: '暂时无法加载此项目', unknown: '暂时无法加载此项目' };
 
-export function Workspace({ id, active, assistantEntryNonce, assistantEntryTask = false, models, onProjectsChanged, onProjectSnapshot, compat, onExit, onOpen }: { id: string; active: boolean; assistantEntryNonce?: number; assistantEntryTask?: boolean; models: Obj; onProjectsChanged: () => Promise<void>; onProjectSnapshot?: (project: Project) => void; compat: Compat; onExit: () => void; onOpen: (afterOpen: () => void) => void }) {
-  const [p, setP] = useState<Project | null>(null), [phase, setPhase] = useState(()=>sessionStorage.getItem('ra-phase-'+id)==='5'?5:4), [runs, setRuns] = useState<Run[]>([]), [tasks, setTasks] = useState<UserTask[]>([]);
+export function Workspace({ id, active, assistantEntryNonce, assistantEntryTask = false, models, onProjectsChanged, onProjectSnapshot, compat, onExit, onOpen, onKeepAlive }: { id: string; active: boolean; onKeepAlive?:(id:string,keep:boolean)=>void; assistantEntryNonce?: number; assistantEntryTask?: boolean; models: Obj; onProjectsChanged: () => Promise<void>; onProjectSnapshot?: (project: Project) => void; compat: Compat; onExit: () => void; onOpen: (afterOpen: () => void) => void }) {
+  const [p, setP] = useState<Project | null>(null), [phase, setPhase] = useState(()=>session.getItem('ra-phase-'+id)==='5'?5:4), [runs, setRuns] = useState<Run[]>([]), [tasks, setTasks] = useState<UserTask[]>([]);
   const [error,setError]=useState(''),[busy,setBusy]=useState(false);
   const [sourcesOpen, setSourcesOpen] = useState(false), [sourceText, setSourceText] = useState(''), [url, setUrl] = useState(''), [purpose, setPurpose] = useState('goal'), [dynamic, setDynamic] = useState(false);
   const [manualPageUrl,setManualPageUrl]=useState(''),[manualPageTitle,setManualPageTitle]=useState(''),[manualPageNotice,setManualPageNotice]=useState(''),[manualPagePendingUrl,setManualPagePendingUrl]=useState(''),[manualPageActive,setManualPageActive]=useState(false);
@@ -95,8 +96,8 @@ export function Workspace({ id, active, assistantEntryNonce, assistantEntryTask 
   function openMain(next:Omit<ConnectedDestination,'nonce'>){guard(()=>{showMain();setConnectedDestination(previous=>({...next,nonce:(previous?.nonce||0)+1}));});}
   function openDetails(n:number,documentKind?:string,afterOpen?:()=>void){go(n,()=>{if(documentKind){setDocType(documentKind);setSelectedDocId('');setDocumentQuestion(undefined);}setConnectedDestination(previous=>({step:'delivery',nonce:(previous?.nonce||0)+1}));if(detailRef.current)detailRef.current.open=true;requestAnimationFrame(()=>{detailRef.current?.scrollIntoView({block:'start'});afterOpen?.();});});}
   function revealDocument(kind:string){requestAnimationFrame(()=>globalThis.document.getElementById('document-reading-'+id+'-'+kind)?.scrollIntoView({block:'start'}));}
-  function go(n:number,afterGo?:()=>void){if(n<3){openMain({step:n===0?'information':'refine',review:n>0});return;}if(n===3)n=4;guard(()=>{analysisNavigation.current=null;if(n!==phase){setFocusQuestionId('');setFocusAnswerId('');setFocusRequirementId('');setBlockerTask(null);setBlockerFocus(undefined);if(n>phase)scrollPositions.current[n]=0;}setPhase(n);sessionStorage.setItem('ra-phase-'+id,String(n));afterGo?.();});}
-  function enterDirect(text?:string){go(1,()=>setDirectEntryDraft(current=>({text:text??sessionStorage.getItem('ra-chat-draft-'+id)??'',nonce:(current?.nonce||0)+1})));}
+  function go(n:number,afterGo?:()=>void){if(n<3){openMain({step:n===0?'information':'refine',review:n>0});return;}if(n===3)n=4;guard(()=>{analysisNavigation.current=null;if(n!==phase){setFocusQuestionId('');setFocusAnswerId('');setFocusRequirementId('');setBlockerTask(null);setBlockerFocus(undefined);if(n>phase)scrollPositions.current[n]=0;}setPhase(n);session.setItem('ra-phase-'+id,String(n));afterGo?.();});}
+  function enterDirect(text?:string){go(1,()=>setDirectEntryDraft(current=>({text:text??session.getItem('ra-chat-draft-'+id)??'',nonce:(current?.nonce||0)+1})));}
   // Locked editors stay mounted. Return to the prerequisite without requiring a
   // hidden, possibly conflicted draft to be saved or discarded first.
   function returnToPrerequisite(n:number){if(n<3){openMain({step:n===0?'information':'refine',review:n>0});return;}go(n);}
@@ -181,10 +182,25 @@ export function Workspace({ id, active, assistantEntryNonce, assistantEntryTask 
       if(task.action==='prewrite'||task.status==='awaiting_user'||task.status==='failed'&&projectRef.current?.prewrite_review?.status==='failed')openMain({step:'refine',prewrite:true});
     }).catch(e=>{if(prewriteNavigation.current===intent)prewriteNavigation.current=null;onRefreshFail(e);});
   },[tasks,active,busy]);
-  useEffect(() => { if (!running) return; let stopped=false; let timer:ReturnType<typeof setTimeout>;
-    async function poll(){try{await refresh();}catch(e){onRefreshFail(e);}finally{if(!stopped)timer=setTimeout(poll,800);}}
-    timer=setTimeout(poll,800);return()=>{stopped=true;clearTimeout(timer);};
-  }, [running]);
+  useEffect(()=>{onKeepAlive?.(id,running||busy);return()=>onKeepAlive?.(id,false);},[id,running,busy,onKeepAlive]);
+  const pollingSnapshot=useRef({tasks,runs});pollingSnapshot.current={tasks,runs};
+  useEffect(() => {
+    if (!running) return;let stopped=false,timer:ReturnType<typeof setTimeout>,inFlight=false;
+    async function poll(){
+      if(stopped||inFlight)return;clearTimeout(timer);inFlight=true;
+      try{
+        if(document.visibilityState==='hidden')return;
+        const next=await api<UserTask[]>(root+'/actions');if(stopped)return;
+        const old=pollingSnapshot.current;
+        const legacyRunning=old.runs.some(run=>['queued','running'].includes(run.status)&&!old.tasks.some(task=>task.run_ids.includes(run.id)&&['queued','running'].includes(task.status)));
+        if(legacyRunning||taskFingerprint(next)!==taskFingerprint(old.tasks))await refresh();
+      }catch(e){if(!stopped)onRefreshFail(e);}
+      finally{inFlight=false;if(!stopped)timer=setTimeout(poll,document.visibilityState==='hidden'?10000:1600);}
+    }
+    function visible(){if(document.visibilityState==='visible')void poll();}
+    document.addEventListener('visibilitychange',visible);timer=setTimeout(poll,1600);
+    return()=>{stopped=true;clearTimeout(timer);document.removeEventListener('visibilitychange',visible);};
+  }, [running,root]);
   useEffect(()=>{
     const intent=analysisNavigation.current;
     if(!intent)return;
@@ -250,7 +266,7 @@ export function Workspace({ id, active, assistantEntryNonce, assistantEntryTask 
     let preparingDocument=false;
     if(action==='document'){
       const reviewDraft=retryInput?.allow_review_draft===true&&prewriteCanDraft(current.prewrite_review);
-      if(sessionStorage.getItem(documentPreparationKey)&&!reviewDraft){
+      if(session.getItem(documentPreparationKey)&&!reviewDraft){
         setDocumentPreparationNotice('AI 补全草稿尚待确认。请先核对并点击“确认并进入交付”，再生成文档。');
         setDocumentReviewRequested(true);return;
       }
@@ -286,7 +302,7 @@ export function Workspace({ id, active, assistantEntryNonce, assistantEntryTask 
     const snapshot=projectRef.current;
     const ingestCount=snapshot?.messages.filter(m=>m.role==='assistant'&&m.stage==='ingest').length||0;
     try { const task=await api<UserTask>(root + '/actions', 'POST', { ...pending.input, plan_hash: pending.plan.plan_hash, idempotency_key: pending.key, authorize: pending.plan.recipients.some(r => r.needs_authorization) });
-      if(pending.documentPreparation){sessionStorage.setItem(documentPreparationKey,task.id);documentPreparationNavigation.current={taskId:task.id};setDocumentPreparationNotice('正在为生成文档补全必填草稿，完成后请核对确认。');}
+      if(pending.documentPreparation){session.setItem(documentPreparationKey,task.id);documentPreparationNavigation.current={taskId:task.id};setDocumentPreparationNotice('正在为生成文档补全必填草稿，完成后请核对确认。');}
       if(active&&pending.input.action==='organize'&&!pending.input.target&&!pending.input.draft_request&&connectedRef.current?.dataset.step!=='refine'&&(phase===0||!detailRef.current?.open))analysisNavigation.current={taskId:task.id,ingestCount,itemCount:snapshot?.items.length||0,questionCount:snapshot?.questions.length||0,connected:!detailRef.current?.open};
       if(pending.input.benchmark)setBenchmarkSubmission({taskId:task.id,message:pending.input.message});
       if(pending.input.action==='interview'&&task.retry_input?.action==='interview'&&task.retry_input.message===pending.input.message&&
@@ -331,7 +347,7 @@ export function Workspace({ id, active, assistantEntryNonce, assistantEntryTask 
   // Document follow-ups retain their reading context; only unrelated work uses
   // the full requirement sheet. The question still needs explicit review.
   function focusDocumentQuestion(kind:string,questionId:string){
-    analysisNavigation.current=null;setSelectedDocId('');setDocType(kind);setPhase(4);sessionStorage.setItem('ra-phase-'+id,'4');
+    analysisNavigation.current=null;setSelectedDocId('');setDocType(kind);setPhase(4);session.setItem('ra-phase-'+id,'4');
     setConnectedDestination(previous=>({step:'delivery',nonce:(previous?.nonce||0)+1}));
     if(detailRef.current)detailRef.current.open=true;
     setDocumentQuestion(previous=>({id:questionId,nonce:(previous?.nonce||0)+1}));
@@ -367,7 +383,7 @@ export function Workspace({ id, active, assistantEntryNonce, assistantEntryTask 
       const destination=blockerDestination(current,action);
       analysisNavigation.current=null;setBlockerTask({title:row.title,phase:originPhase});setReturnAnswerId('');
       setFocusQuestionId('');setFocusAnswerId('');setFocusRequirementId('');
-      setPhase(destination.phase);sessionStorage.setItem('ra-phase-'+id,String(destination.phase));
+      setPhase(destination.phase);session.setItem('ra-phase-'+id,String(destination.phase));
       setBlockerFocus(previous=>({action,nonce:(previous?.nonce||0)+1}));
       if(action.kind==='source'){setFocusRefs([]);setSourcesOpen(true);}
       if(action.kind==='candidate')setCandidateOpen(true);
@@ -390,7 +406,7 @@ export function Workspace({ id, active, assistantEntryNonce, assistantEntryTask 
       if(action.kind==='stage')setTimeout(()=>{if(!focusBlockerElement('blockers-'+id+'-'+destination.phase))focusBlockerElement('checkpoint-continue-'+id+'-'+destination.phase);},80);
     }catch(e){setError((e as Error).message);}
   });}
-  function returnToBlockers(){if(!blockerTask)return;if(blockerTask.phase<3){openMain({step:'refine',review:true});return;}guard(()=>{const target=blockerTask.phase;setPhase(target);sessionStorage.setItem('ra-phase-'+id,String(target));setBlockerTask(null);setTimeout(()=>focusBlockerElement('blockers-'+id+'-'+target),80);});}
+  function returnToBlockers(){if(!blockerTask)return;if(blockerTask.phase<3){openMain({step:'refine',review:true});return;}guard(()=>{const target=blockerTask.phase;setPhase(target);session.setItem('ra-phase-'+id,String(target));setBlockerTask(null);setTimeout(()=>focusBlockerElement('blockers-'+id+'-'+target),80);});}
   function blockedCheckpoint(latest:Project){setP(latest);projectRef.current=latest;const target=firstActionableBlocker(latest,stageBlockers(latest,phase));if(target)resolveBlocker(target.action,target.row,phase);else setTimeout(()=>focusBlockerElement('blockers-'+id+'-'+phase),80);}
   function openHelp(target:Obj){guard(()=>{
     if(target.kind==='document'){
@@ -451,9 +467,9 @@ export function Workspace({ id, active, assistantEntryNonce, assistantEntryTask 
     navigate:consumeIntent=>{guard(()=>{if(!consumeIntent())return;showMain();setConnectedDestination(previous=>({step:'refine',review:true,nonce:(previous?.nonce||0)+1}));});},state:setPreparation,
     authorization:request=>{setActionError('');setActionStale(false);if(request)setPending(request);else setPending(current=>current?.preparationToken!==undefined?null:current);},
     error:(message,isStale)=>{setActionError(message);setActionStale(isStale);},key:()=>crypto.randomUUID(),
-    receipt:()=>{try{const raw=sessionStorage.getItem('ra-refinement-submission-'+id);if(!raw)return null;const value=JSON.parse(raw) as PreparationSubmission;
+    receipt:()=>{try{const raw=session.getItem('ra-refinement-submission-'+id);if(!raw)return null;const value=JSON.parse(raw) as PreparationSubmission;
       return value.input?.action==='organize'&&typeof value.key==='string'&&typeof value.plan?.plan_hash==='string'?value:null;}catch{return null;}},
-    saveReceipt:request=>{if(request)sessionStorage.setItem('ra-refinement-submission-'+id,JSON.stringify(request));else sessionStorage.removeItem('ra-refinement-submission-'+id);},
+    saveReceipt:request=>{if(request)session.setItem('ra-refinement-submission-'+id,JSON.stringify(request));else session.removeItem('ra-refinement-submission-'+id);},
   };
   if (!p) {
     if (fatal) {
@@ -497,7 +513,7 @@ export function Workspace({ id, active, assistantEntryNonce, assistantEntryTask 
     {documentPreparationNotice&&<div className="notice banner" role="status">{documentPreparationNotice}</div>}
     <ConnectedWorkspace assistantEntryNonce={assistantEntryNonce} deliveryBlockers={p.confirmation_blockers?.map(localDiscussionBlocker)} workspaceRef={connectedRef} active={active} id={id} project={p} tasks={tasks} busy={busy} running={running} actionBlockReason={actionBlockReason} mutate={mutate}
       destination={connectedDestination} onMainNavigation={showMain}
-      onRefinementConfirmed={()=>{sessionStorage.removeItem(documentPreparationKey);setDocumentPreparationNotice('必填草稿已由你确认，可以继续生成文档。');}}
+      onRefinementConfirmed={()=>{session.removeItem(documentPreparationKey);setDocumentPreparationNotice('必填草稿已由你确认，可以继续生成文档。');}}
       preparation={preparation} onPrepareRefinement={retry=>{analysisNavigation.current=null;return preparationController.current!.prepare(retry);}}
       onCancelPreparation={()=>preparationController.current?.cancel()}
       onOrganize={(instruction,draftRequest)=>act(()=>planAction('organize',undefined,undefined,instruction||'',draftRequest?{draft_request:draftRequest}:undefined))}

@@ -63,7 +63,7 @@ async def run(args):
                     await page.locator('aside.sidebar button[title="'+before['name']+'"]').click()
                     work=j.work()
                     # Navigation alone must not request AI.
-                    await work.get_by_role('button',name='不使用 AI，直接完善',exact=True).click()
+                    await work.get_by_role('button',name='2 完善需求',exact=True).click()
                     table=work.get_by_role('table',name='需求确认表');await expect(table).to_be_visible()
                     manual=table.locator('[data-cell-key="requirement-'+RID+'-statement"] textarea')
                     await manual.fill(AFTER)

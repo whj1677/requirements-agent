@@ -1,3 +1,5 @@
+import {session} from '../draft-storage';
+import {useDraftWriter} from '../use-draft-writer';
 import React,{useEffect,useRef,useState} from 'react';
 import {api,type Project,type JsonObject as Obj,type ActionInput,type UserTask} from '../api';
 import {inlinePrewriteFailure} from '../task-progress-state';
@@ -22,8 +24,9 @@ function BatchText({project,value,label,rows=3,disabled,onChange}:{project:Proje
 
 export function PrewriteBatchTable(props:Props){
   const {project}=props,key=project.id+'-prewrite-batch';
+  const writer=useDraftWriter(key,()=>setError('浏览器未能保存草稿，输入仍保留在本页。可继续核对并统一确认到项目。'));
   const [sheet,setSheet]=useState<Sheet|null>(null),[loaded,setLoaded]=useState(-1),[error,setError]=useState(''),[notice,setNotice]=useState('');
-  const [working,setWorking]=useState(false),[dirty,setDirty]=useState(false),[savedRevision,setSavedRevision]=useState<number|null>(()=>Number(sessionStorage.getItem(key+'-confirmed'))||null);
+  const [working,setWorking]=useState(false),[dirty,setDirty]=useState(false),[savedRevision,setSavedRevision]=useState<number|null>(()=>Number(session.getItem(key+'-confirmed'))||null);
   const [showAllFields,setShowAllFields]=useState(false);
   const [issueReview,setIssueReview]=useState<Obj[]|null>(null);
   const [conflictReview,setConflictReview]=useState(false);
@@ -31,20 +34,20 @@ export function PrewriteBatchTable(props:Props){
   const saved=savedRevision===project.revision;
   const baseline=useRef<Sheet|null>(null),current=useRef<Sheet|null>(null),lock=useRef(false),intent=useRef({body:'',key:''});
   current.current=sheet;
-  const markSaved=useDirty(key,dirty,'成文检查确认表',async()=>{persist();setDirty(false);},()=>{
-    if(baseline.current)setSheet(structuredClone(baseline.current));sessionStorage.removeItem(key);setDirty(false);
+  const markSaved=useDirty(key,dirty,'成文检查确认表',async()=>{persist();if(!writer.flush())throw Error('浏览器未能保存草稿，输入仍保留在本页。');setDirty(false);},()=>{
+    writer.cancel();if(baseline.current)setSheet(structuredClone(baseline.current));session.removeItem(key);setDirty(false);
   });
-  function persist(value=current.current){if(value)sessionStorage.setItem(key,JSON.stringify({sheet:value,base:baseline.current}));}
+  function persist(value=current.current){if(value)writer.schedule(()=>({[key]:{sheet:value,base:baseline.current}}));}
   useEffect(()=>{let live=true;
     void api<Obj>('/projects/'+project.id+'/requirement-confirmation/state').then(state=>{
       if(!live)return;if(state.revision!==project.revision){setError('项目正在更新，请稍候读取最新内容。');return;}
       const fresh=initialBatch(project,state.rows);let mine=current.current,base=baseline.current;
-      if(!mine)try{const local=JSON.parse(sessionStorage.getItem(key)||'null');mine=local?.sheet||null;base=local?.base||null;}catch{}
+      if(!mine)try{const local=JSON.parse(session.getItem(key)||'null');mine=local?.sheet||null;base=local?.base||null;}catch{}
       const next=refreshBatchCandidates(project,mine?mergeSuggestions(mine,base,fresh):fresh,fresh);
       baseline.current=fresh;setSheet(next);setLoaded(project.revision);setError('');persist(next);
     }).catch(e=>{if(live)setError((e as Error).message);});return()=>{live=false;};
   },[project.id,project.revision]);
-  function change(next:Sheet){setSheet(next);persist(next);setDirty(true);setSavedRevision(null);sessionStorage.removeItem(key+'-confirmed');setError('');}
+  function change(next:Sheet){current.current=next;setSheet(next);persist(next);setDirty(true);setSavedRevision(null);session.removeItem(key+'-confirmed');setError('');}
   const disabled=props.busy||props.running||working||loaded!==project.revision;
   if(!sheet)return <section className="prewrite-batch" aria-label="成文检查确认表"><p>正在读取全部确认点和已有草稿…</p>{error&&<p role="alert">{error}</p>}</section>;
   const qs=sheetQuestions(project).filter(q=>inScopeQuestion(project,q,sheet.scope)),checks=pendingChecks(project),completion=batchCompletion(project);
@@ -69,7 +72,7 @@ export function PrewriteBatchTable(props:Props){
   const draftProblems=completion&&!completion.complete?[...(draftReport?.rejected||[]),...(draftReport?.field_rejected||[])]:[];
   async function draftAll(){
     if(lock.current||disabled)return;
-    persist();setDirty(false);markSaved();setError('');
+    persist();if(!writer.flush())return;setDirty(false);markSaved();setError('');
     setIssueReview(null);setConflictReview(false);
     const instruction=aiInstructions('请一次处理 prewrite_confirmation_points 中全部待确认点，并把每个已保存回答落实到所有直接关联需求、业务说明与验收。已有明确回答原文保留，不重问、不发散新问题。给出具体可直接确认的修改；没有既定规则的地方写成具体推荐方案。已有人工修改保留，同一条款只返回一份合并后的修改，避免逐项覆盖。当前表内校验缺项：'+JSON.stringify(missing)+'。逐项补齐详细定义，枚举须列出实际可选值；资料没有实际名单时明确给出待确认建议，不能编造厂家名称，也不能假称已补全。',sheet!,baseline.current);
     props.onDraftAll(instruction,{mode:'prewrite'});
@@ -90,14 +93,14 @@ export function PrewriteBatchTable(props:Props){
         if(issues.length)setIssueReview(issues.map((r:Obj)=>({...r,kind:r.kind||(r.item_id?'requirement':'question')})));
         setError(clean(result.message||result.issues?.[0]?.message||'部分回答尚未落实，已保留整张表，请核对提示。'));return;
       }
-      sessionStorage.removeItem(key);setDirty(false);markSaved();setSavedRevision(result.project.revision);sessionStorage.setItem(key+'-confirmed',String(result.project.revision));setNotice('本表已一次确认保存。接下来只对整批内容复检，不逐项调用模型。');
+      session.removeItem(key);setDirty(false);markSaved();setSavedRevision(result.project.revision);session.setItem(key+'-confirmed',String(result.project.revision));setNotice('本表已一次确认保存。接下来只对整批内容复检，不逐项调用模型。');
       props.onContinue();
     }catch(e){setError((e as Error).message);}finally{lock.current=false;setWorking(false);}
   }
   function setField(id:string,field:string,value:string){const row=sheet!.rows[id];change({...sheet!,rows:{...sheet!.rows,[id]:field==='statement'?{...row,statement:value}:{...row,behavior:{...row.behavior,[field]:value}}}});}
   return <section className="prewrite-batch" aria-label="成文检查确认表">
     <header className="prewrite-batch-heading"><div><h3>集中核对，一次确认</h3><p>查看、编辑、确认均不调用 AI。缺少修改草稿时批量起草，确认后只整批复检一次。</p></div>
-      <button type="button" className="primary" disabled={disabled||saved} onClick={()=>void draftAll()}>AI 批量起草全部修改</button></header>
+      <button type="button" className="secondary" disabled={disabled||saved} onClick={()=>void draftAll()}>AI 批量起草全部修改</button></header>
     {props.draftTask&&inlinePrewriteFailure(props.draftTask)&&<div role="alert" className="prewrite-batch-warning batch-draft-failure"><div><strong>本次 AI 起草未完成，原稿和修改已保留。</strong><button type="button" disabled={disabled} onClick={()=>void draftAll()}>重新起草全部修改</button></div><details><summary>查看失败原因</summary><p>{clean(props.draftTask.message)}</p></details></div>}
     {props.onReviewDraft&&<div className="prewrite-batch-warning"><strong>可以先生成完整的 PRD 评审稿</strong><p>直接使用已保存内容，不调用 AI、不改写需求。未决问题随文档列出，后续仍可继续核对。</p><button type="button" disabled={disabled} onClick={props.onReviewDraft}>先生成待确认评审稿</button></div>}
     <div className="prewrite-batch-scroll" hidden={!!issueReview||conflictReview}>
@@ -107,7 +110,7 @@ export function PrewriteBatchTable(props:Props){
           <th scope="row"><span>{index+1}. {finding.saved_correction?'已有需求与验收修改':q?.question?.startsWith('请核对是否按已引用依据')?labels+'需统一核对':clean(q?.question||finding.title||finding.message)}</span><small>{ids.map(id=>project.items.find(i=>i.id===id)?.title).join('、')}</small></th>
           <td>{q&&offer.kind==='missing'&&!hasText&&<div className="batch-answer-missing"><b>本轮检查尚未生成回答草稿</b><p>检查给出的修改建议：{clean(finding.suggested_resolution||finding.message)}</p><small>点击上方“AI 批量起草全部修改”，一次生成全部回答及条款修改。</small></div>}
             {q?<BatchText project={project} label={'检查点 '+(index+1)+' 的回答'} disabled={disabled} value={sheet.answers[q.id]||''} onChange={value=>change({...sheet,answers:{...sheet.answers,[q.id]:value}})}/>:<p>在下方条款中核对本项修改。</p>}
-            {q&&hasText&&<small>{sheet.answers[q.id]!==offer.text?'当前填写的回答草稿，整表确认后才保存。':offer.kind==='saved'?'已保存的原话，直接沿用；不满意可改。':offer.kind==='draft'?'AI 推荐回答已填入，核对后可整表确认；不满意可改。':'当前填写的回答草稿，整表确认后才保存。'}</small>}</td>
+            {q&&hasText&&<small>{sheet.answers[q.id]!==offer.text?'当前填写的回答草稿，整表确认后才保存。':offer.reused?'已带入之前保存的回答，无需重填；请核对下方条款修改后统一确认。':offer.kind==='saved'?'已保存的原话，直接沿用；不满意可改。':offer.kind==='draft'?'AI 推荐回答已填入，核对后可整表确认；不满意可改。':'当前填写的回答草稿，整表确认后才保存。'}</small>}</td>
           <td><p className="batch-check-suggestion">{clean(finding.suggested_resolution||finding.message)}</p><button type="button" onClick={()=>document.getElementById(key+'-'+ids[0])?.scrollIntoView({block:'start',behavior:'smooth'})}>查看下方对应条款</button>
             <details><summary>原检查依据</summary><p>{finding.message}</p>{(finding.quotes||[]).map((quote:Obj,n:number)=><blockquote key={n}>{quote.text}</blockquote>)}</details></td>
           <td><span className={ready(finding)?'batch-ready':'batch-missing'}>{saved?'已保存':ready(finding)?'待统一确认':'待起草修改'}</span></td>
