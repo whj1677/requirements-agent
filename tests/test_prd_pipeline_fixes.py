@@ -4,7 +4,6 @@ import pytest
 from app.core import Problem
 from app.store import Store
 from app.contracts import VALIDATOR, validate_response, validate_document
-from app.workflow import next_output_budget
 from tests.helpers import EXAMPLES, prepared
 
 
@@ -45,10 +44,3 @@ def test_reference_error_lists_offending_ids(state):
         validate_response(r, 'prd', p, p['sources'][0]['excerpts'])
     assert exc.value.code == 'REFERENCE_INVALID'
     assert 'REQ-9999' in exc.value.message and 'Q-9999' in exc.value.message
-
-
-def test_truncation_repair_escalates_output_budget():
-    """截断修复必须提高输出预算：6000→16384→32768→32768（封顶）。"""
-    assert next_output_budget(6000) == 16384
-    assert next_output_budget(16384) == 32768
-    assert next_output_budget(32768) == 32768

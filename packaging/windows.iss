@@ -6,7 +6,7 @@
   #error ReleaseDir is required
 #endif
 #ifndef AppVersion
-  #define AppVersion "1.2.2"
+  #error AppVersion must be supplied by scripts/build_windows.py
 #endif
 
 [Setup]

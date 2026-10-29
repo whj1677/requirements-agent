@@ -18,7 +18,9 @@ import sys
 from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
-VERSION = '1.2.2'
+sys.path.insert(0, str(ROOT))
+from app.version import VERSION
+
 KIT = 'requirements-agent-codex-kit-v1.1'
 LEGACY_MODULES = ('activation', 'licensing', 'license_trust')
 DOCUMENTS = ('user-guide.md', 'windows-installation.md')
@@ -42,9 +44,10 @@ def run(command, cwd=ROOT, env=None):
 
 
 def required_inputs(root):
-    files = [root / 'requirements.lock.txt', root / 'scripts/desktop.py',
+    files = [root / 'requirements.lock.txt', root / 'app/version.py', root / 'scripts/desktop.py',
              root / 'scripts/build_windows.py', root / 'web/package.json',
-             root / 'web/package-lock.json', root / 'web/index.html', root / 'web/tsconfig.json']
+             root / 'web/package-lock.json', root / 'web/index.html', root / 'web/tsconfig.json',
+             root / 'web/vite.config.ts']
     files += sorted(path for path in (root / 'app').glob('*')
                     if path.suffix in {'.py', '.js', '.ps1'} and path.stem not in LEGACY_MODULES)
     files += [root / 'docs' / name for name in DOCUMENTS]
@@ -257,7 +260,7 @@ def verify_frozen_modules(executable):
     from PyInstaller.archive.readers import CArchiveReader
     archive = CArchiveReader(str(executable)).open_embedded_archive('PYZ.pyz')
     included = set(archive.toc)
-    if not {'app.desktop_gateway', 'app.desktop_runtime', 'app.main', 'app.credentials'} <= included:
+    if not {'app.desktop_gateway', 'app.desktop_runtime', 'app.main', 'app.credentials', 'app.version'} <= included:
         raise RuntimeError('Required desktop runtime modules missing from frozen executable')
     if included & {'app.' + name for name in LEGACY_MODULES}:
         raise RuntimeError('Removed device-license modules still bundled in executable')
@@ -403,7 +406,7 @@ def build(args):
     installer = output / 'installer' / f'RequirementsAgent-{VERSION}-windows-x64-setup.exe'
     if not installer.is_file():
         raise RuntimeError('Inno Setup did not create the installer')
-    json_write(output / 'build-result.json', dict(installer=str(installer), installer_sha256=sha256(installer),
+    json_write(output / 'build-result.json', dict(version=VERSION, installer=str(installer), installer_sha256=sha256(installer),
                installer_bytes=installer.stat().st_size, application=str(target),
                source_snapshot_sha256=manifest['source_snapshot_sha256'], **provenance,
                verification_status='BUILT_NOT_ACCEPTED'))

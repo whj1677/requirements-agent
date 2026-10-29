@@ -3,7 +3,7 @@ import copy
 
 import jsonschema
 
-from .contracts import SCHEMA
+from .document_schema import SCHEMA
 from .core import digest
 from .ingest import TEMPORARY_REFERENCE_FIELDS, STABLE_REFERENCE_FIELDS
 from .understanding import answer_bindable, answer_target, current_decision_answer

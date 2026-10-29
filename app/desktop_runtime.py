@@ -116,6 +116,7 @@ def server():
         os.environ['RA_ACCESS_TOKEN'] = 'off'
         os.environ['PLAYWRIGHT_BROWSERS_PATH'] = str(ROOT / 'browsers')
         gateway = DesktopGateway(active_tasks=active_tasks, instance_id=identity())
+        gateway.business.state.store.recover_interrupted_tasks()
         instance = uvicorn.Server(uvicorn.Config(gateway, host='127.0.0.1', port=PORT,
                                                 access_log=False, log_config=None))
         gateway.shutdown = lambda: setattr(instance, 'should_exit', True)
@@ -221,7 +222,8 @@ def smoke_test():
         checks['bundled_chromium'] = page.locator('body').inner_text() == '独立 Chromium 验收'
         browser.close()
     from fastapi.testclient import TestClient
-    from .main import app
+    from .main import create_app
+    app = create_app()
     with TestClient(app) as client:
         checks['session'] = client.get('/api/session').status_code == 200
         checks['frontend'] = client.get('/').status_code == 200

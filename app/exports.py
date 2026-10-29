@@ -11,7 +11,7 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from .core import brief_hash, digest, dumps, ident, now, require
 from .preview import prototype
-from .contracts import profile
+from .document_schema import profile
 from .document_reader import reader_document
 from .requirements import delivery_items
 from .word_presentation import reading_node,add_navigation,bookmark,running_furniture,add_body_prose,cell_prose,WORD_ACCENT,WORD_FLOW_PALETTE,WORD_BODY_FONT,WORD_TABLE_HEADER,WORD_TABLE_ROW,clean_style_gallery

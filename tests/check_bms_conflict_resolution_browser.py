@@ -1,9 +1,10 @@
-"""Resolve the current BMS conflicts in an isolated copy with a stateful oracle.
+"""Resolve BMS conflicts in an isolated copy with a stateful oracle.
 
 The frozen model proposes the displayed recommendations, never sends BMS data.
 The review oracle only passes after exact targeted edits and answer application.
+Use explicit fixture paths to repeat the same input after daily projects change.
 """
-import argparse,asyncio,copy,json,mimetypes,re,shutil,sqlite3,tempfile,time
+import argparse,asyncio,copy,hashlib,json,mimetypes,re,shutil,sqlite3,tempfile,time
 from pathlib import Path
 from urllib.parse import urlsplit
 from tests.check_prewrite_batch_browser import ROOT,ORIGIN,Provider,DEFAULT,PROTOCOL,origin,create_app,daily_fingerprint,httpx,async_playwright,expect,EXAMPLES
@@ -106,9 +107,11 @@ class Oracle(Provider):
 
 async def run(args):
     args.output.mkdir(parents=True);daily=daily_fingerprint();report=dict(status='running',case=args.case,model_calls=0,page_errors=[],api_events=[])
+    fixture_db=args.fixture_db.resolve();fixture_sources=args.fixture_sources.resolve()
+    report['fixture']=dict(database=str(fixture_db),database_sha256=hashlib.sha256(fixture_db.read_bytes()).hexdigest(),sources=str(fixture_sources))
     with tempfile.TemporaryDirectory(prefix='ra-bms-resolve-') as temporary:
-        data=Path(temporary)/'data';data.mkdir();source=sqlite3.connect((ROOT/'data/requirements.sqlite3').as_uri()+'?mode=ro',uri=True);target=sqlite3.connect(data/'requirements.sqlite3');source.backup(target);target.close();source.close()
-        shutil.copytree(ROOT/'data/sources',data/'sources')
+        data=Path(temporary)/'data';data.mkdir();source=sqlite3.connect(fixture_db.as_uri()+'?mode=ro',uri=True);target=sqlite3.connect(data/'requirements.sqlite3');source.backup(target);target.close();source.close()
+        shutil.copytree(fixture_sources,data/'sources')
         provider=Oracle(Path(temporary),args.case);app=create_app(data,provider=provider);store=app.state.store
         store.setting('model',dict(DEFAULT,business_draft_protocol=PROTOCOL,budget_mode='unlimited'))
         initial=store.get(PID);provider.initial=copy.deepcopy(initial);provider.project=lambda:store.get(PID);report['input_revision']=initial['revision']
@@ -192,4 +195,7 @@ async def run(args):
     (args.output/'result.json').write_text(json.dumps(report,ensure_ascii=False,indent=2),'utf-8');print(json.dumps({k:v for k,v in report.items() if k not in ('api_events','traceback','error')},ensure_ascii=False));assert report['status']=='passed' and report['daily_data_unchanged']
 
 if __name__=='__main__':
-    parser=argparse.ArgumentParser();parser.add_argument('--static-build',type=Path,required=True);parser.add_argument('--output',type=Path,required=True);parser.add_argument('--case',choices=['complete','retry','partial','cancel'],default='complete');parser.add_argument('--width',type=int,default=1280);parser.add_argument('--height',type=int,default=720);asyncio.run(run(parser.parse_args()))
+    parser=argparse.ArgumentParser();parser.add_argument('--static-build',type=Path,required=True);parser.add_argument('--output',type=Path,required=True);parser.add_argument('--case',choices=['complete','retry','partial','cancel'],default='complete');parser.add_argument('--width',type=int,default=1280);parser.add_argument('--height',type=int,default=720)
+    parser.add_argument('--fixture-db',type=Path,default=ROOT/'data/requirements.sqlite3')
+    parser.add_argument('--fixture-sources',type=Path,default=ROOT/'data/sources')
+    asyncio.run(run(parser.parse_args()))

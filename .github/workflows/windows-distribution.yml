@@ -132,13 +132,14 @@ jobs:
             throw 'Build provenance does not match the selected clean commit'
           }
           "Built commit: $($result.source_commit)" >> $env:GITHUB_STEP_SUMMARY
+          "RA_BUILD_INSTALLER=$($result.installer)" >> $env:GITHUB_ENV
           "Installer SHA-256: $($result.installer_sha256)" >> $env:GITHUB_STEP_SUMMARY
           'Status: BUILT_NOT_ACCEPTED. Direct startup and customer-runtime installation checks follow.' >> $env:GITHUB_STEP_SUMMARY
 
       - name: Verify direct startup, bundled dependencies, upgrade and uninstall
         run: |
           $ErrorActionPreference = 'Stop'
-          $installer = Join-Path $env:RA_BUILD_OUTPUT 'installer/RequirementsAgent-1.2.2-windows-x64-setup.exe'
+          $installer = $env:RA_BUILD_INSTALLER
           $verification = Join-Path $env:RA_BUILD_BASE 'installation-verification'
           python scripts/verify_windows_install.py --installer $installer --output $verification 2>&1 |
             Tee-Object -FilePath (Join-Path $env:RA_BUILD_LOGS 'installation-verification.log')
@@ -155,7 +156,7 @@ jobs:
           if-no-files-found: error
           include-hidden-files: false
           path: |
-            ${{ env.RA_BUILD_OUTPUT }}/installer/RequirementsAgent-1.2.2-windows-x64-setup.exe
+            ${{ env.RA_BUILD_INSTALLER }}
             ${{ env.RA_BUILD_OUTPUT }}/application/RequirementsAgent/release-manifest.json
             ${{ env.RA_BUILD_OUTPUT }}/build-result.json
             ${{ env.RA_BUILD_OUTPUT }}/native-byte-verification.json

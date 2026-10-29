@@ -569,31 +569,3 @@ def test_named_existing_abilities_do_not_inherit_unrelated_future_failure_scenar
     else:
         with pytest.raises(Problem) as error:compile_explanation(p,claim,kind,['current_state'])
         assert error.value.code=='SEMANTIC_BLOCKED'
-
-
-@pytest.mark.parametrize('overflow',[True,False])
-def test_known_license_output_overflow_remains_invalid_at_timeout_boundary(monkeypatch,overflow):
-    import io,threading,subprocess
-    from pathlib import Path
-    from app import licensing
-    released=threading.Event()
-    class Pipe(io.BytesIO):
-        def read(self,size=-1):
-            assert released.wait(2)
-            return super().read(size)
-    class Process:
-        stdin=io.BytesIO();stdout=io.BytesIO()
-        stderr=Pipe(b'x'*(licensing.MAX_RESPONSE_BYTES+1) if overflow else b'')
-        returncode=1
-        calls=0
-        def wait(self,timeout):
-            self.calls+=1
-            if self.calls==1:
-                released.set()
-                raise subprocess.TimeoutExpired('synthetic',timeout)
-            return self.returncode
-        def kill(self):released.set()
-    monkeypatch.setattr(licensing.subprocess,'Popen',lambda *args,**kwargs:Process())
-    with pytest.raises(licensing.LicenseError) as error:
-        licensing._bounded_process(Path('never-started-synthetic.exe'),b'{}')
-    assert error.value.code==('LICENSE_BRIDGE_INVALID' if overflow else 'LICENSE_BRIDGE_TIMEOUT')

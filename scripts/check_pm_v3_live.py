@@ -75,11 +75,11 @@ async def run(args):
             raw = '\n\n'.join(s['title'] + '\n用途：' + s['purpose'] + '\n' + s['text'] for s in fixture['sources'])
             input_source = str(args.fixture.resolve().relative_to(ROOT)).replace('\\', '/')
         else:
-            fixture_source = (ROOT / 'web/src/pm-prototype/model.ts').read_text(encoding='utf-8')
+            fixture_source = (ROOT / 'web/src/demo/pm-prototype/model.ts').read_text(encoding='utf-8')
             match = re.search(r'export const SAMPLE = `([\s\S]*?)`;', fixture_source)
             assert match, 'Missing exact prototype fixture'
             raw = match.group(1)
-            input_source = 'web/src/pm-prototype/model.ts:SAMPLE'
+            input_source = 'web/src/demo/pm-prototype/model.ts:SAMPLE'
         (session / 'input.txt').write_text(raw, encoding='utf-8')
         write(session / 'input-identity.json', {'sha256': hashlib.sha256(raw.encode()).hexdigest(), 'characters': len(raw), 'source': input_source, 'synthetic': True})
         project = store.create(fixture['project_name'] if fixture else 'V3真实模型测试 · 客户跟进工作台（合成）')

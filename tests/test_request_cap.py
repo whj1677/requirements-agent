@@ -242,7 +242,7 @@ def test_reservation_crash_window_is_unknown_not_refunded_or_zero_fee(tmp_path,m
     with pytest.raises(Problem) as rejected:dispatch(store,p,config,provider,rids[0],'CALL-new')
     assert rejected.value.code=='BUDGET_EXHAUSTED' and not requests
     assert store.get_record(p['id'],tid,'user_task')==old
-    Store(tmp_path)  # process recovery pauses, never replays or refunds
+    Store(tmp_path).recover_interrupted_tasks()  # explicit server recovery never replays or refunds
     after=store.get_record(p['id'],tid,'user_task')
     assert after['status']=='paused_budget' and after['request_budget']==old['request_budget']
 

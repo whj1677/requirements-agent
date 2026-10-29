@@ -78,7 +78,7 @@ function App() {
   </AppShell>;
 }
 if (new URLSearchParams(window.location.search).get('preview') === 'pm-v3') {
-  import('./pm-prototype/entry').then(({ renderPrototype }) => renderPrototype(document.getElementById('root')!));
+  import('./demo/pm-prototype/entry').then(({ renderPrototype }) => renderPrototype(document.getElementById('root')!));
 } else {
   createRoot(document.getElementById('root')!).render(<DraftProvider><TaskProgressProvider><App /><RequestFeedback /></TaskProgressProvider></DraftProvider>);
 }

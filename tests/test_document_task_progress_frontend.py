@@ -25,7 +25,7 @@ const noWrite=()=>assert.fail('rendering must not plan, run, confirm, or navigat
 const p={id:'P-document',revision:4,documents:{},hashes:{brief_hash:'brief'},items:[],questions:[],
   product_flow:{4:{available:true}},document_review_status:{},reference_mode:'user'};
 const props={p,docType:'prd',selectedDocId:'',artifacts:{document_artifact:[]},setDocType:noWrite,
-  setSelectedDocId:noWrite,setStage:noWrite,setShowAdvanced:noWrite,setTab:noWrite,setOutcome:noWrite,
+  setSelectedDocId:noWrite,setTab:noWrite,
   root:'/projects/P-document',act:noWrite,mutate:noWrite,onGenerate:noWrite,busy:false};
 const status=(entry,uncertain=false)=>React.createElement(TaskStatus,{task:entry,uncertain,
   onRefresh:noWrite,onCancel:noWrite,onRetry:noWrite});

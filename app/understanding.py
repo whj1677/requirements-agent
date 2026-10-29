@@ -157,7 +157,7 @@ def equivalent(a,b):
 def question_ids(p, questions, item_mapping):
     """Resolve each question once, before any proposal or question refs are rewritten."""
     from .core import ident
-    from .workflow import replace_refs
+    from .response_application import replace_refs
     mapping={}
     planned=[q for q in p['questions'] if not q.get('superseded_by')]
     for parent in questions:

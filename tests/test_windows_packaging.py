@@ -65,8 +65,9 @@ def test_customer_browser_runtime_ignores_external_overrides(tmp_path, monkeypat
 
 
 def test_build_inputs_do_not_collect_working_directory_secrets(tmp_path):
-    required = ['requirements.lock.txt', 'scripts/desktop.py', 'scripts/build_windows.py',
+    required = ['requirements.lock.txt', 'app/version.py', 'scripts/desktop.py', 'scripts/build_windows.py',
                 'web/package.json', 'web/package-lock.json', 'web/index.html', 'web/tsconfig.json',
+                'web/vite.config.ts',
                 'docs/user-guide.md', 'docs/windows-installation.md']
     for name in required + ['app/licensing.py', 'app/license_trust.py', 'web/src/main.tsx',
                             'app/activation.py', 'app/desktop_gateway.py', 'web/src/activation/index.html',
@@ -82,6 +83,7 @@ def test_build_inputs_do_not_collect_working_directory_secrets(tmp_path):
     (tmp_path / 'packaging').mkdir()
     paths = {path.relative_to(tmp_path).as_posix() for path in required_inputs(tmp_path)}
     assert 'app/desktop_gateway.py' in paths
+    assert 'app/version.py' in paths and 'web/vite.config.ts' in paths
     assert schema in paths
     assert not paths & {'.env', 'data/requirements.sqlite3', 'issuer/private.json',
                         'app/license_trust.py', 'app/licensing.py', 'app/activation.py',
@@ -106,14 +108,18 @@ def test_guides_open_offline_and_link_only_to_bundled_documents(tmp_path):
 
 def test_windows_native_reader_rejects_bytes_that_differ_from_manifest(tmp_path):
     import json
-    sample = tmp_path / 'synthetic.dat'
-    sample.write_bytes(b'non-sensitive package-check fixture')
-    hashes = {'synthetic.dat': sha256(sample)}
+    from PIL import Image
+    # Use an actual package image. Host document protection can expose different
+    # bytes for Python-written .dat files before this test intentionally mutates
+    # them; production verification must still reject every such mismatch.
+    sample = tmp_path / 'synthetic.png'
+    Image.new('RGB', (2, 2), 'white').save(sample)
+    hashes = {'synthetic.png': sha256(sample)}
     report = tmp_path / 'native-check.json'
     assert verify_native_file_hashes(tmp_path, hashes, report)['status'] == 'NATIVE_BYTES_MATCH'
-    sample.write_bytes(b'changed after the manifest was calculated')
+    Image.new('RGB', (2, 2), 'black').save(sample)
     with pytest.raises(RuntimeError, match='different package bytes'):
         verify_native_file_hashes(tmp_path, hashes, report)
     result = json.loads(report.read_text('utf-8'))
     assert result['status'] == 'NATIVE_BYTES_DIFFER'
-    assert result['mismatches'][0]['file'] == 'synthetic.dat'
+    assert result['mismatches'][0]['file'] == 'synthetic.png'

@@ -5,7 +5,7 @@ from .core import digest, ident, now, require
 from .prd import compile_plan, plan_contract
 from .prewrite import status as prewrite_status
 from .product_flow import execution_issues
-from .workflow import apply_response
+from .response_application import apply_response
 
 RECEIPT_KIND = 'local_prd_receipt'
 

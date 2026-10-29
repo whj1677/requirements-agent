@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import ts from '../web/node_modules/typescript/lib/typescript.js';
-const source = fs.readFileSync(new URL('../web/src/pm-prototype/model.ts', import.meta.url), 'utf8');
+const source = fs.readFileSync(new URL('../web/src/demo/pm-prototype/model.ts', import.meta.url), 'utf8');
 const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } }).outputText;
 const M = await import(`data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`);
 const results = [];

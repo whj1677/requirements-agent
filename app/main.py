@@ -33,6 +33,7 @@ from .bulk_adoption import review as review_item_adoptions, adopt as adopt_items
 from .budgets import MODEL_OUTPUT_LIMIT
 from .scope_context import validate_context_edit, save_context_edit, scope_field_rules
 from . import business_context
+from .version import VERSION
 
 MODEL_TEST_TIMEOUT_SECONDS = 60
 
@@ -286,11 +287,11 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
     token = access_token
     local_csrf = secrets.token_urlsafe(32)
     sessions = {}
-    app = FastAPI(title='需求 Agent', version='1.1', docs_url=None, redoc_url=None)
+    app = FastAPI(title='需求 Agent', version=VERSION, docs_url=None, redoc_url=None)
     app.state.store, app.state.provider, app.state.workflow = store, provider, workflow
     app.state.actions = actions
     app.state.access_token = token
-    app.state.runtime = {'runtime_id': runtime_fingerprint(), 'started_at': now(),
+    app.state.runtime = {'runtime_id': runtime_fingerprint(), 'started_at': now(), 'product_version': VERSION,
                          'capabilities': list(API_CAPABILITIES)}
     if FROZEN:
         app.state.runtime['distribution'] = 'requirements-agent-windows'
@@ -1186,6 +1187,3 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
     if (ROOT/'web/dist').exists():
         app.mount('/',StaticFiles(directory=ROOT/'web/dist',html=True),name='web')
     return app
-
-
-app = create_app()

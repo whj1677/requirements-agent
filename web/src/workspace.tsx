@@ -1,6 +1,7 @@
-import {session,taskFingerprint} from './draft-storage';
+import {session} from './draft-storage';
+import {useWorkspaceData,workspaceErrorText} from './use-workspace-data';
 import React, { useEffect, useRef, useState } from 'react';
-import { api, ApiError, BenchmarkInput, categorizeError, ErrorCategory, ActionInput, ActionPlan, BusinessAction, Blocker, BlockerAction, Project, Run, UserTask } from './api';
+import { api, ApiError, BenchmarkInput, categorizeError, ActionInput, ActionPlan, BusinessAction, Blocker, BlockerAction, Project, UserTask } from './api';
 import { ArtifactTabs } from './workbench';
 import { SourcePanel, VersionHistory, ConfirmationPanel, DocumentStudio, documentTaskForType } from './panels';
 import { useDialog } from './shell';
@@ -29,20 +30,19 @@ import {documentPreparation} from './document-preparation';
 import {prewriteCanDraft} from './prewrite-review';
 type Obj = Record<string, any>;
 export type Compat = { status: 'ok' | 'incompatible' | 'unverified'; missing: string[] };
-const categoryText: Record<ErrorCategory, string> = { 'not-found': '项目不存在或已被删除', 'route-missing': '所需接口缺失，前后端版本可能不兼容', network: '无法连接服务', 'non-json': '服务返回了无法识别的内容', session: '页面连接状态已失效，请重新加载', forbidden: '访问被拒绝', conflict: '内容版本已变化', server: '暂时无法加载此项目', unknown: '暂时无法加载此项目' };
 
 export function Workspace({ id, active, assistantEntryNonce, assistantEntryTask = false, models, onProjectsChanged, onProjectSnapshot, compat, onExit, onOpen, onKeepAlive }: { id: string; active: boolean; onKeepAlive?:(id:string,keep:boolean)=>void; assistantEntryNonce?: number; assistantEntryTask?: boolean; models: Obj; onProjectsChanged: () => Promise<void>; onProjectSnapshot?: (project: Project) => void; compat: Compat; onExit: () => void; onOpen: (afterOpen: () => void) => void }) {
-  const [p, setP] = useState<Project | null>(null), [phase, setPhase] = useState(()=>session.getItem('ra-phase-'+id)==='5'?5:4), [runs, setRuns] = useState<Run[]>([]), [tasks, setTasks] = useState<UserTask[]>([]);
+  const {root,p,setP,projectRef,runs,tasks,setTasks,artifacts,fatal,stale,staleNotice,setStaleNotice,tasksLoaded,setTasksLoaded,running,refresh,onRefreshFail} = useWorkspaceData(id,active,onProjectSnapshot);
+  const [phase, setPhase] = useState(()=>session.getItem('ra-phase-'+id)==='5'?5:4);
   const [error,setError]=useState(''),[busy,setBusy]=useState(false);
   const [sourcesOpen, setSourcesOpen] = useState(false), [sourceText, setSourceText] = useState(''), [url, setUrl] = useState(''), [purpose, setPurpose] = useState('goal'), [dynamic, setDynamic] = useState(false);
   const [manualPageUrl,setManualPageUrl]=useState(''),[manualPageTitle,setManualPageTitle]=useState(''),[manualPageNotice,setManualPageNotice]=useState(''),[manualPagePendingUrl,setManualPagePendingUrl]=useState(''),[manualPageActive,setManualPageActive]=useState(false);
-  const [historyOpen, setHistoryOpen] = useState(false), [history, setHistory] = useState<Obj[]>([]), [artifacts, setArtifacts] = useState<Obj>({ document_artifact: [] });
+  const [historyOpen, setHistoryOpen] = useState(false), [history, setHistory] = useState<Obj[]>([]);
   const [docType, setDocType] = useState('prd'), [selectedDocId, setSelectedDocId] = useState(''), [rename, setRename] = useState(''), [renameOpen, setRenameOpen] = useState(false);
   const [documentQuestion, setDocumentQuestion] = useState<{id:string;nonce:number}>();
   const [chapter, setChapter] = useState<ChapterTarget | null>(null);
   const [chapterSubmission, setChapterSubmission] = useState<ChapterSubmission>();
   const [taskContinuation, setTaskContinuation] = useState<{id: string; retry: boolean}>();
-  const [, setShowAdvanced]=useState(false),[,setStage]=useState('ingest');
   const [pending, setPending] = useState<{ plan: ActionPlan; input: ActionInput; key: string; preparationToken?:number; documentPreparation?:boolean } | null>(null), [actionError, setActionError] = useState('');
   const documentPreparationKey=id+'-document-preparation';
   const [documentPreparationNotice,setDocumentPreparationNotice]=useState('');
@@ -51,7 +51,7 @@ export function Workspace({ id, active, assistantEntryNonce, assistantEntryTask 
   const [actionStale, setActionStale] = useState(false), [reviewFocusNonce, setReviewFocusNonce] = useState(0);
   const [optionDecision, setOptionDecision] = useState<Obj | null>(null), [previewOption, setPreviewOption] = useState<Obj | null>(null);
   const [focusRefs, setFocusRefs] = useState<Obj[]>([]);
-  const [fatal, setFatal] = useState<ApiError | null>(null), [stale, setStale] = useState<string[]>([]), [staleNotice, setStaleNotice] = useState(''), [tasksLoaded, setTasksLoaded] = useState(false), [compatDismissed, setCompatDismissed] = useState(false);
+  const [compatDismissed, setCompatDismissed] = useState(false);
   const [help,setHelp]=useState<Obj|null>(null),[helpText,setHelpText]=useState(''),[candidateOpen,setCandidateOpen]=useState(false),[candidateTitle,setCandidateTitle]=useState(''),[candidateText,setCandidateText]=useState('');
   const [acceptanceOpen,setAcceptanceOpen]=useState(false),[acceptanceRequirement,setAcceptanceRequirement]=useState(''),[acceptanceTitle,setAcceptanceTitle]=useState(''),[acceptanceText,setAcceptanceText]=useState('');
   const guard=useNavigation();
@@ -101,9 +101,7 @@ export function Workspace({ id, active, assistantEntryNonce, assistantEntryTask 
   // Locked editors stay mounted. Return to the prerequisite without requiring a
   // hidden, possibly conflicted draft to be saved or discarded first.
   function returnToPrerequisite(n:number){if(n<3){openMain({step:n===0?'information':'refine',review:n>0});return;}go(n);}
-  const projectRef=useRef<Project|null>(null);
   const busyRef=useRef(false);
-  const refreshTail = useRef<Promise<void>>(Promise.resolve()), root = '/projects/' + id;
   const mainScroll = useRef<HTMLDivElement | null>(null), scrollPositions = useRef<Record<number, number>>({});
   function formalScrollStart() {
     const container=mainScroll.current, details=detailRef.current;
@@ -130,27 +128,8 @@ export function Workspace({ id, active, assistantEntryNonce, assistantEntryTask 
   useDirty(id+'-acceptance',Boolean(acceptanceTitle||acceptanceText),'关联验收候选',saveAcceptance,()=>{setAcceptanceTitle('');setAcceptanceText('');setAcceptanceRequirement('');setAcceptanceOpen(false);});
   useDialog(historyOpen, () => setHistoryOpen(false));
   useDialog(renameOpen, () => {if(!busy)setRenameOpen(false);});
-  function refresh():Promise<void> {
-    // Queue every batch, including mutation-triggered and manual reads. A save
-    // must observe its own new revision even when a slow poll was already open.
-    const run=refreshTail.current.then(async()=>{
-      const records=Promise.allSettled([api<Run[]>(root+'/runs'),api<UserTask[]>(root+'/actions'),api<Obj>(root+'/artifacts')]);
-      let project:Project;
-      try{project=await api<Project>(root);}catch(e){setFatal(e as ApiError);throw e;}
-      // A read already in flight may precede a confirmed write response.
-      if(!projectRef.current||project.revision>=projectRef.current.revision){projectRef.current=project;setP(project);onProjectSnapshot?.(project);}setFatal(null);setStaleNotice('');
-      const responses=await records;
-      const failed:string[]=[];
-      responses.forEach((result,index)=>{if(result.status==='rejected'){failed.push(['运行记录','任务列表','产物记录'][index]);return;}if(index===0)setRuns(result.value as Run[]);if(index===1){setTasks(result.value as UserTask[]);setTasksLoaded(true);}if(index===2)setArtifacts(result.value as Obj);});
-      setStale(failed);
-    });
-    refreshTail.current=run.then(()=>{},()=>{});
-    return run;
-  }
-  function onRefreshFail(e: unknown) { setStaleNotice(categoryText[categorizeError(e)]); }
   function retry() { void act(refresh); }
   async function act(fn: () => Promise<unknown>) { if(busyRef.current)return;busyRef.current=true;const finish=beginActivity('正在处理当前操作');setBusy(true);setError('');try{await fn();finish();}catch(e){const message=(e as Error).message;setError(message);finish(message,true);}finally{busyRef.current=false;setBusy(false);} }
-  useEffect(() => { if (active) refresh().catch(onRefreshFail); }, [active]);
   useEffect(()=>{
     if(!active||busy||!documentReviewRequested)return;
     setDocumentReviewRequested(false);openMain({step:'refine',review:true});
@@ -169,7 +148,6 @@ export function Workspace({ id, active, assistantEntryNonce, assistantEntryTask 
   useEffect(()=>{if(!active)preparationController.current?.cancel();},[active]);
   useEffect(()=>()=>{preparationController.current?.cancel();},[]);
   useEffect(()=>{preparationController.current?.observe(tasks);},[tasks]);
-  const running = tasks.some(t => ['queued','running'].includes(t.status)) || runs.some(r => ['queued','running'].includes(r.status));
   useEffect(()=>{
     const intent=prewriteNavigation.current,task=tasks.find(value=>value.id===intent?.taskId);
     if(!active||busy||!intent||intent.resolving||!task||['queued','running'].includes(task.status))return;
@@ -183,24 +161,6 @@ export function Workspace({ id, active, assistantEntryNonce, assistantEntryTask 
     }).catch(e=>{if(prewriteNavigation.current===intent)prewriteNavigation.current=null;onRefreshFail(e);});
   },[tasks,active,busy]);
   useEffect(()=>{onKeepAlive?.(id,running||busy);return()=>onKeepAlive?.(id,false);},[id,running,busy,onKeepAlive]);
-  const pollingSnapshot=useRef({tasks,runs});pollingSnapshot.current={tasks,runs};
-  useEffect(() => {
-    if (!running) return;let stopped=false,timer:ReturnType<typeof setTimeout>,inFlight=false;
-    async function poll(){
-      if(stopped||inFlight)return;clearTimeout(timer);inFlight=true;
-      try{
-        if(document.visibilityState==='hidden')return;
-        const next=await api<UserTask[]>(root+'/actions');if(stopped)return;
-        const old=pollingSnapshot.current;
-        const legacyRunning=old.runs.some(run=>['queued','running'].includes(run.status)&&!old.tasks.some(task=>task.run_ids.includes(run.id)&&['queued','running'].includes(task.status)));
-        if(legacyRunning||taskFingerprint(next)!==taskFingerprint(old.tasks))await refresh();
-      }catch(e){if(!stopped)onRefreshFail(e);}
-      finally{inFlight=false;if(!stopped)timer=setTimeout(poll,document.visibilityState==='hidden'?10000:1600);}
-    }
-    function visible(){if(document.visibilityState==='visible')void poll();}
-    document.addEventListener('visibilitychange',visible);timer=setTimeout(poll,1600);
-    return()=>{stopped=true;clearTimeout(timer);document.removeEventListener('visibilitychange',visible);};
-  }, [running,root]);
   useEffect(()=>{
     const intent=analysisNavigation.current;
     if(!intent)return;
@@ -475,7 +435,7 @@ export function Workspace({ id, active, assistantEntryNonce, assistantEntryTask 
     if (fatal) {
       const category = categorizeError(fatal);
       return <div hidden={!active} className="workspace"><article className="card" role="alert">
-        <h2>{categoryText[category]}</h2>
+        <h2>{workspaceErrorText[category]}</h2>
         <p>{category === 'route-missing' ? '当前服务可能缺少此页面所需的接口；后端代码变更后需重启服务，本标签页需重新加载。' : category === 'session' ? '页面连接状态已失效，请重新加载后再进入项目。' : '可以重试加载，或返回项目列表。'}</p>
         <div className="toolbar"><button disabled={busy} onClick={retry}>{busy?'正在重新加载…':'重新加载'}</button><button onClick={onExit}>返回项目列表</button></div>
         <details><summary>诊断信息</summary><p>HTTP 状态：{fatal.status || '无响应'} · 接口：{fatal.path} · 错误码：{fatal.code} · 类型：{fatal.kind}</p></details>
@@ -549,11 +509,11 @@ export function Workspace({ id, active, assistantEntryNonce, assistantEntryTask 
         {phaseAccess.allowed&&blockerTask&&<p className="blocker-return" role="status">正在处理：{blockerTask.title}。<button type="button" disabled={busy||running} onClick={returnToBlockers}>返回阻塞清单</button></p>}
         {phaseAccess.allowed&&returnAnswerId&&(phase===1||phase===2)&&<p className="notice">正在核对回答关联条款。保存并采纳后，可返回原回答重新核对。<button type="button" disabled={busy||running} onClick={returnToAnswer}>返回原回答核对</button></p>}
         <div className="document-stage" hidden={phase!==4||!stageAccess(p,4).allowed} id={'document-result-'+id}>
-          <DocumentStudio focusReviewNonce={reviewFocusNonce} taskStatus={documentTaskStatus} p={p} docType={docType} setDocType={next=>guard(()=>{setDocType(next);setSelectedDocId('');setDocumentQuestion(undefined);})} setSelectedDocId={next=>{if(next!==selectedDocId)guard(()=>setSelectedDocId(next));}} selectedDocId={selectedDocId} artifacts={artifacts} setStage={setStage} setShowAdvanced={setShowAdvanced} setTab={navigate} setOutcome={()=>{}} root={root} act={act} mutate={mutate} busy={busy||running} onHelp={openHelp} onGenerate={()=>act(()=>planAction('document'))} onPrewrite={()=>openMain({step:'refine',prewrite:true})} onSource={shared.onSource} onClarify={openQuestion}
+          <DocumentStudio focusReviewNonce={reviewFocusNonce} taskStatus={documentTaskStatus} p={p} docType={docType} setDocType={next=>guard(()=>{setDocType(next);setSelectedDocId('');setDocumentQuestion(undefined);})} setSelectedDocId={next=>{if(next!==selectedDocId)guard(()=>setSelectedDocId(next));}} selectedDocId={selectedDocId} artifacts={artifacts} setTab={navigate} root={root} act={act} mutate={mutate} busy={busy||running} onHelp={openHelp} onGenerate={()=>act(()=>planAction('document'))} onPrewrite={()=>openMain({step:'refine',prewrite:true})} onSource={shared.onSource} onClarify={openQuestion}
             discussionPanel={p.documents[docType]&&<DocumentDiscussionPanel summaryOnly onOpenQuestion={openQuestion} project={p} tasks={tasks} runs={runs} document={p.documents[docType]} busy={busy} running={running} mutate={mutate} focusQuestion={documentQuestion} onRefresh={retry} onSources={refs=>shared.onSource(refs||[])} onScope={()=>openMain({step:'refine',scope:true})} onClarify={questionId=>act(()=>planAction('clarify',undefined,{kind:'question',id:questionId,label:p.questions.find(q=>q.id===questionId)?.question||'章节补充问题'}))}/>}/>
           <ProductCheckpoint onBlocked={blockedCheckpoint} p={p} phase={4} busy={busy||running} mutate={mutate} go={go} getProject={()=>projectRef.current||p}/>
         </div>
-        <section hidden={phase!==5||!stageAccess(p,5).allowed} id={'confirmation-'+id}><ConfirmationPanel onResolveBlocker={(action,row)=>resolveBlocker(action,row,5)} onOpenDocument={kind=>openDetails(4,kind)} onClarify={openQuestion} p={p} busy={busy} setBusy={setBusy} setError={setError} setTab={navigate} setStage={setStage} setShowAdvanced={setShowAdvanced} root={root} act={act} refresh={refresh} onReview={()=>act(()=>planAction('review'))} onResolveReview={()=>openReviewFindings()}/></section>
+        <section hidden={phase!==5||!stageAccess(p,5).allowed} id={'confirmation-'+id}><ConfirmationPanel onResolveBlocker={(action,row)=>resolveBlocker(action,row,5)} onOpenDocument={kind=>openDetails(4,kind)} onClarify={openQuestion} p={p} busy={busy} setBusy={setBusy} setError={setError} setTab={navigate} root={root} act={act} refresh={refresh} onReview={()=>act(()=>planAction('review'))} onResolveReview={()=>openReviewFindings()}/></section>
         </div>
       </section>
     </div>

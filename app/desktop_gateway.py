@@ -20,8 +20,8 @@ class DesktopGateway:
 
     @staticmethod
     def _load_business():
-        from .main import app
-        return app
+        from .main import create_app
+        return create_app()
 
     def _instance(self):
         return {'product': 'requirements-agent', 'instance_id': self.instance_id,

@@ -4,7 +4,7 @@ The mapping records where existing content is expressed. It does not approve a
 business rule, infer missing behavior, or turn a discussion item into a norm.
 """
 
-from .contracts import profile
+from .document_schema import profile
 from .product_flow import BEHAVIOR, INTAKE, SCOPE
 from .requirements import delivery_items
 

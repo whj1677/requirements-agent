@@ -59,7 +59,9 @@ def main():
         os.environ['RA_DATA_DIR'] = str(ROOT / 'data')
         sys.path.insert(0, str(ROOT))
         import uvicorn
-        from app.main import app
+        from app.main import create_app
+        app = create_app(ROOT / 'data')
+        app.state.store.recover_interrupted_tasks()
         print(f'需求 Agent：http://127.0.0.1:{PORT}/', flush=True)
         print('后端运行标识 runtime_id=' + app.state.runtime['runtime_id'], flush=True)
         index = ROOT / 'web/dist/index.html'

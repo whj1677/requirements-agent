@@ -113,7 +113,7 @@ def recover(store, pid, tid, revision):
             value, proof = derive(project, task, run, evidence)
         except (ValueError, KeyError, TypeError, IndexError):
             require(False, 'RECOVERY_UNAVAILABLE', '原始调用证据结构不完整，不能恢复。', 409)
-        from .workflow import apply_response
+        from .response_application import apply_response
         before = {i['id'] for i in project['items']}
         apply_response(project, value)
         project['messages'][-1].update(local_recovery_id=record_id, run_id=run['id'])

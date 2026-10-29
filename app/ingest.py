@@ -3,7 +3,7 @@ import copy
 import json
 import jsonschema
 
-from .contracts import SCHEMA, VALIDATOR
+from .document_schema import SCHEMA, VALIDATOR
 from .core import digest, dumps, require
 
 

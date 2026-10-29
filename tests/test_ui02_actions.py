@@ -253,6 +253,7 @@ def test_restart_pauses_unfinished_records_without_network(tmp_path):
     for kind in ('run','user_task'):
         store.record(p['id'],kind,dict(status='running',calls=1))
     reopened=Store(tmp_path)
+    reopened.recover_interrupted_tasks()
     for kind in ('run','user_task'):
         record=reopened.records(p['id'],kind)[0]
         assert record['status']=='paused_budget' and record['error']=='RESTARTED' and record['calls']==1

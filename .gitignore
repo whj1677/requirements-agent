@@ -30,3 +30,7 @@ evidence/
 /.impeccable/
 /workpydantic-check.log
 /docs/ux-redesign-20261007/
+
+# Retired device-license binaries remain local; history preserves the old release.
+/app/license_runtime/DeviceLicense.Bridge.exe
+/app/license_runtime/DeviceLicense.dll

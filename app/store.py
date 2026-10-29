@@ -16,10 +16,16 @@ class Store:
               CREATE TABLE IF NOT EXISTS projects(id TEXT PRIMARY KEY, revision INTEGER, payload TEXT NOT NULL);
               CREATE TABLE IF NOT EXISTS revisions(project_id TEXT, revision INTEGER, payload TEXT, reason TEXT, created TEXT, PRIMARY KEY(project_id,revision));
               CREATE TABLE IF NOT EXISTS records(id TEXT PRIMARY KEY, project_id TEXT, kind TEXT, payload TEXT NOT NULL, created TEXT);
+              CREATE INDEX IF NOT EXISTS records_project_kind ON records(project_id,kind);
               CREATE TABLE IF NOT EXISTS settings(id TEXT PRIMARY KEY, payload TEXT NOT NULL);
               CREATE TABLE IF NOT EXISTS migrations(version INTEGER PRIMARY KEY, applied TEXT);
               INSERT OR IGNORE INTO migrations VALUES(1,datetime('now'));
             ''')
+
+    def recover_interrupted_tasks(self):
+        """Called by the server only after reserving its exclusive listener."""
+        with self.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
             # Never replay a possibly charged request after process death.
             for row in db.execute("SELECT id,payload FROM records WHERE kind IN ('run','user_task')").fetchall():
                 run = json.loads(row['payload'])

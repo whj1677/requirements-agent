@@ -24,19 +24,14 @@ def customer_app(tmp_path, monkeypatch):
     return main_module, tmp_path
 
 
-def test_customer_factory_works_with_missing_or_corrupt_legacy_license(customer_app, monkeypatch):
+@pytest.mark.parametrize('legacy_content', [None, b'{corrupt old license'])
+def test_customer_factory_works_with_missing_or_corrupt_legacy_license(customer_app, legacy_content):
     main_module, directory = customer_app
     from fastapi.testclient import TestClient
-    import app.licensing as licensing
-
-    class ForbiddenLicenseRead:
-        def __init__(self, *_args, **_kwargs):
-            pytest.fail('customer business startup must not read device-license state')
-
-    monkeypatch.setattr(licensing, 'LicenseManager', ForbiddenLicenseRead)
     legacy_license = directory / 'profile' / 'RequirementsAgent' / 'license' / 'license.json'
-    legacy_license.parent.mkdir(parents=True)
-    legacy_license.write_bytes(b'{corrupt old license')
+    if legacy_content is not None:
+        legacy_license.parent.mkdir(parents=True)
+        legacy_license.write_bytes(legacy_content)
     business = directory / 'business-data'
     app = main_module.create_app(business, env_path=directory / 'absent.env')
     with TestClient(app) as client:
@@ -48,19 +43,17 @@ def test_customer_factory_works_with_missing_or_corrupt_legacy_license(customer_
         assert created.status_code == 200
         assert client.get('/api/projects').json()[0]['name'] == '无设备许可项目'
     assert business.exists()
-    assert legacy_license.read_bytes() == b'{corrupt old license'
+    if legacy_content is None:
+        assert not legacy_license.exists()
+    else:
+        assert legacy_license.read_bytes() == legacy_content
 
 
 def test_frozen_provider_still_requires_customer_key_without_network(customer_app, monkeypatch):
     main_module, directory = customer_app
-    from app import core, licensing
+    from app import core
     from app.provider import Provider, DEFAULT
 
-    class ForbiddenLicenseRead:
-        def __init__(self, *_args, **_kwargs):
-            pytest.fail('provider must not read device-license state')
-
-    monkeypatch.setattr(licensing, 'LicenseManager', ForbiddenLicenseRead)
     monkeypatch.setattr(core, 'FROZEN', True)
     provider = Provider(env_path=directory / 'absent.env')
     monkeypatch.setattr(provider, 'key', lambda _config: '')
@@ -142,15 +135,18 @@ def test_legacy_activation_urls_redirect_root_or_return_not_found(desktop_gatewa
 def test_desktop_gateway_has_no_device_licensing_dependency_in_fresh_process(tmp_path):
     result_file = tmp_path / 'gateway-imports.json'
     command = (
-        'import sys,json;from fastapi import FastAPI;'
+        'import sys,json;'
         'from fastapi.testclient import TestClient;'
         'from app.desktop_gateway import DesktopGateway;'
-        "business=FastAPI();gateway=DesktopGateway(business_factory=lambda:business);"
+        'gateway=DesktopGateway();'
         "client=TestClient(gateway,base_url='http://127.0.0.1:8765',client=('127.0.0.1',53210));"
-        "client.get('/desktop/api/status');"
-        f"open({str(result_file)!r},'w').write(json.dumps(dict(licensing_imported=('app.licensing' in sys.modules))))"
+        "assert client.get('/api/session').status_code==200;"
+        "assert client.get('/api/projects').json()==[];"
+        f"open({str(result_file)!r},'w').write(json.dumps(dict(licensing_imported=any(name in sys.modules for name in ('app.activation','app.licensing','app.license_trust')))))"
     )
-    result = subprocess.run([sys.executable, '-c', command], cwd=ROOT,
+    environment = dict(os.environ, RA_DATA_DIR=str(tmp_path / 'business-data'),
+                       LOCALAPPDATA=str(tmp_path / 'profile'))
+    result = subprocess.run([sys.executable, '-c', command], cwd=ROOT, env=environment,
                             capture_output=True, timeout=30)
     assert result.returncode == 0, result.stderr.decode('utf-8', errors='replace')
     assert json.loads(result_file.read_text('utf-8')) == {'licensing_imported': False}

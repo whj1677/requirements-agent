@@ -3,7 +3,7 @@ import copy
 import re
 import jsonschema
 from .core import digest, dumps, require
-from .contracts import SCHEMA, profile
+from .document_schema import SCHEMA, profile
 from .document_mapping import build_reference_mapping
 from .requirements import delivery_items, item_content
 from .product_flow import INTAKE, SCOPE, status as flow_status
