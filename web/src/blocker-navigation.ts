@@ -3,6 +3,20 @@ import { scopeLabels } from './scope-draft';
 import { canStartDirect, questionPhase } from './workflow-access';
 
 export type BlockerFocus = {action:BlockerAction;nonce:number};
+/** Follow stage prerequisites to their actual editable blocker, without submitting anything. */
+export function firstActionableBlocker(p:Project,rows:Blocker[]=p.confirmation_blockers||[]):{action:BlockerAction;row:Blocker}|undefined {
+  function find(candidates:Blocker[],seen:Set<number>):{action:BlockerAction;row:Blocker}|undefined {
+    for(const row of candidates)for(const action of row.actions||[]){
+      if(action.kind==='stage'&&action.step&&!seen.has(action.step)){
+        const nested=p.product_flow?.[action.step-1]?.blockers||[];
+        const next=find(nested,new Set([...seen,action.step]));
+        if(next)return next;
+      }
+      return {action,row};
+    }
+  }
+  return find(rows,new Set());
+}
 export function stageBlockers(p:Project,phase:number):Blocker[] {
   if(phase===5)return p.confirmation_blockers||[];
   const state=p.product_flow?.[phase];

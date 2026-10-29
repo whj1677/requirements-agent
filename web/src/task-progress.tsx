@@ -1,7 +1,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import type { UserTask } from './api';
 import { dismissProgress, emptyProgress, ProgressEntry, ProgressSnapshot, reconcileProgress,
-  taskCurrentStage, taskElapsed, taskGenerated, taskNeedsAttention, taskRunning, taskStageLabels, taskStateLabels } from './task-progress-state';
+  taskCurrentStage, taskElapsed, taskGenerated, taskNeedsAttention, taskRunning, taskStageLabels, taskStateLabels,inlinePrewriteFailure } from './task-progress-state';
 import './task-progress.css';
 import { TaskFailureNotice, taskFailure, canRecoverDraft } from './task-failure';
 
@@ -14,6 +14,7 @@ type ControlRef = React.MutableRefObject<ProgressControls>;
 type ProgressBridge = {
   publish: (snapshot: ProgressSnapshot, submittedId?: string) => void;
   register: (projectId: string, controls: ControlRef) => () => void;
+  activeProjectId?: string;
 };
 const noopBridge: ProgressBridge = { publish: () => {}, register: () => () => {} };
 const ProgressContext = createContext<ProgressBridge>(noopBridge);
@@ -60,8 +61,9 @@ export function TaskProgressProvider({ children }: { children: React.ReactNode }
     controls.current.set(projectId, ref);
     return () => { if (controls.current.get(projectId) === ref) controls.current.delete(projectId); };
   }, []);
-  const bridge = useMemo(() => ({ publish, register }), [publish, register]);
   const entry = state.entries.find(row => row.task.id === state.selected) || state.entries.at(-1);
+  const activeProjectId=entry?.projectId;
+  const bridge = useMemo(() => ({ publish, register, activeProjectId }), [publish, register,activeProjectId]);
   const anyRunning = state.entries.some(row => taskRunning(row.task));
   useEffect(() => { if (!anyRunning) return; const timer = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(timer); }, [anyRunning]);
   useEffect(() => { setOperationError(''); }, [entry?.task.id]);
@@ -87,7 +89,10 @@ export function TaskProgressProvider({ children }: { children: React.ReactNode }
     if (!target) { setOperationError('请先进入对应项目。'); return; }
     target.open(entry.task, retry, () => setState(s => ({ ...s, expanded: false })));
   }
-  return <ProgressContext.Provider value={bridge}><ProgressPresentContext.Provider value={Boolean(entry)}>{children}{entry && <aside className={'ai-progress' + (state.expanded ? ' ai-progress-expanded' : '')} aria-label="AI 任务进度" onKeyDown={event => { if (state.expanded && event.key === 'Escape') { event.stopPropagation(); collapse(); } }}>
+  const inlineDone=entry?.inlineDraft&&!state.expanded&&(
+    entry.task.retry_input?.draft_request&&taskGenerated(entry.task)||
+    entry.task.status==='awaiting_user'&&['prewrite','document'].includes(entry.task.action)||inlinePrewriteFailure(entry.task));
+  return <ProgressContext.Provider value={bridge}><ProgressPresentContext.Provider value={Boolean(entry)&&!inlineDone}>{children}{entry && !inlineDone && <aside className={'ai-progress' + (state.expanded ? ' ai-progress-expanded' : '')} aria-label="AI 任务进度" onKeyDown={event => { if (state.expanded && event.key === 'Escape') { event.stopPropagation(); collapse(); } }}>
     {state.expanded ? <>
       <header className="ai-progress-header"><h2 ref={heading} tabIndex={-1}>AI 任务进度</h2><button type="button" onClick={collapse}>收起进度</button></header>
       <div className="ai-progress-body">

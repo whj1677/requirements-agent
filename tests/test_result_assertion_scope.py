@@ -11,6 +11,30 @@ ORIGINAL='响应丢失或超时为结果未知，不断言创建、未创建或�
 
 
 @pytest.mark.parametrize('text',[
+    '超时或结果未知保留备注，不自动重发，先查询同一告警确认记录：查到已确认则展示且不重复写入，确认未写入才允许再次提交，查询仍失败保持待核实并可再次查询。',
+    '超时或结果未知先查询同一告警确认记录，查到已确认则展示确认人、时间和备注，不重复写入。',
+    '超时结果未知；查询确认未写入后，允许再次提交。',
+])
+def test_explicit_confirmed_query_branch_resolves_only_its_later_effects(text):
+    before=str(text)
+    assert not issues(facts(text,location='synthetic.flow',fallback_operation='write',fallback_subject='记录'))
+    assert text==before
+
+
+@pytest.mark.parametrize('text',[
+    '结果未知，原记录已写入，之后查询确认成功。',
+    '结果未知，未查到已确认则原记录已写入。',
+    '结果未知，没有查到已确认，原记录未写入。',
+    '结果未知，查询未明确成功，原记录已写入。',
+    '结果未知，查到另一工单已确认则原记录已写入。',
+    '结果未知，查询仍未知，原记录未写入。',
+])
+def test_query_words_cannot_launder_unknown_earlier_negated_or_other_object_results(text):
+    found=issues(facts(text,location='synthetic.flow',fallback_operation='write',fallback_subject='记录'))
+    assert found and any(row['reason']=='unknown_result_asserted' for row in found)
+
+
+@pytest.mark.parametrize('text',[
     ORIGINAL,
     '结果未知时不得展示或断言申请失败、本批未创建或既有资源未变。',
     '结果未知时不能断言或展示创建、未创建或既有资源不变。',

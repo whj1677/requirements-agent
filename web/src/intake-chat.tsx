@@ -1,3 +1,4 @@
+import {session} from './draft-storage';
 import React, { useEffect, useRef, useState } from 'react';
 import { api, ApiError, BenchmarkInput, JsonObject, Project, uploadFile, UserTask } from './api';
 import { BenchmarkIntake } from './benchmark-intake.tsx';
@@ -10,12 +11,12 @@ const ATTACHMENT_MESSAGE='请结合这些资料继续梳理需求。';
 type PendingAttachment={id:string;name:string;type:string;file?:File;preview?:string;sourceId?:string;uploading?:boolean;parseStatus?:string};
 const pendingAttachmentsByProject=new Map<string,PendingAttachment[]>();
 export function hasPendingInterviewInput(projectId:string,includeText=true):boolean {
-  if((includeText&&sessionStorage.getItem('ra-chat-draft-'+projectId)?.trim())||pendingAttachmentsByProject.get(projectId)?.length)return true;
-  try{return (JSON.parse(sessionStorage.getItem('ra-chat-images-'+projectId)||'[]') as unknown[]).length>0;}catch{return false;}
+  if((includeText&&session.getItem('ra-chat-draft-'+projectId)?.trim())||pendingAttachmentsByProject.get(projectId)?.length)return true;
+  try{return (JSON.parse(session.getItem('ra-chat-images-'+projectId)||'[]') as unknown[]).length>0;}catch{return false;}
 }
 function restoredAttachments(project:Project,key:string):PendingAttachment[]{
   try{
-    const rows=JSON.parse(sessionStorage.getItem(key)||'[]');
+    const rows=JSON.parse(session.getItem(key)||'[]');
     if(!Array.isArray(rows))return [];
     return rows.flatMap(row=>{
       const source=project.sources.find(s=>s.id===row.sourceId&&s.origin==='interview_attachment');
@@ -36,7 +37,7 @@ type Props={p:Project;model:Record<string,any>;busy:boolean;blocked:string;tasks
   benchmarkSubmission?:{taskId:string;message:string};interviewSubmission?:{taskId:string;message:string;attachmentSourceIds:string[]};onDirectSave:(text:string)=>Promise<void>;directInputNonce?:number;onDirectEntry?:(text:string)=>void};
 export function IntakeChat({p,model,busy,blocked,tasks,status,beforeSend,onPrepareInterview,onRefreshProject,onStarted,onRefresh,onSources,onOrganize,go,onReferenceSources,onReferenceImport,onBenchmark,benchmarkSubmission,interviewSubmission,onDirectSave,directInputNonce,onDirectEntry,onContinue,continuing}:Props){
   const draftKey='ra-chat-draft-'+p.id,receiptKey='ra-chat-receipt-'+p.id,imageKey='ra-chat-images-'+p.id;
-  const [text,setText]=useState(()=>sessionStorage.getItem(draftKey)||''),[dirty,setDirty]=useState(false);
+  const [text,setText]=useState(()=>session.getItem(draftKey)||''),[dirty,setDirty]=useState(false);
   const [sending,setSending]=useState(false),[error,setError]=useState('');
   const [direct,setDirect]=useState(false),[savingDirect,setSavingDirect]=useState(false);
   const [attachments,setAttachments]=useState<PendingAttachment[]>(()=>pendingAttachmentsByProject.get(p.id)||restoredAttachments(p,imageKey));
@@ -45,16 +46,16 @@ export function IntakeChat({p,model,busy,blocked,tasks,status,beforeSend,onPrepa
     attachmentRef.current=next;
     if(next.length)pendingAttachmentsByProject.set(p.id,next);else pendingAttachmentsByProject.delete(p.id);
     const saved=next.filter(a=>a.sourceId).map(a=>({id:a.id,sourceId:a.sourceId,name:a.name,type:a.type}));
-    if(saved.length)sessionStorage.setItem(imageKey,JSON.stringify(saved));else sessionStorage.removeItem(imageKey);
+    if(saved.length)session.setItem(imageKey,JSON.stringify(saved));else session.removeItem(imageKey);
     setAttachments(next);
   };
   const input=useRef<HTMLTextAreaElement|null>(null),fileInput=useRef<HTMLInputElement|null>(null),composer=useRef<HTMLDivElement|null>(null);
   const receipt=useRef<ChatReceipt|undefined>(undefined),locked=useRef(false),tail=useRef<HTMLDivElement|null>(null);
   useEffect(()=>{
-    setText(sessionStorage.getItem(draftKey)||'');setDirty(false);setDirect(false);setError('');
+    setText(session.getItem(draftKey)||'');setDirty(false);setDirect(false);setError('');
     setPendingAttachments(pendingAttachmentsByProject.get(p.id)||restoredAttachments(p,imageKey));
   },[p.id]);
-  useEffect(()=>{try{receipt.current=JSON.parse(sessionStorage.getItem(receiptKey)||'null')||undefined;}catch{sessionStorage.removeItem(receiptKey);}},[receiptKey]);
+  useEffect(()=>{try{receipt.current=JSON.parse(session.getItem(receiptKey)||'null')||undefined;}catch{session.removeItem(receiptKey);}},[receiptKey]);
   async function uploadPendingAttachments(project:Project){
     let current=project;
     for(const attachment of attachmentRef.current){
@@ -71,8 +72,8 @@ export function IntakeChat({p,model,busy,blocked,tasks,status,beforeSend,onPrepa
     }
     return current;
   }
-  const saveDraft=async()=>{sessionStorage.setItem(draftKey,text);if(attachmentRef.current.some(a=>!a.sourceId)){if(!onRefreshProject)throw Error('无法保存待发送附件，请留在当前页面。');await uploadPendingAttachments(await onRefreshProject());}setDirty(false);};
-  const clear=()=>{sessionStorage.removeItem(draftKey);sessionStorage.removeItem(receiptKey);receipt.current=undefined;attachmentRef.current.forEach(a=>{if(a.preview?.startsWith('blob:'))URL.revokeObjectURL(a.preview);});setPendingAttachments([]);setText('');setDirty(false);setError('');markSaved();};
+  const saveDraft=async()=>{session.setItem(draftKey,text);if(attachmentRef.current.some(a=>!a.sourceId)){if(!onRefreshProject)throw Error('无法保存待发送附件，请留在当前页面。');await uploadPendingAttachments(await onRefreshProject());}setDirty(false);};
+  const clear=()=>{session.removeItem(draftKey);session.removeItem(receiptKey);receipt.current=undefined;attachmentRef.current.forEach(a=>{if(a.preview?.startsWith('blob:'))URL.revokeObjectURL(a.preview);});setPendingAttachments([]);setText('');setDirty(false);setError('');markSaved();};
   useEffect(()=>{if(benchmarkSubmission&&benchmarkSubmission.message===text)clear();},[benchmarkSubmission?.taskId]);
   useEffect(()=>{if(interviewSubmission&&interviewSubmission.message===text&&
     JSON.stringify(interviewSubmission.attachmentSourceIds.slice().sort())===JSON.stringify(attachmentRef.current.map(a=>a.sourceId).filter(Boolean).sort()))clear();},[interviewSubmission?.taskId]);
@@ -81,7 +82,7 @@ export function IntakeChat({p,model,busy,blocked,tasks,status,beforeSend,onPrepa
   function skipInterview(){
     if(attachmentRef.current.length){setError('先发送或移除本轮附件，再切换到直接填写。');return;}
     if(!onDirectEntry){openDirect();return;}
-    sessionStorage.setItem(draftKey,text);setDirty(false);markSaved();onDirectEntry(text);
+    session.setItem(draftKey,text);setDirty(false);markSaved();onDirectEntry(text);
   }
   useEffect(()=>{if(directInputNonce)openDirect();},[directInputNonce]);
   useEffect(()=>{if(direct){input.current?.focus();input.current?.scrollIntoView({block:'center'});}},[direct,directInputNonce]);
@@ -127,11 +128,11 @@ export function IntakeChat({p,model,busy,blocked,tasks,status,beforeSend,onPrepa
       }
       const task=await sendInterview(api,'/projects/'+p.id,{action:'interview',expected_revision:current.revision,message,document_type:'prd',max_calls:null},
         {origin:String(model.bound_origin||''),model:String(model.model||'')},interviewSourceIds(current),
-        r=>{receipt.current=r;sessionStorage.setItem(receiptKey,JSON.stringify(r));sessionStorage.setItem(draftKey,message);},receipt.current);
+        r=>{receipt.current=r;session.setItem(receiptKey,JSON.stringify(r));session.setItem(draftKey,message);},receipt.current);
       clear();await onStarted(task);
     }catch(e){
       setError((e as Error).message);
-      if(e instanceof ApiError&&e.status>0&&e.kind==='json'){receipt.current=undefined;sessionStorage.removeItem(receiptKey);}
+      if(e instanceof ApiError&&e.status>0&&e.kind==='json'){receipt.current=undefined;session.removeItem(receiptKey);}
       onRefresh();
     }finally{locked.current=false;setSending(false);}
   }
@@ -144,7 +145,7 @@ export function IntakeChat({p,model,busy,blocked,tasks,status,beforeSend,onPrepa
     setDirty(true);
     if(!text.trim()||text===IMAGE_MESSAGE||text===ATTACHMENT_MESSAGE){
       const message=next.every(a=>a.type.startsWith('image/'))?IMAGE_MESSAGE:ATTACHMENT_MESSAGE;
-      setText(message);sessionStorage.setItem(draftKey,message);
+      setText(message);session.setItem(draftKey,message);
     }
   }
   function pasteAttachments(event:React.ClipboardEvent<HTMLTextAreaElement>){
@@ -162,7 +163,7 @@ export function IntakeChat({p,model,busy,blocked,tasks,status,beforeSend,onPrepa
     addAttachments(result.files,result.rejected);
   }
   function removeAttachment(id:string){const removed=attachmentRef.current.find(a=>a.id===id);if(!removed)return;if(removed.preview?.startsWith('blob:'))URL.revokeObjectURL(removed.preview);const next=attachmentRef.current.filter(a=>a.id!==id);setPendingAttachments(next);
-    if(text===IMAGE_MESSAGE||text===ATTACHMENT_MESSAGE){const message=next.length?(next.every(a=>a.type.startsWith('image/'))?IMAGE_MESSAGE:ATTACHMENT_MESSAGE):'';setText(message);if(message)sessionStorage.setItem(draftKey,message);else sessionStorage.removeItem(draftKey);}}
+    if(text===IMAGE_MESSAGE||text===ATTACHMENT_MESSAGE){const message=next.length?(next.every(a=>a.type.startsWith('image/'))?IMAGE_MESSAGE:ATTACHMENT_MESSAGE):'';setText(message);if(message)session.setItem(draftKey,message);else session.removeItem(draftKey);}}
   function readStatus(status?:string){return ({read:'已读取',partial:'部分读取',failed:'读取失败',office_required:'需本机 Office 处理',requires_office:'需本机 Office 处理',permission_denied:'权限受限',awaiting_vision:'图片待识别',reading:'读取中'} as Record<string,string>)[status||'']||'读取状态待核对';}
   function attachmentStatus(a:PendingAttachment){return a.uploading?'正在保存到项目':a.sourceId?readStatus(p.sources.find(s=>s.id===a.sourceId)?.parse_status||a.parseStatus):'待发送';}
   function historyAttachment(sid:string){
@@ -171,9 +172,9 @@ export function IntakeChat({p,model,busy,blocked,tasks,status,beforeSend,onPrepa
       <span>{source?.title||`资料 ${sid} 暂不可查看`}{source&&` · ${readStatus(source.parse_status)}`}</span></div>;
   }
   const hasAnalysis=p.messages.some(m=>m.stage==='ingest'&&m.role==='assistant')||p.items.length>0;
-  return <article className="card intake-chat" aria-label="需求聊天">
+  return <article className="card intake-chat" aria-label="需求聊天" data-has-history={messages.length>0}>
     <div className="chat-intro"><h2>{direct?'直接填写本次需求':'先聊聊你想做什么'}</h2><p>{direct?'写下已有信息，保存到项目后进入草稿核对。未知信息留待后续澄清，此操作不调用模型。':'一句想法、一个困扰或一份参考资料都可以。不知道的地方，我们一起弄清楚。'}</p></div>
-    {!direct&&<div className="intake-entry-choice"><p>助手对话可选。已有明确需求，可以直接填写并核对，无需先与 AI 对话。</p><button type="button" disabled={busy||sending||!!receipt.current||attachments.length>0} onClick={skipInterview}>{onDirectEntry?'跳过对话，直接填写需求 →':'直接填写并保存输入'}</button></div>}
+
     <div className="chat-messages" role="log" aria-label="聊天记录" aria-live="polite">
       {!messages.length&&<p className="chat-invitation">比如：“每天整理客户资料很麻烦，但我还不知道该怎么改。”</p>}
       {!!(p as any).intake?.text&&!messages.some(m=>m.text===(p as any).intake.text)&&<details><summary>此前保存的输入</summary><p>{(p as any).intake.text}</p></details>}
@@ -182,24 +183,25 @@ export function IntakeChat({p,model,busy,blocked,tasks,status,beforeSend,onPrepa
     </div>
     {error&&<p className="error" role="alert">{error}</p>}
     {status}
-    <div className="chat-input-zone" onDragOver={event=>{if(event.dataTransfer.types.includes('Files'))event.preventDefault();}} onDrop={dropAttachments}>
-      <label>{direct?'本次需求':'你的想法'}<textarea ref={input} aria-label={direct?'本次需求':'你的想法'} rows={direct?6:3} value={text} disabled={busy||sending||savingDirect||!!receipt.current}
+    <div className="chat-compose-dock"><div className="chat-input-zone" onDragOver={event=>{if(event.dataTransfer.types.includes('Files'))event.preventDefault();}} onDrop={dropAttachments}>
+      <label>{direct?'本次需求':'你的想法'}<textarea ref={input} aria-label={direct?'本次需求':'你的想法'} rows={direct?6:2} value={text} disabled={busy||sending||savingDirect||!!receipt.current}
         placeholder={direct?'随便说说，不需要专业术语…':'输入需求，或粘贴、拖入图片与文件…'} onPaste={pasteAttachments}
         onKeyDown={event=>{if(!direct&&event.key==='Enter'&&!event.shiftKey&&!event.nativeEvent.isComposing&&event.keyCode!==229){event.preventDefault();void send();}}}
-        onChange={e=>{setText(e.target.value);setDirty(true);sessionStorage.setItem(draftKey,e.target.value);}}/></label>
+        onChange={e=>{setText(e.target.value);setDirty(true);session.setItem(draftKey,e.target.value);}}/></label>
       {!direct&&<small className="chat-key-hint">Enter 发送 · Shift+Enter 换行</small>}
-      {!direct&&<><input ref={fileInput} className="chat-file-input" type="file" multiple accept=".txt,.md,.docx,.doc,.xlsx,.xls,.pptx,.ppt,.pdf,.png,.jpg,.jpeg,.webp"
+      {!direct&&<><input ref={fileInput} className="chat-file-input" type="file" multiple accept=".txt,.md,.docx,.doc,.xlsx,.xls,.pptx,.ppt,.pdf,.html,.htm,.png,.jpg,.jpeg,.webp"
         aria-label="选择本轮聊天附件" disabled={busy||sending||!!receipt.current} onChange={event=>{const result=extractChatAttachments(Array.from(event.target.files||[]));addAttachments(result.files,result.rejected);event.target.value='';}}/>
         <button type="button" className="chat-file-button" disabled={busy||sending||!!receipt.current} onClick={()=>fileInput.current?.click()}>＋ 选择图片或文件</button></>}
       {attachments.length>0&&<div className="chat-pasted-images" aria-label="本轮待发送附件">{attachments.map(a=><div className="chat-pasted-image" key={a.id}>{a.preview?<img src={a.preview} alt=""/>:<span className="chat-file-icon" aria-hidden="true">文件</span>}<span>{a.name} · {attachmentStatus(a)}</span><button type="button" disabled={sending} onClick={()=>removeAttachment(a.id)} aria-label={'移除本轮附件 '+a.name}>移除</button></div>)}<small>移除只影响本轮消息；已保存的附件仍可在项目资料中查看。保存后离开会保留本轮附件；未保存时刷新页面需重新选择。</small></div>}
     </div>
-    {direct?<div ref={composer} className="chat-composer-actions"><button disabled={busy||savingDirect} onClick={()=>setDirect(false)}>返回聊天，保留输入</button><button className="primary" disabled={busy||savingDirect||!text.trim()} onClick={()=>void saveDirect()}>{savingDirect?'正在保存本次需求…':'保存输入并进入草稿核对 →'}</button></div>:<div ref={composer} className="chat-composer-actions"><button className="chat-sources-link" disabled={busy||sending} onClick={onSources}>查看项目资料</button><button className="primary" disabled={busy||sending||!!blocked||(!text.trim()&&!attachments.length)} onClick={()=>void send()}>{receipt.current?'核对并恢复这次提交':sending?'提交中…':pendingImages>0||attachments.some(a=>a.type.startsWith('image/'))?'识别图片并发送':'发送'}</button></div>}
-    <div hidden={direct}>
+    {direct?<div ref={composer} className="chat-composer-actions"><button disabled={busy||savingDirect} onClick={()=>setDirect(false)}>返回聊天，保留输入</button><button className="primary" disabled={busy||savingDirect||!text.trim()} onClick={()=>void saveDirect()}>{savingDirect?'正在保存本次需求…':'保存输入并进入草稿核对 →'}</button></div>:<div ref={composer} className="chat-composer-actions"><button className="chat-sources-link" disabled={busy||sending} onClick={onSources}>查看项目资料</button><button className="chat-send" disabled={busy||sending||!!blocked||(!text.trim()&&!attachments.length)} onClick={()=>void send()}>{receipt.current?'核对并恢复这次提交':sending?'提交中…':pendingImages>0||attachments.some(a=>a.type.startsWith('image/'))?'识别图片并发送':'发送'}</button></div>}
+    </div>
+    <div className="chat-secondary-actions" hidden={direct}>
     <small className="chat-consent">发送至 {model.bound_origin||'尚未配置接收端'} · {model.model||'尚未配置模型'}，包含本项目聊天、需求草稿和 {activeSourceIds?`${scopedSourceIds.size} 份本次拟纳入资料`:`当前有效项目资料${attachedSourceIds.size?`及本轮已保存附件 ${attachedSourceIds.size} 个`:''}`}{unsavedAttachmentCount?`，另有 ${unsavedAttachmentCount} 个本轮附件待保存`:''}。发送前仍需核对任务中的实际资料范围；附件不会因添加而自动发送模型。</small>
     {pendingImages>0&&<p className="notice" role="status">还有 {pendingImages} 张本次有效资料图片待识别。发送后先核对模型接收端与资料范围，再识别图片并继续对话；已识别的图片不会重复识别。“一键 AI 填充需求草稿”也会先识别图片，再整理待核对草稿。</p>}
     {blocked&&<p className="notice">{blocked}</p>}
     <BenchmarkIntake p={p} busy={busy||sending||!!blocked} text={text} onSources={onReferenceSources} onImport={onReferenceImport} onPrepare={onBenchmark}/>
-    <div className="chat-next">{onContinue?<><button className="primary" disabled={busy||sending||continuing} onClick={onContinue}>{continuing?'正在整理…':'整理并进入完善需求'}</button><small>已整理过且信息未变时直接进入；新结果由你确认。</small></>:<><button disabled={busy||sending||!!blocked||!!text.trim()||!p.sources.some(s=>!s.excluded)} onClick={onOrganize}>✦ 一键 AI 填充需求草稿 →</button>{hasAnalysis&&p.product_flow?.[1]?.available&&<button disabled={busy||sending} onClick={()=>go(1)}>查看已有草稿</button>}</>}</div>
+    <div className="chat-next">{onContinue?<><button className={hasAnalysis?'secondary':'primary'} disabled={busy||sending||continuing} onClick={onContinue}>{continuing?'正在整理…':hasAnalysis?'让 AI 更新草稿':'整理并进入完善需求'}</button><small>已整理过且信息未变时直接进入；新结果由你确认。</small></>:<><button disabled={busy||sending||!!blocked||!!text.trim()||!p.sources.some(s=>!s.excluded)} onClick={onOrganize}>✦ 一键 AI 填充需求草稿 →</button>{hasAnalysis&&p.product_flow?.[1]?.available&&<button disabled={busy||sending} onClick={()=>go(1)}>查看已有草稿</button>}</>}</div>
     <small>AI 整理完成后自动进入草稿审核页，由你修改和确认。</small>
     {!!text.trim()&&<small>可以发送给助手讨论，或选择上方“直接填写”。当前文字会保留，进入填写页后再保存到项目。</small>}
     </div>

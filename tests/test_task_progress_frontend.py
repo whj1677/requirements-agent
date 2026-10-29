@@ -11,6 +11,33 @@ const snapshot=(tasks,extra={})=>({projectId:'P1',projectName:'合成项目',tas
 '''
 
 
+def test_failed_inline_prewrite_draft_does_not_block_its_retry_controls():
+    run_ts(LOAD+r'''
+      const running={...task('draft'),retry_input:{draft_request:{mode:'prewrite'}}};
+      const failed={...running,status:'failed'};
+      let s=m.reconcileProgress(m.emptyProgress,snapshot([running],{inlineDraft:true}),'draft');
+      s=m.reconcileProgress(s,snapshot([failed],{inlineDraft:true}));
+      assert.equal(s.expanded,false);assert.equal(s.entries[0].task.status,'failed');
+      assert.equal(m.inlinePrewriteFailure(failed),true);
+      assert.equal(m.taskGenerated(failed),false);
+      const other=m.reconcileProgress(m.reconcileProgress(m.emptyProgress,snapshot([running]),'draft'),snapshot([failed]));
+      assert.equal(other.expanded,true,'failures outside the active table must remain visible');
+    ''')
+
+
+def test_inline_business_decisions_do_not_reopen_a_panel_over_the_confirmation_table():
+    run_ts(LOAD + r'''
+      let s=m.reconcileProgress(m.emptyProgress,snapshot([{...task('check'),action:'prewrite'}],{inlineDraft:true}),'check');
+      s=m.reconcileProgress(s,snapshot([{...task('check','awaiting_user'),action:'prewrite'}],{inlineDraft:true}));
+      assert.equal(s.expanded,false,'the inline table already displays the decisions');
+      assert.equal(s.entries[0].task.status,'awaiting_user','presentation must not mark a decision resolved');
+      s={...s,expanded:true};assert.equal(m.reconcileProgress(s,snapshot([{...task('check','awaiting_user'),action:'prewrite'}],{inlineDraft:true})).expanded,true,'an explicit user expansion stays open');
+      let other=m.reconcileProgress(m.emptyProgress,snapshot([{...task('else'),action:'prewrite'}]));
+      other=m.reconcileProgress(other,snapshot([{...task('else','awaiting_user'),action:'prewrite'}]));
+      assert.equal(other.expanded,true,'outside the active inline table, keep attention visible');
+    ''')
+
+
 def test_running_opens_once_and_historical_failures_do_not_interrupt():
     run_ts(LOAD + r'''
       const history=m.reconcileProgress(m.emptyProgress,snapshot([task('old','failed'),task('done','succeeded')]));

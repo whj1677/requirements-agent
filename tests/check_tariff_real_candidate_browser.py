@@ -137,7 +137,7 @@ async def run(args):
                 async with page.expect_response(lambda response:response.url.endswith('/workspace-draft') and response.request.method == 'GET'):
                     await rec.click(page.locator('aside.sidebar button[title="电价管理"]'))
                 work = page.locator('.connected-workspace:visible')
-                await rec.click(work.get_by_role('button', name='不使用 AI，直接完善', exact=True))
+                await rec.click(work.get_by_role('button', name='2 完善需求', exact=True))
                 table = work.get_by_role('table', name='需求确认表', exact=True)
                 await expect(table).to_be_visible()
                 row = table.locator('tr[data-requirement-id="'+rid+'"]')

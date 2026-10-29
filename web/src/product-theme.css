@@ -1,0 +1,293 @@
+/* GitHub Primer light roles. One shared theme for the working product. */
+:root {
+  --bg-default:#fff; --bg-muted:#f6f8fa; --bg-inset:#f6f8fa;
+  --fg-default:#1f2328; --fg-muted:#59636e; --border-default:#d1d9e0;
+  --accent-fg:#0969da; --accent-muted:#ddf4ff; --focus:#0969da;
+  --success-fg:#1a7f37; --success-muted:#dafbe1; --action-primary:#1f883d;
+  --danger-fg:#d1242f; --danger-muted:#ffebe9;
+  --attention-fg:#7d5700; --attention-muted:#fff8c5;
+  --bg:var(--bg-default); --paper:var(--bg-default); --soft:var(--bg-muted);
+  --ink:var(--fg-default); --muted:var(--fg-muted); --line:var(--border-default);
+  --accent:var(--accent-fg); --radius:8px;
+  color-scheme:light;
+}
+html {font-size:16px}
+body {margin:0;background:var(--bg-default);color:var(--fg-default);font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif}
+* {scrollbar-width:auto;scrollbar-color:auto;box-sizing:border-box}
+::selection {background:#b6e3ff;color:var(--fg-default)}
+input,textarea {caret-color:var(--accent-fg)}
+button,a,input,textarea,select,summary {outline-offset:3px}
+:focus-visible {outline:2px solid var(--focus)}
+.layout {display:grid;grid-template-columns:224px minmax(0,1fr);height:100dvh;max-width:none;margin:0;border:0;border-radius:0;overflow:hidden;background:var(--bg-default)}
+.layout>main {min-width:0;min-height:0;display:flex;flex-direction:column;overflow:hidden;background:var(--bg-default)}
+.layout .sidebar {width:auto;min-width:0;padding:20px 12px 12px;background:var(--bg-muted);border-right:1px solid var(--border-default);color:var(--fg-default);display:flex;flex-direction:column;gap:0;overflow:hidden}
+.layout .brand {display:flex;align-items:center;gap:9px;padding:0 9px;margin:0 0 24px;font-size:18px;color:var(--fg-default)}
+.layout .brand-mark {width:30px;height:30px;border-radius:7px;background:var(--fg-default);color:white;font-size:22px}
+.layout .project-switcher {display:flex;flex-direction:column;min-height:0;flex:1;overflow:hidden}
+.layout .project-switcher>button {width:100%;text-align:left;margin:0 0 20px;font-weight:600;min-height:36px}
+.layout .project-search {font-size:12px;color:var(--fg-muted);margin:0 4px}
+.layout .project-search input {font-size:13px;height:34px;min-height:34px;margin:7px 0 0;padding:6px 9px}
+.layout .sidebar-caption {font-size:12px;color:var(--fg-muted);margin:20px 5px 8px}
+.layout .project-list {overflow:auto;min-height:0;padding:0;flex:1;scrollbar-gutter:stable}
+.layout .project-list>button {width:100%;min-height:0;border:0;border-radius:6px;padding:10px 9px;margin:2px 0;gap:8px;display:flex;align-items:flex-start;text-align:left;background:transparent;color:var(--fg-default);box-shadow:none}
+.layout .project-list>button:hover {background:#eaeef2}
+.layout .project-list>button.active {background:#e6eaf0;color:var(--fg-default)}
+.layout .project-list .ui-icon {width:16px;height:16px;flex:none;margin-top:2px;color:var(--fg-muted)}
+.layout .project-list-text {min-width:0;display:block}
+.layout .project-list strong {display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:13px;font-weight:600;line-height:1.5}
+.layout .project-list small {color:var(--fg-muted);font-size:11px;line-height:1.5;margin-top:4px;display:block}
+.layout .sidebar-bottom {margin-top:12px;border-top:1px solid var(--border-default);padding-top:10px;display:grid;gap:2px}
+.layout .sidebar-bottom button {border:0;background:transparent;display:flex;align-items:center;gap:9px;justify-content:flex-start;text-align:left;color:var(--fg-muted);font-size:13px;padding:8px}
+.layout .ui-icon {width:18px;height:18px;flex:none}
+.layout button,.layout .file-button {font:inherit;font-size:13px;font-weight:500;line-height:20px;border:1px solid var(--border-default);border-radius:6px;padding:6px 12px;min-height:32px;background:var(--bg-muted);color:var(--fg-default);box-shadow:none;transition:background-color 120ms ease-out,border-color 120ms ease-out}
+.layout button:hover:not(:disabled) {background:#eef1f4;border-color:#b7c1cb}
+.layout button:active:not(:disabled) {background:#e6eaf0}
+.layout button:disabled {opacity:.55;cursor:not-allowed}
+.layout button.primary,.layout .refinement-sheet button.primary,.layout .prewrite-batch button.primary {background:var(--action-primary);border-color:var(--success-fg);color:#fff}
+.layout button.primary:hover:not(:disabled) {background:#1a7f37;border-color:#116329}
+.layout input,.layout select,.layout textarea {font:inherit;font-size:14px;line-height:1.6;border:1px solid var(--border-default);border-radius:6px;background:var(--bg-default);color:var(--fg-default);box-shadow:none;padding:8px 10px}
+.layout textarea {resize:vertical}
+.layout input::placeholder,.layout textarea::placeholder {color:var(--fg-muted);opacity:1}
+.layout input[type=checkbox],.layout input[type=radio] {accent-color:var(--accent-fg);width:auto}
+.layout a,.layout .link,.layout .chat-sources-link,.layout .chat-file-button {color:var(--accent-fg);text-underline-offset:3px}
+.layout .project-workspace {display:flex;flex-direction:column;flex:1;min-height:0;overflow:hidden}
+.layout .project-bar {height:56px;min-height:56px;flex:none;padding:8px 24px;display:flex;align-items:center;gap:12px;border-bottom:1px solid var(--border-default);background:var(--bg-default)}
+.layout .project-bar h1 {font-size:18px;font-weight:650;line-height:1.5;color:var(--fg-default);margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:65vw}
+.layout .project-bar .toolbar {margin-left:auto;flex-wrap:nowrap;gap:6px}
+.layout .project-bar .toolbar button {background:transparent;border-color:transparent;color:var(--fg-muted);font-size:12px;padding:4px 8px;white-space:nowrap}
+.layout .project-bar .toolbar button:hover {background:var(--bg-muted)}
+.layout .connected-workspace {zoom:1;padding:0 24px 16px;background:var(--bg-default);color:var(--fg-default);max-width:none;min-height:0;flex:1;overflow-y:auto;overflow-x:hidden;scroll-padding-top:64px}
+.layout .connected-steps {position:sticky;top:0;z-index:6;display:flex;gap:28px;max-width:none;margin:0 0 12px;padding:0;background:var(--bg-default);height:44px;min-height:44px;border-bottom:1px solid var(--border-default)}
+.layout .connected-steps button {border:0;border-radius:0;background:transparent;color:var(--fg-muted);font-size:13px;flex:none;padding:0 4px;min-width:0;min-height:44px;border-bottom:2px solid transparent}
+.layout .connected-steps button[aria-current=step],.layout .connected-steps button.active {background:transparent;border-bottom-color:#fd8c73;color:var(--fg-default);font-weight:600}
+.layout .connected-steps button span {background:var(--bg-muted);color:var(--fg-muted);width:20px;height:20px;font-size:11px;margin-right:7px;border-radius:50%}
+.layout .connected-task {margin:0 0 12px;padding:7px 10px;background:var(--bg-muted);border:1px solid var(--border-default);border-radius:6px;gap:8px;font-size:12px;min-height:38px;color:var(--fg-muted)}
+.layout .connected-task>span {flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.layout .connected-task button {padding:3px 7px;font-size:12px;min-height:26px;border-color:transparent;background:transparent;white-space:nowrap}
+.layout .connected-grid {max-width:none;margin:0;gap:24px}
+.layout .connected-card {border:0;border-radius:0;padding:0;background:var(--bg-default);box-shadow:none;color:var(--fg-default)}
+.layout .connected-card h2 {font-size:22px;line-height:1.4;letter-spacing:-.02em;margin:12px 0;color:var(--fg-default)}
+.layout .connected-card h3 {font-size:15px;margin:18px 0 8px;color:var(--fg-default)}
+.layout .connected-card p {font-size:14px;line-height:1.65}
+.layout .connected-kicker {display:none}
+.layout .connected-workspace:has(.assistant-grid) {display:flex;flex-direction:column;overflow:hidden}
+.layout .assistant-grid {flex:1;min-height:0;max-height:none;overflow:hidden;display:flex;align-items:stretch}
+.layout .assistant-grid>.connected-card {flex:1;min-width:0;min-height:0;overflow:hidden;display:flex;flex-direction:column;padding-top:4px}
+.layout .assistant-intro,.layout .assistant-grid>.connected-card>h2 {display:none}
+.layout .assistant-resume {flex:none;padding:10px 14px;margin:0 0 12px;display:flex;align-items:center;gap:18px;background:var(--bg-muted);border:1px solid var(--border-default);border-radius:8px;color:var(--fg-default)}
+.layout .assistant-resume strong {font-size:15px}
+.layout .assistant-resume p {font-size:12px;color:var(--fg-muted);margin:4px 0 0}
+.layout .assistant-resume button {margin-left:auto;white-space:nowrap}
+.layout .connected-mode {flex:none;display:flex;align-items:center;gap:6px;margin-bottom:12px;border-bottom:1px solid var(--border-default);padding-bottom:8px}
+.layout .connected-mode>button {background:transparent;border-color:transparent;color:var(--fg-muted)}
+.layout .connected-mode>button[aria-pressed=true] {color:var(--fg-default);background:#eaeef2;border-color:transparent;font-weight:600}
+.layout .connected-mode .assistant-context-toggle {margin-left:auto;font-size:12px;color:var(--accent-fg)}
+.layout .entry-alternative {position:relative;font-size:12px;color:var(--fg-muted)}
+.layout .entry-alternative>summary {cursor:pointer;padding:7px}
+.layout .entry-alternative[open] {padding:0 8px 8px;background:var(--bg-muted);border-radius:6px}
+.layout .connected-chat,.layout .intake-chat {height:auto;max-height:none;overflow:hidden;min-height:0;display:flex;flex-direction:column;flex:1;width:100%;max-width:1040px;margin:0 auto;border:0;border-radius:0;padding:0;box-shadow:none;background:var(--bg-default)}
+.layout .chat-intro {display:block}
+.layout .intake-chat[data-has-history=true] .chat-intro {display:none}
+.layout .chat-intro h2 {font-size:22px;margin:0 0 8px}
+.layout .chat-intro p,.layout .chat-invitation {font-size:14px;color:var(--fg-muted)}
+.layout .chat-messages {flex:1;min-height:140px;height:auto;max-height:none;overflow:auto;padding:10px 0;gap:16px;display:flex;flex-direction:column;scrollbar-gutter:stable}
+.layout .chat-message {flex:none}
+.layout .chat-message {max-width:min(92%,80ch);font-size:14px;line-height:1.75;border:0;border-radius:8px;background:var(--bg-muted);color:var(--fg-default);padding:13px 16px}
+.layout .chat-message.user {background:var(--accent-muted);color:#1f2328}
+.layout .chat-message b {color:var(--fg-muted);font-size:12px}
+.layout .chat-message p {font-size:14px;line-height:1.75;margin:5px 0 0}
+.layout .chat-compose-dock {position:static;flex:none;padding:8px 0 0;background:var(--bg-default)}
+.layout .chat-input-zone {border:1px solid var(--border-default);border-radius:8px;background:var(--bg-muted);padding:10px 12px}
+.layout .chat-input-zone textarea {display:block;width:100%;border:1px solid #8c959f;outline-offset:2px;padding:10px 12px;height:88px;min-height:88px;max-height:160px;margin:6px 0 8px;font-size:16px;line-height:1.6;background:var(--bg-default)}
+.layout .chat-input-zone textarea:focus {border-color:var(--focus);outline:2px solid var(--focus);outline-offset:1px}
+.layout .chat-input-zone label {display:block;font-size:14px;font-weight:600;color:var(--fg-default);margin:0}
+.layout .chat-key-hint {font-size:11px;color:var(--fg-muted);display:inline}
+.layout .chat-file-button {background:transparent;border:0;padding:2px 8px;font-size:12px}
+.layout .chat-input-zone .chat-file-button {min-height:22px;padding:0 6px}
+.layout .chat-composer-actions {margin:8px 0 0;padding:0 0 10px}
+.layout .chat-send {background:var(--accent-fg);color:#fff;border-color:var(--accent-fg)}
+.layout .chat-send:hover:not(:disabled) {background:#0550ae;color:white;border-color:#0550ae}
+.layout .chat-next {flex:none;align-items:center;border-top:1px solid var(--border-default);padding-top:8px;margin-top:8px;gap:10px}
+.layout .chat-next small {color:var(--fg-muted);font-size:12px}
+.layout .intake-chat>small {display:none}
+.layout .chat-secondary-actions {flex:none;min-height:0}
+.layout .chat-secondary-actions>small {display:none}
+.layout .assistant-context {display:none}
+.layout .assistant-grid[data-context-open=true] {display:grid;grid-template-columns:minmax(0,1fr) 300px}
+.layout .assistant-grid[data-context-open=true]>.assistant-context {display:block;max-height:100%;overflow:auto;border-left:1px solid var(--border-default);padding-left:20px}
+.layout .refinement-view-toolbar {margin:0 0 12px;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.layout .refinement-view-switch {display:flex;gap:4px}
+.layout .refinement-view-switch button {border-color:transparent;background:transparent;color:var(--fg-muted)}
+.layout .refinement-view-switch button[aria-pressed=true] {background:#eaeef2;color:var(--fg-default);font-weight:600}
+.layout .refinement-view-toolbar .connected-status {margin:0 0 0 auto;font-size:12px;color:var(--fg-muted)}
+.layout .refinement-view-toolbar .connected-status>span {display:none}
+.layout .connected-workspace:has(.refinement-sheet),.layout .connected-workspace:has(.prewrite-batch) {display:flex;flex-direction:column;overflow:hidden;padding-bottom:12px}
+.layout .refinement-requirements-view:not([hidden]) {display:flex;flex-direction:column;flex:1;min-height:0}
+.layout .refinement-sheet,.layout .prewrite-review {max-width:none;color:var(--fg-default);min-height:0;flex:1;width:100%}
+.layout .refinement-sheet-heading {margin-bottom:12px}
+.layout .refinement-sheet h2 {color:var(--fg-default);font-size:20px}
+.layout .refinement-sheet-heading p {color:var(--fg-muted);font-size:12px}
+.layout .refinement-sheet-scroll,.layout .prewrite-batch-scroll {border:1px solid var(--border-default);border-radius:6px;background:var(--bg-default);min-height:140px;overflow:auto;overscroll-behavior:contain;flex:1}
+.layout .refinement-sheet th,.layout .prewrite-batch th {background:var(--bg-muted);color:var(--fg-muted);font-size:12px;font-weight:600;border-color:var(--border-default);padding:10px 12px}
+.layout .refinement-sheet td,.layout .prewrite-batch td {border-color:var(--border-default);font-size:14px;line-height:1.6;padding:12px;color:var(--fg-default);background:var(--bg-default)}
+.layout .refinement-sheet textarea,.layout .prewrite-batch textarea {font-size:14px;line-height:1.65;min-height:72px;padding:9px;border:1px solid var(--border-default);color:var(--fg-default);background:white}
+.layout .refinement-sheet-footer,.layout .prewrite-batch-footer {flex:none;padding:12px 0 0;margin:0;background:var(--bg-default);border:0;border-radius:0;color:var(--fg-default);font-size:13px;gap:12px}
+.layout .refinement-sheet-footer small {color:var(--fg-muted);font-size:12px}
+.layout .refinement-sheet-footer button {min-height:34px}
+.layout .sheet-section-nav button {background:transparent;color:var(--fg-muted);border-color:transparent;font-size:12px;padding:5px 9px}
+.layout .sheet-section-nav button.active {background:#eaeef2;color:var(--fg-default)}
+.layout .sheet-section-nav {border-bottom:1px solid var(--border-default);padding-bottom:8px;margin-bottom:9px}
+.layout .sheet-issue-count {color:var(--attention-fg);background:var(--attention-muted);border-color:#d4a72c66}
+.layout .refinement-sheet .sheet-required,.layout .prewrite-batch .batch-missing {background:#ffebe9}
+.layout .sheet-error,.layout .connected-error,.layout .error {color:var(--danger-fg)}
+.layout .prewrite-review {overflow:hidden;display:flex;flex-direction:column;border:0;border-radius:0;padding:0}
+.layout .prewrite-batch {flex:1;min-height:0;border:0;border-radius:0;padding:0;display:flex;flex-direction:column;color:var(--fg-default)}
+.layout .prewrite-header {padding:0;border:0;margin:0}
+.layout .prewrite-review:has(.prewrite-batch)>.prewrite-header {display:none}
+.layout .prewrite-batch-heading {padding:0 0 12px}
+.layout .prewrite-batch-heading h3 {font-size:18px;color:var(--fg-default)}
+.layout .prewrite-batch-heading p {font-size:12px;color:var(--fg-muted)}
+.layout .prewrite-optional-details {margin-top:10px;font-size:12px;color:var(--fg-muted);flex:none;max-height:30vh;overflow:auto}
+.layout .prewrite-notice,.layout .sheet-notice {border-color:var(--border-default);background:var(--bg-muted);color:var(--fg-muted)}
+.layout .prewrite-failure-summary,.layout .connected-preparation {background:var(--attention-muted);color:var(--attention-fg);border:1px solid #d4a72c66;border-radius:6px;font-size:13px}
+.layout .connected-legacy {margin-top:16px;border:1px solid var(--border-default);border-radius:6px;background:var(--bg-muted)}
+.layout .settings-surface {padding:24px;overflow:auto;background:var(--bg-default)}
+.layout .modal,.layout .source-drawer {background:var(--bg-default);color:var(--fg-default);border-radius:12px;box-shadow:0 12px 40px #1f23282b}
+.layout .modal h2,.layout .source-drawer h2 {color:var(--fg-default)}
+.layout .card {background:var(--bg-default);border-color:var(--border-default);color:var(--fg-default)}
+.layout .banner {font-size:13px}
+.compact-projects {display:none}
+.layout .connected-workspace .connected-steps button {border-radius:0;min-height:44px;padding:0 4px;font-size:13px}
+.layout .sheet-view-actions {display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.layout .sheet-view-actions>span {font-size:12px;color:var(--fg-muted);background:transparent;padding:0 8px 0 0}
+.layout .sheet-navigation {gap:5px;padding-bottom:8px;margin-bottom:8px;border-color:var(--border-default)}
+.layout .sheet-navigation button {background:transparent;border-color:transparent;font-size:12px;padding:4px 8px;color:var(--fg-muted)}
+.layout .sheet-navigation .sheet-missing-jump {background:var(--attention-muted);color:var(--attention-fg);border-color:#d4a72c66}
+.layout .sheet-more-actions {position:relative;font-size:13px}
+.layout .sheet-more-actions>summary {list-style:none;cursor:pointer;padding:6px 12px;min-height:32px;background:var(--bg-muted);border:1px solid var(--border-default);border-radius:6px}
+.layout .sheet-more-actions[open] {display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.layout .sheet-more-actions[open]>summary {background:#e6eaf0}
+.layout .refinement-sheet td strong,.layout .refinement-sheet td b {color:var(--fg-default)}
+.layout .refinement-sheet td small,.layout .refinement-sheet td .sheet-field-hint {color:var(--fg-muted)}
+@media(max-height:800px) and (min-width:761px) {
+ .layout .refinement-sheet-heading {margin-bottom:8px}
+ .layout .refinement-sheet-heading h2 {margin:0;font-size:19px}
+ .layout .refinement-sheet-heading p {display:none}
+ .layout .sheet-section-nav {padding-bottom:5px;margin-bottom:7px}
+ .layout .connected-task {margin-bottom:8px}
+}
+.request-feedback {background:var(--bg-default);border-color:var(--border-default);color:var(--fg-default);border-radius:8px;box-shadow:0 8px 28px #1f232826}
+.request-feedback small {color:var(--fg-muted)}
+.request-feedback-error {background:var(--danger-muted);border-color:#ff818266;color:var(--danger-fg)}
+@media(min-width:1800px) {
+ .layout {grid-template-columns:256px minmax(0,1fr)}
+ .layout .connected-workspace {padding-left:32px;padding-right:32px}
+ .layout .project-bar {padding-left:32px;padding-right:32px}
+ .layout .refinement-sheet td,.layout .prewrite-batch td {padding:16px}
+}
+@media(min-width:761px) and (max-width:1150px) {
+ .layout {grid-template-columns:190px minmax(0,1fr)}
+ .layout .connected-workspace {padding-left:16px;padding-right:16px}
+ .layout .project-bar {padding-left:16px;padding-right:16px}
+ .layout .brand {font-size:16px}
+ .layout .connected-steps {gap:20px}
+ .layout .refinement-sheet td,.layout .prewrite-batch td {padding:10px}
+ .layout .refinement-view-toolbar .connected-status {max-width:240px}
+}
+@media(max-width:760px) {
+ .layout {display:flex;flex-direction:column;height:100dvh}
+ .layout>.sidebar {display:none}
+ .layout>main {flex:1;min-height:0}
+ .layout .compact-projects {display:block;flex:none;padding:0;background:var(--bg-muted);border-bottom:1px solid var(--border-default);font-size:13px}
+ .compact-projects>summary {padding:11px 16px;cursor:pointer;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+ .compact-project-controls {display:flex;gap:8px;flex-wrap:wrap;padding:8px 16px 16px}
+ .compact-project-controls input,.compact-project-controls select {max-width:100%;width:100%}
+ .compact-project-controls form {display:flex;gap:8px;width:100%}
+ .compact-project-controls form input {min-width:0;flex:1}
+ .layout .project-bar {height:auto;min-height:50px;padding:10px 16px;flex-wrap:wrap;gap:6px}
+ .layout .project-bar h1 {font-size:17px;max-width:calc(100vw - 32px)}
+ .layout .project-bar .toolbar {gap:0;margin:0;flex-wrap:wrap}
+ .layout .project-bar .toolbar button {min-height:28px;padding:3px 8px}
+ .layout .connected-workspace {padding:0 12px 12px;min-height:0}
+ .layout .connected-steps {gap:6px;margin-bottom:10px;height:42px;min-height:42px}
+ .layout .connected-steps button {flex:1;min-height:42px;font-size:12px;white-space:nowrap}
+ .layout .connected-steps button span {margin-right:5px}
+ .layout .connected-mode {flex-wrap:wrap;gap:3px}
+ .layout .connected-mode>button {font-size:12px;padding:5px 7px}
+ .layout .connected-mode .assistant-context-toggle {margin-left:0}
+ .layout .assistant-resume {padding:12px;flex-wrap:wrap;gap:10px}
+ .layout .assistant-resume button {margin-left:0}
+ .layout .assistant-resume strong {font-size:14px}
+ .layout .assistant-grid[data-context-open=true] {display:flex}
+ .layout .assistant-grid[data-context-open=true]>.connected-card {display:none}
+ .layout .assistant-grid[data-context-open=true]>.assistant-context {flex:1;border:0;padding:12px 0;margin:0}
+ .layout .chat-intro h2 {font-size:20px}
+ .layout .chat-message {max-width:100%;padding:12px}
+ .layout .chat-compose-dock {padding-top:8px}
+ .layout .refinement-sheet-heading {flex-wrap:wrap;gap:8px}
+ .layout .refinement-sheet-heading>div {width:100%}
+ .layout .refinement-sheet-heading p {display:none}
+ .layout .sheet-view-actions {display:flex;flex-direction:row;justify-content:flex-start;width:100%;gap:6px}
+ .layout .sheet-view-actions>span {display:block;width:100%;margin-bottom:2px;font-size:12px;padding:0}
+ .layout .sheet-view-actions>button {width:auto}
+ .layout .sheet-navigation {display:flex;flex-wrap:nowrap;overflow-x:auto;flex:none;min-height:40px;max-width:100%;gap:4px;padding-bottom:5px}
+ .layout .sheet-navigation>* {flex:none;white-space:nowrap}
+ .layout .sheet-navigation .sheet-requirement-jump {width:180px;min-width:180px;margin:0;display:flex;align-items:center;gap:5px}
+ .layout .sheet-navigation select {min-width:0;height:32px;min-height:32px;width:120px;padding:4px}
+ .layout .refinement-sheet-heading h2 {font-size:19px}
+ .layout .refinement-sheet-footer,.layout .prewrite-batch-footer {flex-wrap:wrap;padding-top:10px}
+ .layout .refinement-sheet-footer>div {width:100%;display:flex;justify-content:flex-end;gap:8px}
+ .layout .refinement-view-toolbar {margin-bottom:8px;gap:6px}
+ .layout .refinement-view-toolbar .connected-status {margin-left:0}
+ .layout .connected-task {gap:4px}
+ .layout .connected-task>span {max-width:calc(100vw - 155px)}
+}
+@media(min-width:761px) and (max-height:650px) {
+ .layout .project-bar {height:44px;min-height:44px;padding-top:4px;padding-bottom:4px}
+ .layout .connected-steps {height:36px;min-height:36px;margin-bottom:8px}
+ .layout .connected-steps button {min-height:36px}
+ .layout .refinement-sheet-heading {margin-bottom:8px}
+ .layout .refinement-sheet-footer {padding-top:8px}
+}
+@media(prefers-reduced-motion:reduce) {*,*::before,*::after {scroll-behavior:auto!important;transition:none!important;animation-duration:.01ms!important}}
+
+/* Keep stage navigation and task feedback in one band, separate from editing tools. */
+.layout .workspace-stagebar {display:flex;align-items:center;gap:24px;flex:none;min-width:0;position:sticky;top:0;z-index:6;background:var(--bg-default);border-bottom:1px solid var(--border-default);margin-bottom:14px}
+.layout .workspace-stagebar .connected-steps {position:static;flex:none;margin:0;border:0;gap:20px;height:48px;min-height:48px}
+.layout .workspace-stagebar .connected-steps button {font-size:14px;min-height:48px}
+.layout .workspace-stagebar .connected-task {margin:0 0 0 auto;flex:0 1 660px;min-width:0;max-width:none;padding:3px 0 3px 12px;border:0;border-left:1px solid var(--border-default);border-radius:0;background:transparent;font-size:13px;min-height:32px}
+.layout .workspace-stagebar .connected-task[data-state=failed] {color:var(--danger-fg)}
+.layout .workspace-stagebar .connected-task button {flex:none;font-size:13px}
+.layout .connected-workspace[data-step=refine]>.refinement-view-toolbar {flex:none;margin:0 0 12px;padding:0 0 10px;border-bottom:1px solid var(--border-default);gap:12px}
+.layout .refinement-view-switch {align-items:center;gap:8px;min-width:0;flex-wrap:wrap}
+.layout .refinement-view-switch button {font-size:14px;padding:6px 14px}
+.layout .refinement-view-switch small {font-size:13px;color:var(--fg-muted);padding-left:8px;border-left:1px solid var(--border-default)}
+.layout .refinement-sheet-heading .sheet-heading-copy {display:flex;align-items:baseline;gap:12px;flex:1;min-width:0}
+.layout .refinement-sheet-heading .sheet-heading-copy h2 {margin:0;font-size:18px;line-height:1.5}
+.layout .sheet-heading-summary {font-size:13px;color:var(--fg-muted)}
+.layout .refinement-sheet-heading .sheet-view-actions {flex:none;max-width:none;flex-flow:row wrap;align-items:center}
+.layout .refinement-sheet-heading {margin:0 0 10px;align-items:center}
+.layout .connected-workspace:has(.refinement-sheet[data-focus-mode=true])>.workspace-stagebar {display:none}
+@media(max-width:1100px) {
+ .layout .workspace-stagebar {gap:12px}
+ .layout .workspace-stagebar .connected-steps {gap:8px}
+ .layout .workspace-stagebar .connected-task {gap:3px;padding-left:8px}
+ .layout .workspace-stagebar .connected-task button {padding:3px 5px}
+}
+@media(max-width:760px) {
+ .layout .workspace-stagebar {position:static;display:flex;flex-direction:column;align-items:stretch;gap:0;margin-bottom:10px}
+ .layout .workspace-stagebar .connected-steps {flex:auto;justify-content:space-between}
+ .layout .workspace-stagebar .connected-task {flex:auto;margin:0;border-left:0;border-top:1px solid var(--border-default);padding:4px 0}
+ .layout .workspace-stagebar .connected-task>span {max-width:none}
+ .layout .refinement-sheet-heading .sheet-heading-copy {flex-wrap:wrap;gap:2px 8px;width:100%}
+ .layout .refinement-sheet-heading .sheet-view-actions {width:100%;justify-content:flex-start}
+ .layout .refinement-view-toolbar>.connected-status {display:none}
+ .layout .chat-input-zone textarea {height:80px;min-height:80px}
+}
+@media(min-width:761px) and (max-height:650px) {
+ .layout .workspace-stagebar {margin-bottom:4px}
+ .layout .workspace-stagebar .connected-steps,.layout .workspace-stagebar .connected-steps button {min-height:38px;height:38px}
+ .layout .connected-workspace[data-step=refine]>.refinement-view-toolbar {margin-bottom:4px;padding-bottom:2px}
+ .layout .refinement-view-switch button {min-height:30px;padding-top:4px;padding-bottom:4px}
+ .layout .chat-input-zone textarea {height:72px;min-height:72px}
+}

@@ -18,6 +18,7 @@ SCHEMA['$defs']['Finding']['properties'].update(
     topic_key={'type':'string','minLength':1,'maxLength':200},
     decision_question={'type':'string','maxLength':2000},
     decision_options={'type':'array','maxItems':4,'uniqueItems':True,'items':{'type':'string','minLength':1,'maxLength':1000}},
+    recommended_answer={'type':'string','minLength':1,'maxLength':6000},
     evidence_quotes={'type':'array','maxItems':20,'items':dict(type='object',additionalProperties=False,
         required=['object_id','path','quote'],properties={
             'object_id':{'type':'string','minLength':1,'maxLength':120},

@@ -81,12 +81,10 @@ async def exercise(page, store, initial, chapter, output, report, expect):
     await page.screenshot(path=str(output/'06-answer-navigation-and-quotes.png'))
 
     await work.get_by_role('navigation',name='需求工作流程').get_by_role('button',name=re.compile(r'^3\s*确认交付$')).click()
-    alert=work.get_by_role('alert').filter(has=page.get_by_role('button',name='返回表格核对',exact=True))
-    await expect(alert).to_contain_text('保存并继续核对')
-    await expect(alert).not_to_contain_text('确认并进入交付')
-    await alert.get_by_role('button',name='返回表格核对',exact=True).click()
+    await expect(target.get_by_role('combobox')).to_be_focused()
+    await expect(target.get_by_role('checkbox',name='我已核对此原文表达了答案',exact=True)).not_to_be_checked()
     assert store.get(initial['id'])==before
-    report['checks'].append('交付拦截提示与当前保存按钮同名；返回核对仅定位，不保存或刷新')
+    report['checks'].append('点击交付后直接定位待落实回答原文控件，不需再点返回核对；不自动勾选、保存或刷新')
     await chapter_case(page,store,chapter,output,report,expect)
     report['checks'].append('原文复用的预览和确认文案明确本次落实核对，不暗示正文改动')
     await long_table(page,store,output,report,expect)

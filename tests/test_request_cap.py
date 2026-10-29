@@ -22,6 +22,7 @@ from app.request_budget import RequestBudget, initial_budget
 from app.store import Store
 from tests.helpers import EXAMPLES, prepared
 from tests.product_flow_helpers import check_prepared
+from tests.provider_transport import reply
 
 
 def mock_transport(monkeypatch, outputs):
@@ -35,9 +36,7 @@ def mock_transport(monkeypatch, outputs):
         finish='stop'
         if isinstance(output,tuple): output,finish=output
         content=output if isinstance(output,str) else json.dumps(output,ensure_ascii=False)
-        return httpx.Response(200,json=dict(model='synthetic-mock',
-            choices=[dict(message=dict(content=content),finish_reason=finish)],
-            usage=dict(prompt_tokens=11,completion_tokens=7,total_tokens=18)))
+        return reply(request, content, finish)
     transport=httpx.MockTransport(respond)
     monkeypatch.setattr('app.provider.httpx.AsyncClient',
         lambda **kwargs:real_client(**kwargs,transport=transport))
@@ -161,10 +160,10 @@ def test_truncation_escalation_preserves_output_policy_within_cap(public_case,mo
     _,_,task=public_start(public_case,limit,action='review')
     run=public_case[0].get(public_case[2]+'/runs').json()[-1]
     assert len(requests)==task['calls']==limit
-    assert requests[0]['max_tokens']==65536
+    assert requests[0]['max_output_tokens']==65536
     if limit==1:assert task['error']=='BUDGET_EXHAUSTED'
     else:
-        assert requests[1]['max_tokens']==393216 and requests[0]['messages']==requests[1]['messages']
+        assert requests[1]['max_output_tokens']==393216 and requests[0]['input']==requests[1]['input']
         assert run['result_applied'],run
     assert run['authorization']['approved_max_tokens']==393216
 
@@ -299,7 +298,7 @@ def test_approved_snapshot_survives_later_settings_change(public_case,monkeypatc
     requests=mock_transport(monkeypatch,[change_settings,EXAMPLES['clarify']])
     _,_,task=public_start(public_case,2)
     assert task['completed_steps']==1 and len(requests)==task['calls']==2
-    assert all(r['max_tokens']==DEFAULT['max_tokens'] for r in requests)
+    assert all(r['max_output_tokens']==DEFAULT['max_tokens'] for r in requests)
     assert task['max_calls']==task['authorized_configs']['clarify']['max_calls']==2
 
 

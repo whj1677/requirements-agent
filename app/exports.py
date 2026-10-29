@@ -14,6 +14,7 @@ from .preview import prototype
 from .contracts import profile
 from .document_reader import reader_document
 from .requirements import delivery_items
+from .word_presentation import reading_node,add_navigation,bookmark,running_furniture,add_body_prose,cell_prose,WORD_ACCENT,WORD_FLOW_PALETTE,WORD_BODY_FONT,WORD_TABLE_HEADER,WORD_TABLE_ROW,clean_style_gallery
 
 
 def block_text(block, p):
@@ -76,6 +77,7 @@ def add_full_flow_page(doc, picture, title):
         return section
 
     landscape=new_page_section()
+    landscape.different_first_page_header_footer=False
     landscape.orientation=WD_ORIENT.LANDSCAPE
     landscape.page_width=max(geometry['page_width'],geometry['page_height'])
     landscape.page_height=min(geometry['page_width'],geometry['page_height'])
@@ -105,6 +107,7 @@ def add_full_flow_page(doc, picture, title):
     caption.paragraph_format.keep_with_next=False
 
     restored=new_page_section()
+    restored.different_first_page_header_footer=False
     for key,value in geometry.items():
         setattr(restored,key,value)
 
@@ -162,9 +165,9 @@ async def document_files(p, kind, status='草稿／待产品经理内容确认',
     table_width = (section.page_width-section.left_margin-section.right_margin)/Inches(1)
     for style_name in ('Normal','Title',*[f'Heading {n}' for n in range(1,10)]):
         st = doc.styles[style_name]
-        st.font.name = 'Microsoft YaHei'
+        st.font.name = 'Calibri' if style_name=='Normal' else 'Microsoft YaHei'
         st.font.color.rgb = RGBColor(0,0,0)
-        st.element.get_or_add_rPr().rFonts.set(qn('w:eastAsia'),'Microsoft YaHei')
+        st.element.get_or_add_rPr().rFonts.set(qn('w:eastAsia'),WORD_BODY_FONT if style_name=='Normal' else 'Microsoft YaHei')
         for border in st.element.findall('.//' + qn('w:pBdr')):
             border.getparent().remove(border)
         for attr in ('asciiTheme','eastAsiaTheme','hAnsiTheme','cstheme'):
@@ -172,10 +175,12 @@ async def document_files(p, kind, status='草稿／待产品经理内容确认',
         if style_name == 'Normal':
             st.font.size = Pt(11)
             st.font.bold = False
-            st.paragraph_format.space_after = Pt(7)
-            st.paragraph_format.line_spacing = 1.3 if structured and reader else 1.5
+            st.font.cs_bold = False
+            st.paragraph_format.space_after = Pt(8)
+            st.paragraph_format.line_spacing = 1.5
+            st.paragraph_format.widow_control = True
         elif style_name == 'Title':
-            st.font.size = Pt(22)
+            st.font.size = Pt(28)
             st.font.bold = True
             st.paragraph_format.space_after = Pt(12)
             st.paragraph_format.keep_with_next = True
@@ -183,35 +188,35 @@ async def document_files(p, kind, status='草稿／待产品经理内容确认',
             depth = int(style_name.split()[-1])
             st.font.size = Pt({1:16,2:14}.get(depth,12))
             st.font.bold = True
-            st.paragraph_format.space_before = Pt(20 if depth==1 else 14)
-            st.paragraph_format.space_after = Pt(7)
+            st.paragraph_format.space_before = Pt(18 if depth==1 else 12)
+            st.paragraph_format.space_after = Pt(8 if depth==1 else 6)
             st.paragraph_format.keep_with_next = True
-            if structured and reader:
-                st.font.color.rgb = RGBColor.from_string('234B67')
     from docx.enum.style import WD_STYLE_TYPE
     metadata_style = doc.styles.add_style('Document Metadata', WD_STYLE_TYPE.PARAGRAPH)
     metadata_style.base_style = doc.styles['Normal']
     metadata_style.font.size = Pt(9)
-    metadata_style.font.color.rgb = RGBColor(100,115,107)
+    metadata_style.font.color.rgb = RGBColor.from_string('68645E')
     metadata_style.paragraph_format.space_after = Pt(7)
     cover_metadata_style = doc.styles.add_style('Document Cover Metadata', WD_STYLE_TYPE.PARAGRAPH)
     cover_metadata_style.base_style = doc.styles['Normal']
     cover_metadata_style.font.size = Pt(10)
-    cover_metadata_style.font.color.rgb = RGBColor(70,80,74)
+    cover_metadata_style.font.color.rgb = RGBColor.from_string('57514A')
     cover_metadata_style.paragraph_format.line_spacing = 1.4
     cover_metadata_style.paragraph_format.space_after = Pt(10)
     table_caption_style = doc.styles.add_style('Document Table Caption', WD_STYLE_TYPE.PARAGRAPH)
     table_caption_style.base_style = doc.styles['Normal']
     table_caption_style.font.bold=True
     table_caption_style.font.size=Pt(10)
-    table_caption_style.font.color.rgb=RGBColor.from_string('234B67')
+    table_caption_style.font.color.rgb=RGBColor(0,0,0)
     table_caption_style.paragraph_format.keep_with_next=True
     table_caption_style.paragraph_format.space_before=Pt(8)
     table_caption_style.paragraph_format.space_after=Pt(5)
     if structured and reader:
         from .document_reader import document_name
         doc.add_paragraph(document_name(artifact), 'Title')
-        doc.add_paragraph('产品需求文档 PRD · '+meta, 'Document Cover Metadata')
+        cover=doc.add_paragraph(style='Document Cover Metadata')
+        cover.add_run('产品需求文档 PRD\n').font.color.rgb=RGBColor.from_string(WORD_ACCENT)
+        cover.add_run(meta.replace(' · ','\n'))
     else:
         doc.add_paragraph(content['title'], 'Title')
         doc.add_paragraph(meta.replace(' · ', '\n'), 'Document Cover Metadata')
@@ -255,13 +260,21 @@ async def document_files(p, kind, status='草稿／待产品经理内容确认',
         notice = '未提供当前底稿可用的页面方案；本文未插入原型图片。' if not p.get('ui') else '页面方案对应旧底稿；本文未插入过期原型图片。'
         md.append(notice)
         doc.add_paragraph(notice)
+    # Review-only chapters are added after the canonical outline is compiled.
+    # Include their actual headings too, so every visible chapter is reachable.
+    navigation=[n for section,_ in rendered for n in section.get('reading_nodes',[])
+                if n['kind']=='heading'] if reader else []
+    anchors=add_navigation(doc,navigation) if reader else {}
+    if anchors:doc.sections[0].different_first_page_header_footer=True
     for s, texts in rendered:
         if reader:
-            for node in s['reading_nodes']:
+            for raw_node in s['reading_nodes']:
+                node=reading_node(raw_node)
                 if node['kind']=='heading':
                     title=node['number']+' '+node['text']
                     md.append('#'*(node['level']+1)+' '+title)
-                    doc.add_heading(title, node['level'])
+                    heading=doc.add_heading(title, node['level'])
+                    if node['level']==1 and node['number'] in anchors:bookmark(heading,anchors[node['number']])
                 elif node['kind']=='table':
                     from .detail_rendering import table_markdown
                     if node['title']!=s.get('title'):
@@ -282,7 +295,7 @@ async def document_files(p, kind, status='草稿／待产品经理内容确认',
                     borders=OxmlElement('w:tblBorders')
                     for edge in ('top','left','bottom','right','insideH','insideV'):
                         border=OxmlElement('w:'+edge)
-                        for key,value in (('val','single'),('sz','4'),('color','D9D9D9')):
+                        for key,value in (('val','single'),('sz','3'),('color','D9D9D9')):
                             border.set(qn('w:'+key),value)
                         borders.append(border)
                     table._tbl.tblPr.append(borders)
@@ -292,7 +305,7 @@ async def document_files(p, kind, status='草稿／待产品经理内容确认',
                     for values in node['rows']:
                         row=table.add_row()
                         for cell,value in zip(row.cells,values):
-                            cell.text=str(value)
+                            cell_prose(cell,str(value))
                     from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT
                     for row_number,row in enumerate(table.rows):
                         no_split=OxmlElement('w:cantSplit');row._tr.get_or_add_trPr().append(no_split)
@@ -300,32 +313,34 @@ async def document_files(p, kind, status='草稿／待产品经理内容确认',
                             cell.width=Inches(table_width*weight)
                             cell.vertical_alignment=WD_CELL_VERTICAL_ALIGNMENT.TOP
                             props=cell._tc.get_or_add_tcPr()
-                            shade=OxmlElement('w:shd');shade.set(qn('w:fill'),'234B67' if row_number==0 else 'F3F7FA' if row_number%2 else 'FFFFFF');props.append(shade)
+                            shade=OxmlElement('w:shd');shade.set(qn('w:fill'),WORD_TABLE_HEADER if row_number==0 else WORD_TABLE_ROW if row_number%2 else 'FFFFFF');props.append(shade)
                             margins=OxmlElement('w:tcMar')
                             for edge in ('top','bottom','left','right'):
-                                margin=OxmlElement('w:'+edge);margin.set(qn('w:w'),'70' if edge in ('top','bottom') else '90');margin.set(qn('w:type'),'dxa');margins.append(margin)
+                                margin=OxmlElement('w:'+edge);margin.set(qn('w:w'),'100' if edge in ('top','bottom') else '120');margin.set(qn('w:type'),'dxa');margins.append(margin)
                             props.append(margins)
                             for paragraph in cell.paragraphs:
-                                paragraph.paragraph_format.space_after=Pt(2)
-                                paragraph.paragraph_format.line_spacing=1.15
+                                paragraph.paragraph_format.space_after=Pt(3)
+                                paragraph.paragraph_format.line_spacing=1.25
                                 paragraph.paragraph_format.keep_with_next=row_number==0
                                 for run in paragraph.runs:
-                                    run.font.size=Pt(9.5)
+                                    run.font.size=Pt(10)
                                     run.font.bold=row_number==0
-                                    run.font.color.rgb=RGBColor(255,255,255) if row_number==0 else RGBColor(0,0,0)
-                                    run.font.name='Microsoft YaHei'
-                                    run._element.get_or_add_rPr().rFonts.set(qn('w:eastAsia'),'Microsoft YaHei')
+                                    run.font.color.rgb=RGBColor.from_string('222222')
+                                    run.font.cs_bold=row_number==0
+                                    run.font.name='Calibri'
+                                    run._element.get_or_add_rPr().rFonts.set(qn('w:eastAsia'),WORD_BODY_FONT)
                     bindings.append(dict(section_id=s['section_id'],item_id=node.get('item_id'),
                                          item_ids=node.get('item_ids',[]),detail_hash=node.get('detail_hash'),kind='table',title=node['title']))
+                    spacer=doc.add_paragraph();spacer.paragraph_format.space_after=Pt(3);spacer.paragraph_format.space_before=Pt(0);spacer.paragraph_format.line_spacing=Pt(3)
                 elif node['kind']=='diagram':
-                    from .detail_rendering import flow_png
+                    from .detail_rendering import flow_png,flow_svg
                     try:
-                        picture=flow_png(node['flow'])
+                        picture=flow_png(node['flow'],palette=WORD_FLOW_PALETTE,fit_labels=True)
                     except (ValueError,OSError,KeyError,TypeError) as error:
                         require(False,'DETAIL_RENDER_FAILED','流程图导出失败：'+str(error),409)
                     asset='assets/flow-'+node['detail_hash'][:20]+'.png'
                     svg_asset=asset.removesuffix('.png')+'.svg'
-                    files[asset]=picture;files[svg_asset]=node['svg'].encode('utf-8')
+                    files[asset]=picture;files[svg_asset]=flow_svg(node['flow'],node['title'],palette=WORD_FLOW_PALETTE,fit_labels=True)[0].encode('utf-8')
                     # Self-contained Markdown also works when downloaded alone.
                     import base64
                     md.append('!['+node['title'].replace('[','').replace(']','')+'](data:image/png;base64,'+base64.b64encode(picture).decode('ascii')+')')
@@ -337,7 +352,7 @@ async def document_files(p, kind, status='草稿／待产品经理内容确认',
                     require(False,'DETAIL_RENDER_FAILED',node['text'],409)
                 else:
                     md.append(node['text'])
-                    paragraph = doc.add_paragraph(node['text'], 'Document Metadata' if node['kind']=='metadata' else 'Normal')
+                    paragraph = doc.add_paragraph(node['text'],'Document Metadata') if node['kind']=='metadata' else add_body_prose(doc,node)
                     if node['kind']=='metadata' and node.get('item_id'):
                         # Keep the heading and full identifier with the actual clause.
                         paragraph.paragraph_format.keep_with_next = True
@@ -397,18 +412,19 @@ async def document_files(p, kind, status='草稿／待产品经理内容确认',
                 line = f'待确认 {q["id"]}：{q["question"]}；影响：{q["why"]}'
                 doc.add_paragraph(line)
                 md.append(line)
-    footer = doc.sections[0].footer.paragraphs[0]
-    footer.add_run('需求内容评审 · ')
-    fld = OxmlElement('w:fldSimple'); fld.set(qn('w:instr'),'PAGE'); footer._p.append(fld)
+    from .document_reader import document_name
+    footer=running_furniture(doc,document_name(artifact),kind,bool(anchors))
     if structured and reader:
         # Explicit body runs keep local Word theme/template defaults from
         # turning ordinary Chinese prose into a second heading weight.
         for paragraph in [*doc.paragraphs,footer]:
             if paragraph.style.name in ('Normal','Document Metadata','Document Cover Metadata'):
                 for run in paragraph.runs:
-                    run.bold=False
-                    run.font.name='Microsoft YaHei'
-                    run._element.get_or_add_rPr().rFonts.set(qn('w:eastAsia'),'Microsoft YaHei')
+                    run.bold=run.bold is True
+                    run.font.cs_bold=run.bold
+                    run.font.name='Calibri'
+                    run._element.get_or_add_rPr().rFonts.set(qn('w:eastAsia'),WORD_BODY_FONT)
+    clean_style_gallery(doc)
     out = io.BytesIO(); doc.save(out)
     files[kind.upper()+'.docx'] = out.getvalue()
     files[kind.upper()+'.md'] = ('\n\n'.join(md)+'\n').encode('utf-8')

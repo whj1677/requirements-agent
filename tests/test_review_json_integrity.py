@@ -12,7 +12,7 @@ from tests.test_current_workflow_evidence import case,CURRENT,NEW
 from tests.test_semantic_quality_boundaries import compile_explanation
 from app.workflow import apply_response
 
-def request(monkeypatch,tmp_path,raw):
+def request(monkeypatch,tmp_path,raw,finish='stop'):
     provider=Provider(env_path=tmp_path/'absent.env');provider.key=lambda c:'offline-synthetic-key'
     class Proof:
         value=dict(stage='review')
@@ -20,7 +20,7 @@ def request(monkeypatch,tmp_path,raw):
         def response(self,content=None,**meta):self.value.update(final_output=content,**meta)
         def save(self):pass
     proof=Proof();client=httpx.AsyncClient
-    transport=httpx.MockTransport(lambda req:httpx.Response(200,json=dict(model='synthetic',usage={},choices=[dict(finish_reason='stop',message=dict(content=raw))])))
+    transport=httpx.MockTransport(lambda req:httpx.Response(200,json=dict(model='synthetic',usage={},choices=[dict(finish_reason=finish,message=dict(content=raw))])))
     monkeypatch.setattr(httpx,'AsyncClient',lambda **kw:client(transport=transport,**kw))
     return asyncio.run(provider.request(dict(DEFAULT,base_url='http://synthetic.invalid',local_allowed=True),[],evidence=proof))
 
@@ -48,7 +48,7 @@ def test_invalid_or_changed_reviews_do_not_pass_format_repair(monkeypatch,tmp_pa
         raw=json.dumps(value,ensure_ascii=False)
     assert normalize_review_result_tail(raw) is None
     with pytest.raises(Problem):
-        parsed,_=request(monkeypatch,tmp_path,raw)
+        parsed,_=request(monkeypatch,tmp_path,raw,finish='length' if bad=='truncated' else 'stop')
         validate_response(parsed,'review',p,p['sources'][0]['excerpts'])
 
 def test_valid_json_remains_valid_and_example_covers_object_separator(monkeypatch,tmp_path):

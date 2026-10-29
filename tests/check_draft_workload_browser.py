@@ -291,7 +291,7 @@ async def run_browser(args):
                     await page.goto(ORIGIN, wait_until='networkidle')
                     await rec.click(page.locator('aside.sidebar button[title="' + initial['name'] + '"]'))
                     work = page.locator('.connected-workspace:visible')
-                    await rec.click(work.get_by_role('button', name='不使用 AI，直接完善', exact=True))
+                    await rec.click(work.get_by_role('button', name='2 完善需求', exact=True))
                     table = work.get_by_role('table', name='需求确认表', exact=True)
                     await expect(table).to_be_visible()
                     scope = initial['product_context']['scope_ids']
@@ -397,7 +397,7 @@ async def run_browser(args):
                         await expect(statement).to_be_enabled()
                         await rec.click(work.get_by_role('navigation', name='需求工作流程').get_by_role('button', name=re.compile(r'^1\s*提供信息$')))
                         await expect(table).not_to_be_visible()
-                        await rec.click(work.get_by_role('button', name='不使用 AI，直接完善', exact=True))
+                        await rec.click(work.get_by_role('button', name='2 完善需求', exact=True))
                         await expect(table).to_be_visible()
                         await expect(preview).not_to_be_visible()
                         assert await table.get_by_role('checkbox', checked=True).count() == 0

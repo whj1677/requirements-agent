@@ -138,6 +138,9 @@ class Workflow:
         settings=dict(DEFAULT, **(self.store.setting('vision' if stage == 'vision' else 'model') or {}))
         if origin(settings) == 'https://api.deepseek.com':
             settings.setdefault('business_draft_protocol', getattr(self.provider, 'business_draft_protocol', None))
+            if (getattr(self.provider, 'business_draft_protocol', None)
+                    and settings.get('json_mode') and settings['model'] in ('deepseek-flash', 'deepseek-v4-pro')):
+                settings['structured_output_protocol'] = 'responses-json-schema-v1'
         # Old installations may retain fixed/function-first quota settings.
         # New work always follows the current uncapped execution policy.
         settings.update(budget_mode='unlimited', max_calls=None)
@@ -147,7 +150,7 @@ class Workflow:
             config['thinking_disabled']=not config.get('review_thinking',True)
         return config
 
-    def start(self, pid, revision, stage, message, kind='prd', resumed_from=None, *, user_task_id=None, config_override=None, generation_target=None, discussion_target=None, benchmark=None, prewrite=False, allow_review_draft=False):
+    def start(self, pid, revision, stage, message, kind='prd', resumed_from=None, *, user_task_id=None, config_override=None, generation_target=None, discussion_target=None, benchmark=None, prewrite=False, allow_review_draft=False, draft_request=None):
         require(stage in STAGES and stage != 'handoff', 'STAGE_INVALID', '请选择支持的分析阶段')
         require(stage!='interview' or user_task_id,'STAGE_INVALID','需求访谈请通过聊天任务入口保存原话并核对接收端')
         config = copy.deepcopy(config_override or self.config(stage))
@@ -158,6 +161,11 @@ class Workflow:
             require(approved['authorized_configs'][stage]=={k:v for k,v in config.items() if k!='proxy'},
                     'BUDGET_AUTH_CHANGED','步骤配置与已批准计划不一致',409)
             require(not benchmark or benchmark==approved.get('benchmark'),'BENCHMARK_INVALID','对标范围与已批准计划不同',409)
+        if draft_request:
+            from .refinement_completion import validate as validate_draft_request
+            validate_draft_request(self.store.get(pid),draft_request)
+            require(user_task_id and draft_request==approved.get('draft_request') and stage=='ingest',
+                    'DRAFT_REQUEST_INVALID','补全范围须与已批准任务一致',409)
         require(not benchmark or (stage=='ingest' and user_task_id),'BENCHMARK_INVALID','对标分析须使用已核对的任务入口')
         require(not prewrite or (stage=='review' and user_task_id and approved['action'] in ('prewrite','document')),
             'STAGE_INVALID','成文检查须通过明确核对的任务入口。')
@@ -191,6 +199,7 @@ class Workflow:
         rid = self.store.record(pid, 'run', run)
         self.store.update_run(pid,rid,user_task_id=user_task_id,generation_target=generation_target,input_state_hash=execution_hash(p),
             prewrite=prewrite,allow_review_draft=allow_review_draft,
+            **({'draft_request':copy.deepcopy(draft_request)} if draft_request else {}),
             **({'requirement_recommendation_scope':local} if local else {}),
             **({'discussion_target':copy.deepcopy(discussion_target)} if discussion_target else {}),
             **({'benchmark':benchmark} if benchmark else {}))
@@ -216,6 +225,10 @@ class Workflow:
         repair_anchor = None
         repair_original = None
         interview_anchor = None
+        syntax_anchor = None
+        prewrite_repair = None
+        business_reference_repair = None
+        business_reference_plan = None
         interview_context_review = None
         business_draft_review = None
         failed_outputs = set()
@@ -232,7 +245,7 @@ class Workflow:
             from .prewrite import review_project
             reviewed_project=review_project(p) if run.get('prewrite') else p
             messages, excerpts, omitted = assemble(reviewed_project, run['stage'], run['message'], config, self.store.folder, run['document_type'], run.get('generation_target'), pending_images_only=bool(run.get('user_task_id')),vision_for_interview=run.get('vision_for_interview',False),
-                requirement_recommendation_scope=run.get('requirement_recommendation_scope'),**({'benchmark':run['benchmark']} if run.get('benchmark') else {}))
+                requirement_recommendation_scope=run.get('requirement_recommendation_scope'),**({'draft_request':run['draft_request']} if run.get('draft_request') else {}),**({'benchmark':run['benchmark']} if run.get('benchmark') else {}))
             import json
             header=json.loads(messages[0]['content'].split('可信任务头：',1)[1])
             business_protocol = header.get('response_protocol') == 'business-draft-v1'
@@ -274,15 +287,48 @@ class Workflow:
                         calls=self.store.get_record(pid,rid,'run')['calls']
                     attempt.update(meta)
                     require(self.store.get_record(pid, rid, 'run')['status'] != 'cancelled', 'CANCELLED', '已取消，结果未采纳')
+                    if syntax_anchor is not None:
+                        from .format_repair import anchor as format_anchor
+                        require(format_anchor(evidence)==syntax_anchor,'SEMANTIC_BLOCKED',
+                                '格式修复改变了原回复的业务字面内容或顺序，结果未写入；原始证据保留。')
+                    if prewrite_repair is not None:
+                        from .prewrite_repair import apply as apply_review_patch
+                        patch=copy.deepcopy(value)
+                        value=apply_review_patch(prewrite_repair,patch)
+                        evidence.value['prewrite_metadata_repair']=dict(patch=patch,
+                            original_hash=digest(prewrite_repair['original']),output_hash=digest(value))
+                        evidence.save()
+                    if business_reference_repair is not None:
+                        from .business_reference_repair import apply as apply_business_refs
+                        patch=copy.deepcopy(value)
+                        value=apply_business_refs(business_reference_repair,patch)
+                        evidence.value['business_reference_repair']=dict(patch=patch,
+                            original_hash=digest(business_reference_repair['original']),output_hash=digest(value))
+                        evidence.save()
                     if business_protocol:
+                        if repair_count==0 and (run.get('draft_request') or {}).get('mode')=='prewrite':
+                            from .business_reference_repair import prepare as prepare_business_refs
+                            business_reference_plan=prepare_business_refs(value,excerpts)
+                            if business_reference_plan:raise Problem('BUSINESS_REFERENCE_INVALID','业务草稿存在无效来源编号，需要核对本轮材料。')
                         from .business_draft import adapt
                         raw_hash = digest(value)
-                        value, business_draft_review = adapt(value, p, excerpts, run['stage'], run.get('requirement_recommendation_scope'))
+                        value, business_draft_review = adapt(value, p, excerpts, run['stage'], run.get('requirement_recommendation_scope'),draft_request=run.get('draft_request'))
                         business_draft_review.update(run_id=rid, input_revision=p['revision'], raw_response_hash=raw_hash)
                         evidence.value['business_draft_review'] = copy.deepcopy(business_draft_review)
                         evidence.save()
                         self.store.update_run(pid, rid, business_draft_review=business_draft_review)
                     if run['stage'] in ('ingest', 'clarify', 'change'):
+                        from .response_normalization import normalize as normalize_response_slots
+                        original_hash = digest(value)
+                        value, slot_changes = normalize_response_slots(value, p, excerpts, run['stage'])
+                        if slot_changes:
+                            normalization = dict(rule='evidence-bound-response-slots-1', input_hash=original_hash,
+                                output_hash=digest(value), changes=slot_changes)
+                            evidence.value.setdefault('response_normalizations', []).append(normalization)
+                            evidence.save()
+                            attempt.setdefault('response_normalizations', []).append(normalization)
+                            events.append(dict(time=now(), phase='已在本机校正临时编号与可唯一核对的引用，未重跑模型；业务内容保留', call=calls))
+                            self.store.update_run(pid, rid, events=events)
                         from .source_quotes import normalize_scope_quotes
                         original_hash = digest(value)
                         value, quote_changes = normalize_scope_quotes(value, excerpts)
@@ -295,20 +341,45 @@ class Workflow:
                             attempt.setdefault('response_normalizations', []).append(normalization)
                             events.append(dict(time=now(), phase='已按同一来源原文恢复引用格式，需求内容仍待人工核对', call=calls))
                             self.store.update_run(pid, rid, events=events)
+                        original_hash = digest(value)
+                        value, classifications = normalize_classification_labels(value, excerpts)
+                        if classifications:
+                            normalization = dict(rule='source-verified-change-classification-1',
+                                input_hash=original_hash, output_hash=digest(value), changes=classifications)
+                            evidence.value.setdefault('response_normalizations', []).append(normalization)
+                            evidence.save()
+                            attempt.setdefault('response_normalizations', []).append(normalization)
+                            events.append(dict(time=now(), phase='按已引用的现状与改动证据统一变化分类；业务原文与来源保持不变', call=calls))
+                            self.store.update_run(pid,rid,classification_corrections=classifications,events=events)
                     if run['stage']=='prd':
+                        from .prd import normalize_structured_explanations
+                        original_hash=digest(value)
+                        value,layout_changes=normalize_structured_explanations(value,p,run['document_type'])
+                        if layout_changes:
+                            normalization=dict(rule='program-rendered-detail-no-duplicate-explanation-1',
+                                input_hash=original_hash,output_hash=digest(value),changes=layout_changes)
+                            evidence.value.setdefault('response_normalizations',[]).append(normalization);evidence.save()
+                            attempt.setdefault('response_normalizations',[]).append(normalization)
+                            events.append(dict(time=now(),phase='按已核对条款生成完整正文，重复解释保留在任务记录',call=calls))
                         document_plan_version = value.get('plan_version')
                         value=compile_plan(value,p,run['document_type'],omitted,include_sketch=False)
                     if run.get('prewrite'):
-                        from .prewrite import normalize_quotes
+                        from .prewrite import normalize_quotes, normalize_decisions
+                        value,decision_changes=normalize_decisions(p,value)
+                        if decision_changes:
+                            normalization=dict(rule='prewrite-exact-required-decision-binding-1',changes=decision_changes)
+                            evidence.value.setdefault('response_normalizations',[]).append(normalization)
+                            evidence.save()
+                            attempt.setdefault('response_normalizations',[]).append(normalization)
                         original_hash=digest(value)
                         value,quote_changes=normalize_quotes(p,value)
                         if quote_changes:
-                            normalization=dict(rule='prewrite-full-property-terminal-punctuation-1',
+                            normalization=dict(rule='prewrite-verified-quotes-2',
                                 input_hash=original_hash,output_hash=digest(value),changes=quote_changes)
                             evidence.value.setdefault('response_normalizations',[]).append(normalization)
                             evidence.save()
                             attempt.setdefault('response_normalizations',[]).append(normalization)
-                            events.append(dict(time=now(),phase='按完整属性原文恢复引文末尾标点，原模型输出保留在调用证据。',call=calls))
+                            events.append(dict(time=now(),phase='已核对检查引文；无法核实的非阻塞提示明确标注，原输出保留',call=calls))
                     if run['stage']=='ingest':
                         if not run.get('benchmark'):
                             from .benchmark import ordinary_response
@@ -332,10 +403,6 @@ class Workflow:
                         if run.get('benchmark'):
                             from .benchmark import validate_analysis
                             validate_analysis(value,run['benchmark'],excerpts,p)
-                        value, classifications = normalize_classification_labels(value, excerpts)
-                        if classifications:
-                            events.append(dict(time=now(), phase='按已引用的现状与改动证据统一变化分类；业务原文与来源保持不变', call=calls))
-                            self.store.update_run(pid,rid,classification_corrections=classifications,events=events)
                         if repair_anchor is not None:
                             ingest.preserve(repair_anchor, value, excerpts)
                             if run.get('benchmark'):
@@ -390,6 +457,50 @@ class Workflow:
                                    evidence_limitations=evidence.limitations[:])
                     attempts.append(attempt)
                     self.store.update_run(pid, rid, attempts=attempts)
+                    # One extra request may fix punctuation in a complete output.
+                    # It uses the original schema/context, never the legacy database
+                    # repair prompt for a business-only packet. No recursive retry.
+                    if syntax_anchor is not None:
+                        raise e
+                    if business_reference_repair is not None:
+                        raise e
+                    if e.code=='BUSINESS_REFERENCE_INVALID' and business_reference_plan and repair_count==0:
+                        from .business_reference_repair import messages as business_ref_messages, SCHEMA as business_ref_schema
+                        business_reference_repair=business_reference_plan
+                        messages=business_ref_messages(business_reference_repair)
+                        pending_repair=True;repair_parent=call_id
+                        authorization=dict(authorization,repair_protocol='business-reference-patch-1',
+                            repair_original_hash=digest(value),schema_hash=digest(business_ref_schema),
+                            prompt_hash=digest(messages[0]['content'].split('可信任务头：',1)[0]))
+                        self.store.update_run(pid,rid,repair_anchor_hash=digest(value))
+                        events.append(dict(time=now(),phase='正在核对并修复错误来源编号，业务原文和有效引用保持不变',call=calls))
+                        continue
+                    if prewrite_repair is not None:
+                        # A failed slot repair is never recursively rewritten.
+                        raise e
+                    if run.get('prewrite') and repair_count==0 and e.model_repair_allowed and e.code in (
+                            'REFERENCE_INVALID','PREWRITE_DECISION_BINDING_REQUIRED'):
+                        from .prewrite_repair import prepare as prepare_review_patch, messages as review_patch_messages, SCHEMA as review_patch_schema
+                        prewrite_repair=prepare_review_patch(p,value)
+                        if prewrite_repair:
+                            messages=review_patch_messages(prewrite_repair)
+                            pending_repair=True;repair_parent=call_id
+                            authorization=dict(authorization,repair_protocol='prewrite-metadata-patch-1',
+                                repair_original_hash=digest(value),schema_hash=digest(review_patch_schema),
+                                prompt_hash=digest(messages[0]['content'].split('可信任务头：',1)[0]))
+                            self.store.update_run(pid,rid,repair_anchor_hash=digest(value))
+                            events.append(dict(time=now(),phase='正在修复检查问题的关联与引文，保留原问题和修改建议',call=calls))
+                            continue
+                    if run['stage']!='interview' and e.code=='SCHEMA_INVALID' and e.model_repair_allowed and repair_count==0:
+                        from .format_repair import anchor as format_anchor, instruction as format_instruction
+                        syntax_candidate=format_anchor(evidence)
+                        if syntax_candidate is not None and (business_protocol or value is None):
+                            syntax_anchor=syntax_candidate
+                            pending_repair=True;repair_parent=call_id
+                            self.store.update_run(pid,rid,repair_anchor_hash=digest(syntax_anchor))
+                            messages=messages[:2]+[dict(role='user',content=format_instruction(e.message,evidence.value['final_output']))]
+                            events.append(dict(time=now(),phase='追加一次格式修复，保留原始内容与引用；修复后重新校验',call=calls))
+                            continue
                     if business_protocol:
                         # A business package is never rewritten through the legacy
                         # database-schema repair prompt. Raw evidence stays intact.
@@ -523,7 +634,7 @@ class Workflow:
                     calls, decision_review = await review_generated_draft(self.store,self.provider,p,staged,
                         run,config,excerpts,budget,attempts,events,calls)
             has_context_fields = bool(interview_context_review and interview_context_review['fields'])
-            with self.store.edit(pid, p['revision'], '模型：' + run['stage'], bump=bool(staged or value['proposals'] or value['questions'] or has_context_fields or run.get('prewrite'))) as (current, db):
+            with self.store.edit(pid, p['revision'], '模型：' + run['stage'], bump=bool(staged or value['proposals'] or value['questions'] or has_context_fields or run.get('prewrite') or (run.get('draft_request') or {}).get('mode')=='prewrite')) as (current, db):
                 state=next(x for x in self.store.records(pid,'run',db) if x['id']==rid)
                 require(state['status']!='cancelled','CANCELLED','已取消，结果未采纳')
                 require(execution_hash(current)==execution_hash(p),'STALE_REVISION','任务执行期间输入或产物发生变化；结果已保留在调用证据，未激活',409)
@@ -553,6 +664,24 @@ class Workflow:
                     # any confirmation request. Accepted rows remain candidates.
                     saved_review = replace_business_ids(business_draft_review, draft_mapping)
                     current.setdefault('business_draft_reviews', []).append(saved_review)
+                    if run.get('draft_request'):
+                        previous=copy.deepcopy(current.get('refinement_completion') or {})
+                        result=copy.deepcopy(saved_review.get('completion',{}))
+                        single=run['draft_request']['mode']=='question'
+                        row_ids={row['row_key']:row['requirement_id'] for row in saved_review['accepted']}
+                        if not single:
+                            result['change_types'].update({row_ids[key]:kind for key,kind in result.pop('change_type_rows',{}).items() if key in row_ids})
+                            result['scope_ids']=list(dict.fromkeys(result['scope_ids']+[row_ids[key] for key in result.pop('scope_rows',[]) if key in row_ids]))
+                        answers={**previous.get('answers',{}),**result.pop('answers',{})}
+                        if single:result={key:val for key,val in result.items() if key not in ('profile','scope_ids','change_types')}
+                        current['refinement_completion']=dict(previous if single else {},**result,answers=answers,
+                            mode=previous.get('mode','question') if single else run['draft_request']['mode'],
+                            last_mode=run['draft_request']['mode'],run_id=rid,input_revision=p['revision'],
+                            candidate_ids=previous.get('candidate_ids',[]) if single else [item for row in saved_review['accepted'] for item in row.get('candidate_temp_ids',[])])
+                        if run['draft_request']['mode']=='prewrite':
+                            current['refinement_completion'].update(applied_revision=current['revision']+1,
+                                covered_requirement_ids=[row['requirement_id'] for row in saved_review['accepted']],
+                                complete=saved_review['complete'])
                     if run['stage'] == 'ingest':
                         # Empty protocol fields and rejected/unknown suggestions
                         # cannot erase prior drafts or borrow their citations.

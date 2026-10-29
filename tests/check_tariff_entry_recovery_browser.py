@@ -114,7 +114,7 @@ async def run(args):
                 await page.goto(ORIGIN,wait_until='networkidle')
                 async with page.expect_response(lambda r:r.url.endswith('/workspace-draft') and r.request.method=='GET'):
                     await rec.click(page.locator('aside.sidebar button[title="电价管理"]'))
-                await rec.click(work.get_by_role('button',name='不使用 AI，直接完善',exact=True))
+                await rec.click(work.get_by_role('button',name='2 完善需求',exact=True))
                 await expect(work.get_by_role('table',name='需求确认表')).to_be_visible()
                 assert store.get(pid)==frozen
                 await rec.note('1. 这是你的电价管理 v13 副本\n真实 AI 请求因引用无效失败，原十条需求和十五份资料保留；没有新验收候选。',5)
@@ -172,7 +172,7 @@ async def run(args):
                 # Refresh must retain the actual saved project, not temporary
                 # UI draft. The temporary local edit was restored before reload.
                 if not await work.get_by_role('table',name='需求确认表').count():
-                    await rec.click(work.get_by_role('button',name='不使用 AI，直接完善',exact=True))
+                    await rec.click(work.get_by_role('button',name='2 完善需求',exact=True))
                 editor=await task(first)
                 await expect(editor.get_by_role('textbox',name=first['title']+' 需求内容',exact=True)).to_have_value(first['statement'])
                 await expect(editor.get_by_role('combobox',name=first['title']+' 本次改动',exact=True)).to_have_value('unspecified')

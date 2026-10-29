@@ -2,17 +2,22 @@ import React from 'react';
 import type { UserTask } from './api';
 
 export function canRecoverDraft(task:UserTask) {
-  return !task.local_recovery&&task.status==='failed'&&task.action==='organize'&&
-    !task.retry_input?.target&&!task.retry_input?.benchmark&&/JSON 有重复键/.test(task.message);
+  return !task.local_recovery&&task.status==='failed'&&(task.local_recovery_available===true||task.action==='organize'&&
+    !task.retry_input?.target&&!task.retry_input?.benchmark&&/JSON 有重复键/.test(task.message));
 }
 
 export function taskFailure(task: UserTask) {
   if (task.local_recovery) return null;
+  if(task.status==='failed'&&task.error==='PREWRITE_DECISION_BINDING_REQUIRED')return {
+    summary:'AI 检查结果没有正确关联到需求，这次成文检查未完成。',
+    next:'你的回答和已有需求都已保留，不用重新填写。先核对已有修改，再重新进行成文检查；下方旧检查项仅供继续处理。',
+    detail:task.message,
+  };
   if (task.status !== 'failed' || !['SCHEMA_INVALID','REFERENCE_INVALID','SEMANTIC_BLOCKED'].includes(task.error || '')) return null;
   const repairChanged = task.error === 'SEMANTIC_BLOCKED' && /格式修复改变/.test(task.message);
   const unrequestedBenchmark = task.action === 'organize' && /本次没有对标任务|普通整理包含未请求的对标内容/.test(task.message);
   return {
-    summary: canRecoverDraft(task) ? 'AI 输出有重复字段，草稿暂未写入。你聊过的内容已保存。'
+    summary: canRecoverDraft(task) ? '原始输出可在本机恢复为待核对草稿，已有内容保留。'
       : unrequestedBenchmark ? '普通整理混入了未请求的对标内容，本次草稿未生成。'
       : repairChanged ? 'AI 修复输出格式时同时改写了需求文本，本次生成未写入。'
       : task.error === 'SEMANTIC_BLOCKED' ? '本次生成未通过来源与内容核对，结果未写入。'

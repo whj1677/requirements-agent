@@ -71,7 +71,7 @@ async def enter(page, initial, expect):
     work = page.locator('.connected-workspace:visible')
     table = work.get_by_role('table', name='需求确认表', exact=True)
     if not await table.is_visible():
-        await work.get_by_role('button', name='不使用 AI，直接完善', exact=True).click()
+        await work.get_by_role('button', name='2 完善需求', exact=True).click()
     await expect(table).to_be_visible()
     return work, table
 
@@ -95,7 +95,7 @@ async def synthetic(page, store, pid, initial, scenario, output, report, expect)
     rule = next(i for i in initial['items'] if i['id'] == RULE)
     row = table.locator('tr[data-cell-key="clause-' + RULE + '"]')
     await expect(row).to_have_count(0)
-    confirm = work.get_by_role('button', name='确认并进入交付', exact=True)
+    confirm = work.locator('.refinement-sheet-footer .primary')
     if scenario != 'blank':
         qrow = table.locator('tr[data-cell-key="question-Q-LINKED"]')
         await qrow.get_by_role('button', name=OPTION, exact=True).click()
@@ -131,7 +131,24 @@ async def synthetic(page, store, pid, initial, scenario, output, report, expect)
             await expect(text).to_have_value(EDITED)
             await expect(table.get_by_role('textbox', name=QUESTION + ' 我的回答', exact=True)).to_have_value(OPTION)
             report['checks'].append('保存草稿刷新后，人工修改与已填回答均保留，规则仍待采纳')
-            confirm = work.get_by_role('button', name='确认并进入交付', exact=True)
+            confirm = work.locator('.refinement-sheet-footer .primary')
+    if scenario != 'blank':
+        # A filled answer alone does not establish implementation. The tester
+        # explicitly adds its meaning to the directly related requirement and
+        # checks both that clause and the independently visible linked rule.
+        req = next(i for i in initial['items'] if i['id'] == 'REQ-W1')
+        await table.get_by_role('button', name='展开业务说明：'+req['title'], exact=True).click()
+        await table.get_by_role('textbox', name=req['title']+' 权限约束', exact=True).fill('模板只允许电价管理员查看。')
+        qrow = table.locator('tr[data-cell-key="question-Q-LINKED"]')
+        await expect(confirm).to_have_text('保存并继续核对')
+        assert store.get(pid) == initial
+        for title, field in [(req['title'], 'behavior.permissions'), (TITLE, 'statement')]:
+            target = qrow.locator('.answer-implementation-target').filter(has=page.get_by_role('combobox', name=title+' 答案落文位置', exact=True))
+            await target.get_by_role('combobox').select_option(field)
+            await expect(target.get_by_role('blockquote')).to_contain_text('模板只允许电价管理员查看')
+            await target.get_by_role('checkbox', name='我已核对此原文表达了答案', exact=True).check()
+        await expect(confirm).to_have_text('确认并进入交付')
+        report['checks'].append('明确把答案写入直接关联需求，并逐个选择需求/规则原文且人工勾选；未核对前保持待落实，未自动映射答案')
     await confirm.click()
     await expect(work.get_by_role('heading', name='确认交付版本', exact=True)).to_be_visible(timeout=15000)
     saved = store.get(pid)

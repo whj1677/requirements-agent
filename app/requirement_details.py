@@ -114,13 +114,24 @@ def detail_issues(item, project=None, require_confirmed=False):
                            item_id=iid, object_id=oid))
 
     unknown = re.compile(r'^(?:待(?:确认|决定|补充|核对|确定)|未知|未明确|资料未说明|TBD|TODO)(?:[：:，,；;。.!！\s]|$)', re.I)
+    # A named workflow state such as “待核对” is not an undecided property.
+    # Require it to be both reached and left by concrete transitions. Explicit
+    # unknown evidence is still reported below; prose placeholders stay blocked.
+    transitions=detail.get('state_transitions',[])
+    concrete=[row for row in transitions if all(isinstance(row.get(key),str) and row[key].strip()
+        and not unknown.match(row[key].strip()) for key in ('trigger','condition'))]
+    named_states={row.get('from_state') for row in concrete}&{row.get('to_state') for row in concrete}
+
+    def named_wait_state(path,prop,value):
+        return (path.startswith('state_transitions.') and prop in ('from_state','to_state')
+            and value in named_states and value in ('待确认','待核对','待确定'))
 
     def required(row, path, properties):
         for prop in properties:
             value = row.get(prop)
             if not isinstance(value, str) or not value.strip():
                 add('DETAIL_PROPERTY_MISSING', path + '.' + prop, f'{row["id"]} 尚未定义 {prop}', row['id'])
-            elif unknown.match(value.strip()):
+            elif unknown.match(value.strip()) and not named_wait_state(path,prop,value.strip()):
                 add('DETAIL_PROPERTY_UNKNOWN', path + '.' + prop, f'{row["id"]} 的 {prop} 仍待决定', row['id'])
             elif value.strip() in ('不适用', 'N/A', 'NA'):
                 add('DETAIL_NA_REASON', path + '.' + prop, f'{row["id"]} 的 {prop} 不适用须说明原因', row['id'])

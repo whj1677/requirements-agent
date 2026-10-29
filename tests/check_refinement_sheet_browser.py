@@ -268,7 +268,7 @@ async def run(args):
                     await page.goto(ORIGIN, wait_until='networkidle')
                     await rec.click(page.locator('aside.sidebar button[title="' + initial['name'] + '"]'))
                     work = page.locator('.connected-workspace:visible')
-                    await rec.click(work.get_by_role('button', name='不使用 AI，直接完善', exact=True))
+                    await rec.click(work.get_by_role('button', name='2 完善需求', exact=True))
                     table = work.get_by_role('table', name='需求确认表', exact=True)
                     await expect(table).to_be_visible()
                     confirm = work.get_by_role('button', name='确认并进入交付', exact=True)
@@ -334,7 +334,7 @@ async def run(args):
                             await rec.click(pending.get_by_role('button', name='保存后离开', exact=True))
                         await expect(table).not_to_be_visible()
                         assert store.get(pid) == initial, 'Leaving prematurely confirmed the sheet'
-                        await rec.click(work.get_by_role('button', name='不使用 AI，直接完善', exact=True))
+                        await rec.click(work.get_by_role('button', name='2 完善需求', exact=True))
                         await expect(goal).to_have_value(GOAL)
                         await expect(statement).to_have_value(edited)
                         report['checks'].append('修改后切换阶段再返回，摘要与需求草稿仍保留，未提前确认')

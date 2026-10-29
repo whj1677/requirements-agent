@@ -104,7 +104,7 @@ async def run(args):
                     await page.goto(ORIGIN, wait_until='networkidle')
                     await page.locator('aside.sidebar button[title="' + initial['name'] + '"]').click()
                     work = page.locator('.connected-workspace:visible')
-                    await work.get_by_role('button', name='不使用 AI，直接完善', exact=True).click()
+                    await work.get_by_role('button', name='2 完善需求', exact=True).click()
                     table = work.get_by_role('table', name='需求确认表', exact=True)
                     await expect(table).to_be_visible()
                     ac = table.get_by_role('textbox', name='模板查看 验收建议 1', exact=True)
@@ -115,6 +115,7 @@ async def run(args):
                     assert store.get(pid) == initial
                     await table.get_by_role('button', name='使用此验收建议', exact=True).click()
                     await expect(ac).to_have_value(REVISION_TEXT)
+                    await page.wait_for_function("key=>JSON.parse(sessionStorage.getItem(key)||'null')?.rows?.['REQ-W1']?.acceptance_items?.[0]?.candidate_id==='AC-REVISION'",arg=pid+'-refinement-sheet')
                     draft = await page.evaluate('key=>JSON.parse(sessionStorage.getItem(key))', pid + '-refinement-sheet')
                     assert draft['rows']['REQ-W1']['acceptance_items'][0]['candidate_id'] == 'AC-REVISION'
                     assert store.get(pid) == initial, 'Using the suggestion must not save or confirm it'

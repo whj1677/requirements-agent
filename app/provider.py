@@ -169,6 +169,29 @@ def responses_input(messages):
     return result
 
 
+def structured_response_schema(messages):
+    """Read only our first system task header, never a user's pasted schema."""
+    if not messages or messages[0].get('role') != 'system':
+        return None
+    content = messages[0].get('content')
+    if not isinstance(content, str) or '可信任务头：' not in content:
+        return None
+    from .core import strict_model_json
+    try:
+        header = strict_model_json(content.split('可信任务头：', 1)[1])
+    except ValueError:
+        raise Problem('SCHEMA_INVALID', '可信任务头无法读取；未发送模型请求', model_repair_allowed=False)
+    if not isinstance(header, dict) or header.get('transport_protocol') != 'responses-json-schema-v1':
+        return None
+    schema = header.get('schema')
+    require(isinstance(schema, dict), 'SCHEMA_INVALID', '缺少结构化输出 Schema；未发送请求')
+    try:
+        jsonschema.Draft202012Validator.check_schema(schema)
+    except jsonschema.SchemaError:
+        raise Problem('SCHEMA_INVALID', '结构化输出 Schema 无效；未发送请求', model_repair_allowed=False)
+    return schema
+
+
 def responses_usage(usage):
     """Preserve documented numeric usage, with aliases for existing billing."""
     if not isinstance(usage, dict):
@@ -291,13 +314,14 @@ class Provider:
         key = self.key(config)
         require(key, 'CONFIG_MISSING', '尚未配置此接收端的 API Key；未发送材料')
         endpoint = origin(config)
-        response_schema = business_draft_schema(messages) if endpoint == 'https://api.deepseek.com' else None
+        business_schema = business_draft_schema(messages) if endpoint == 'https://api.deepseek.com' else None
+        response_schema = (business_schema or structured_response_schema(messages)) if endpoint == 'https://api.deepseek.com' else None
         if response_schema is not None:
             # DeepSeek documents json_schema here; Chat Completions only has json_object.
             body = dict(model=config['model'], input=responses_input(messages),
                         max_output_tokens=config['max_tokens'], stream=False,
                         reasoning={'effort': 'none' if config.get('thinking_disabled') else 'high'},
-                        text={'format': {'type': 'json_schema', 'name': 'business_draft_v1', 'schema': response_schema}})
+                        text={'format': {'type': 'json_schema', 'name': 'business_draft_v1' if business_schema is not None else 'requirements_runtime_v1', 'schema': response_schema}})
             route = '/responses'
         else:
             body = dict(model=config['model'], messages=messages, max_tokens=config['max_tokens'], stream=False)
@@ -357,7 +381,10 @@ class Provider:
                                        ('response_protocol', 'response_status', 'provider_usage')})
                 evidence.save()
         if rejection:
-            raise Problem(*rejection, model_repair_allowed=False)
+            if evidence:
+                evidence.value['transport_rejection'] = rejection[0]
+                evidence.save()
+            raise Problem(*rejection, model_repair_allowed=business_schema is None and rejection[0]=='OUTPUT_TRUNCATED')
         require(meta['finish_reason'] != 'length', 'OUTPUT_TRUNCATED', '模型单次输出截断；请分段生成或调整模型单次输出上限')
         require(isinstance(content, str) and content.strip(), 'OUTPUT_EMPTY', '模型返回空内容')
         require(key not in content, 'SECURITY_BLOCKED', '模型输出包含凭据信息，已拒绝保存')
@@ -367,6 +394,40 @@ class Provider:
             value = strict_model_json(content)
         except json.JSONDecodeError as error:
             stage=evidence.value.get('stage') if evidence else None
+            if (evidence and meta.get('finish_reason') == 'stop'
+                    and (response_schema is None or meta.get('response_status') == 'completed')
+                    and not evidence.limitations and evidence.value.get('final_output') == content):
+                from .model_json import schema_closers
+                spec = response_schema or (request_schema(stage) if stage in (*STAGES, 'interview') else None)
+                from .model_json import question_root_close
+                recovered = question_root_close(content) if business_schema is not None else None
+                recovery_rule = 'question-missing-root-close-1'
+                if recovered is None:
+                    recovered = schema_closers(content, spec) if spec is not None else None
+                    recovery_rule = 'schema-forced-container-closers-1'
+                if recovered is not None:
+                    value, normalization = recovered
+                    meta['syntax_normalization'] = dict(rule=recovery_rule,
+                        **normalization, raw_hash=digest(content), derived_hash=digest(value))
+                    evidence.value['syntax_normalization'] = copy.deepcopy(meta['syntax_normalization'])
+                    evidence.save()
+                    return value, meta
+            if (response_schema is not None and evidence and meta.get('finish_reason')=='stop'
+                    and meta.get('response_status')=='completed' and not evidence.limitations
+                    and evidence.value.get('final_output')==content):
+                from .model_json import business_containers, question_root_close
+                recovered=business_containers(content)
+                rule='business-missing-container-closers-1'
+                if recovered is None:
+                    recovered=question_root_close(content)
+                    rule='question-missing-root-close-1'
+                if recovered is not None:
+                    value,normalization=recovered
+                    meta['syntax_normalization']=dict(rule=rule,
+                        **normalization,raw_hash=digest(content),derived_hash=digest(value))
+                    evidence.value['syntax_normalization']=copy.deepcopy(meta['syntax_normalization'])
+                    evidence.save()
+                    return value,meta
             normalizer={'review':normalize_review_result_tail,'ingest':normalize_ingest_result_tail}.get(stage)
             normalized=(normalizer(content) if response_schema is None and normalizer and evidence.value.get('final_output')==content else None)
             if normalized is None:
@@ -383,9 +444,10 @@ class Provider:
             # Review uses the same complete-evidence, typed equality proof as
             # ingest/vision. This only removes identical syntax repetition;
             # the normal review and prewrite validators still run afterwards.
-            normalized = (identical_members(content) if response_schema is None and evidence and
-                evidence.value.get('stage') in ('ingest','vision','review') and evidence.value.get('final_output') == content and
-                not evidence.limitations else None)
+            normalized = (identical_members(content) if evidence and meta.get('finish_reason') == 'stop' and
+                (response_schema is None or meta.get('response_status') == 'completed') and
+                evidence.value.get('stage') in ('ingest','vision','review','clarify','change','interview','prd')
+                and evidence.value.get('final_output') == content and not evidence.limitations else None)
             if normalized is None:
                 if evidence:
                     evidence.value['json_integrity_failure']='duplicate_member'
@@ -607,12 +669,15 @@ def response_boundary(schema):
         '返回严格JSON，不用Markdown包围。数组项的对象闭合后再闭合数组；questions是数组，decision_points是各父问题内部的数组；不能把父问题对象与questions数组的闭合次序颠倒。输出前逐层核对所有括号、逗号和转义，不拼接残缺JSON。')
 
 
-def assemble(p, stage, user_message, config, folder, kind='prd', generation_target=None, pending_images_only=False, benchmark=None, vision_for_interview=False, requirement_recommendation_scope=None):
+def assemble(p, stage, user_message, config, folder, kind='prd', generation_target=None, pending_images_only=False, benchmark=None, vision_for_interview=False, requirement_recommendation_scope=None, draft_request=None):
     from .business_draft import enabled as business_draft_enabled, assemble as assemble_business_draft
     if business_draft_enabled(config, stage, benchmark, requirement_recommendation_scope):
         return assemble_business_draft(p, stage, user_message, config, folder,
-                                       local_scope=requirement_recommendation_scope)
+                                       local_scope=requirement_recommendation_scope,draft_request=draft_request)
+    require(not draft_request,'DRAFT_REQUEST_INVALID','当前接收端不支持结构化表格补全，请使用已验证的业务草稿模型')
     header = dict(stage=stage, project_id=p['id'], current_revision=p['revision'], mode=p['mode'], schema=request_schema(stage), remaining_budget=config['max_calls'])
+    if config.get('structured_output_protocol') == 'responses-json-schema-v1':
+        header['transport_protocol'] = 'responses-json-schema-v1'
     if not benchmark:
         # The public validator also serves benchmark tasks. Generation must only
         # advertise fields authorized for this request, including format repairs.
@@ -671,6 +736,7 @@ def assemble(p, stage, user_message, config, folder, kind='prd', generation_targ
             '不要虚构180天等数值供用户默认选择；确有需比较的备选明确称为建议，不声称有业务事实依据。')
     header['question_note_policy']='问题的 deferred_note 是用户暂未决定时保存的调查备注，不是正式回答，不能据此解除阻塞或自动采纳规则。'
     if stage=='clarify':
+        header['patch_output_policy']='本轮输出仅包含当前任务范围内需要新增或修订的草稿补丁；不要重发整张需求表、未变化的既有条款或无关问题。原有内容由程序保留，不需要靠复制维持。仅修订候选，不自动采纳。'
         header['current_answer_binding_policy']='stage_focus.answer_binding_tasks 是全量待办清单，不扩大本轮授权范围。先根据本轮 user_message 中的任务指定对象和用户明确要求限定范围，仅处理范围内的回答与目标，范围外保持原状；无明确局部范围时，按当前澄清任务处理。本轮范围内的回答绑定以当前清单、questions 的已保存回答及 decision_answers 中的当前决定组原话为准。决定组原话只是待逐子决定核对的依据，不代表全部子决定已明确。历史消息和旧文档仍用于核对业务事实，持续有效的业务范围与保持约束必须保留；仅与当前契约或本轮明确指令冲突的历史操作指令（例如旧的“规则不填 answer_refs”）不再适用。范围内每个尚无 reusable_candidate_ids 的绑定任务可由本轮同 kind revise 待核对候选覆盖：target_item_id 对应该目标，answer_refs 必须包含该 question_id，source_refs 引用实际送入的当前回答来源。决定组只对当前原话明确覆盖的叶决定提出具体修订，其余决定保持待定；不要为产生候选补造规则。同一目标的多个范围内回答可合并到一个候选的 answer_refs。规则原文已正确或原条目 selected 均不等于该回答已应用；保留完整业务原文，生成待人工核对的绑定候选，不自动采纳。仅有相同目标、同一回答版本并已记录 answer_refs 的待采纳候选才可复用。'
     if generation_target:
         header['generation_target']=generation_target
@@ -826,6 +892,16 @@ def assemble(p, stage, user_message, config, folder, kind='prd', generation_targ
             context['review_scope']['instruction']=(
                 '这是成文前检查，尚未生成本轮文档；documents为空是正常情况，不能因此报告缺少PRD、缺少章节或要求先成文。'
                 '只检查当前本期需求、规则、字段、交互、流程、状态与验收的业务一致性和可实现性。'
+                '严格以review_scope.normative_item_ids为当前规范；candidate/deferred与target_item_id修订是历史或未采纳提议，'
+                '不能因为旧稿与已采纳条款不同而制造当前冲突，也不要要求清理历史才允许成文。'
+                'source_refs是累积溯源；核对最新已保存回答及当前原文，不要求旧来源跟随改写。'
+                'selection_status=selected且已有人工确认的条款已被采纳；epistemic_status=proposed记录AI起草来源，'
+                '不等于用户尚未确认。程序保留原稿的“建议：”前缀用于溯源，Word导出会去除已采纳内容的这种前缀，'
+                '不得仅因这些元数据或编辑标记反复阻断成文、要求再调用AI改写。'
+                '内部验收标题相同、逐字相同的重复验收、可读性和排版整理只作warning，不作为业务未决或needs_changes的唯一依据；'
+                '有不同条件或相反结果的验收仍须检查并阻断真实冲突。'
+                '先核对资料是否已给出业务边界：只读查询不因返回结果变化而自动变为写操作；'
+                '不得把实现推测或范围外扩展提升为成文前置决定，推荐也必须遵守明确范围。'
                 '逐项核对流程分支能到结束或明确等待、部分成功/全失败/结果未知的路径、重试前提、状态层级、枚举与口径。'
                 '现有未答业务问题仍待处理，不因有问题就假定已解决；历史已答决定须核对当前条款是否真正承载。'
                 '人工作出的prewrite_responses是意见和反证，不能直接当通过；核对证据和原文后才可消除对应发现。'
@@ -836,6 +912,10 @@ def assemble(p, stage, user_message, config, folder, kind='prd', generation_targ
                 '需要产品经理决定的blocker填decision_question，并将完全相同问题加入required_decisions；'
                 '有清晰不同业务取舍时可给decision_options（最多4项待选建议），不能选中默认答案；来源已有答案则不制造选项。'
                 '仅文案或结构修复无需业务决定则decision_question为空。选项不能当已确认规则。'
+                '每个需确认的检查项还要给 recommended_answer：可直接填入确认表的完整推荐回答，'
+                '沿用已保存回答；确有未定业务取舍则给出一个具体推荐方案并说明这是建议，留给用户确认或改写。'
+                '不能只写“由PM明确/请补充/待确认”、不能只列多个选项、不能把 suggested_resolution 的操作指令当作回答。'
+                'recommended_answer 是未采纳的建议，不写入人类回答，不代替需求修订或成文复检。'
                 'proposals和questions必须空，不修改任何业务。required_reviewed_refs必须完整审查并列入reviewed_refs，不能漏掉规则或验收。'
                 '有关键未决或真实冲突必须needs_changes，资料无法审查用insufficient_context，不得为了成文宣布通过。')
             context['prewrite_responses']=copy.deepcopy(p.get('prewrite_responses',[]))

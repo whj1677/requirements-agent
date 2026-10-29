@@ -47,6 +47,19 @@ def test_complete_contract_and_legacy_absence():
     assert not detail_issues(item(value))
 
 
+def test_named_pending_review_state_is_not_an_undecided_property():
+    d=detail();d['applicability']['state_transitions']={'applicable':True,'reason':'交付物核对流程'}
+    d['state_transitions']=[dict(id='T1',from_state='待提交',to_state='待核对',trigger='提交交付物',condition='提交物完整',prohibited_actions='核对前不得交付'),
+        dict(id='T2',from_state='待核对',to_state='核对通过',trigger='完成核对',condition='全部核对项通过',prohibited_actions='不得跳过核对')]
+    assert not [i for i in detail_issues(item(d)) if i['code']=='DETAIL_PROPERTY_UNKNOWN']
+    d['state_transitions'][1]['evidence']={'from_state':{'status':'unknown','reason':'本例刻意未决定'}}
+    assert any(i['path']=='detail_contract.state_transitions.T2.from_state' and i['code']=='DETAIL_PROPERTY_UNKNOWN' for i in detail_issues(item(d)))
+
+
+def test_pending_review_word_is_not_enough_without_a_defined_transition():
+    d=detail();d['applicability']['state_transitions']={'applicable':True,'reason':'尚未完整的流程'}
+    d['state_transitions']=[dict(id='T1',from_state='待提交',to_state='待核对',trigger='提交交付物',condition='提交物完整',prohibited_actions='核对前不得交付')]
+    assert any(i['path']=='detail_contract.state_transitions.T1.to_state' and i['code']=='DETAIL_PROPERTY_UNKNOWN' for i in detail_issues(item(d)))
 @pytest.mark.parametrize('mutate,code,path', [
     (lambda d: d['fields'][0].update(enum_values=[]), 'DETAIL_ENUM_MISSING', 'detail_contract.fields.FD-level.enum_values'),
     (lambda d: d['fields'][0].update(required='待确认'), 'DETAIL_PROPERTY_UNKNOWN', 'detail_contract.fields.FD-level.required'),

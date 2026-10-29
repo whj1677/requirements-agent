@@ -91,7 +91,7 @@ async def exercise(page, context, store, initial, second, task, output, report, 
     workspace = page.locator('.project-workspace:not([hidden])')
 
     async def home(expected_name):
-        await expect(workspace.get_by_role('heading', level=1, name=expected_name, exact=True)).to_be_visible()
+        await expect(page.get_by_role('heading', level=1, name=expected_name, exact=True)).to_be_visible()
         connected = workspace.locator('.connected-workspace')
         await expect(connected).to_have_attribute('data-step', 'information')
         await expect(connected.get_by_role('button', name='和助手聊需求', exact=True)).to_have_attribute('aria-pressed', 'true')

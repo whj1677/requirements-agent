@@ -93,24 +93,32 @@ async def until(predicate, timeout=15):
 
 
 async def open_goal(page, recorder, *, saved=False):
-    workspace = page.locator('.connected-workspace:visible')
-    await recorder.click(workspace.get_by_role('button', name='进入完善需求', exact=True))
-    readiness = page.get_by_role('region', name='需求核对准备').filter(visible=True)
-    # Actual visible blocker navigation; never expand a hidden node with JavaScript.
-    await recorder.click(readiness.get_by_role('button', name='查看核对清单', exact=True))
-    action = readiness.get_by_role('button', name=re.compile('^核对(?:本次改动意图|希望达到的目标) →$'))
-    if not saved:
-        await recorder.click(action.first)
-    else:
-        support = page.locator('details.requirement-support')
-        await recorder.click(support.locator('> summary'))
-        await recorder.click(support.get_by_text('查看或修改其他内容', exact=True))
-        await recorder.click(support.get_by_role('button', name='编辑业务摘要', exact=True))
-        await recorder.click(support.get_by_text('适用场景与全部字段（按需）', exact=True))
-        await recorder.click(support.locator('.refine-context-field-list').get_by_role('button', name=re.compile('^希望达到的目标')))
-    field = page.locator('[id^="refine-context-field-"][id$="-intent"]:visible')
-    await field.wait_for(state='visible')
+    workspace=page.locator('.connected-workspace:visible')
+    await recorder.click(workspace.get_by_role('button',name='2 完善需求',exact=True))
+    table=workspace.get_by_role('table',name='需求确认表',exact=True)
+    await expect(table).to_be_visible()
+    field=table.locator('tr[data-cell-key="context-intent"]')
+    await field.get_by_role('textbox',name='希望达到的目标',exact=True).scroll_into_view_if_needed()
     return field
+
+
+async def add_manual_requirement(page, workspace, store, pid):
+    # Real UI creation supplies the minimum content needed for an atomic review;
+    # it is disclosed synthetic input, never a pre-seeded model accomplishment.
+    await workspace.get_by_role('button',name='补充需求',exact=True).first.click()
+    dialog=page.get_by_role('dialog',name='补充候选需求',exact=True)
+    await dialog.get_by_role('textbox',name='需求名称',exact=True).fill('合成告警处理记录')
+    await dialog.get_by_role('textbox',name='需求原文',exact=True).fill('场站值班人员在云平台填写并保存告警处理记录，保存后显示本次处理内容。')
+    await dialog.get_by_role('button',name='保存候选',exact=True).click()
+    await expect(dialog).not_to_be_visible()
+    await until(lambda:bool(store.get(pid)['items']))
+    table=workspace.get_by_role('table',name='需求确认表',exact=True)
+    await table.get_by_role('combobox',name='需求类型',exact=True).select_option('new_module')
+    await table.get_by_role('combobox',name='模块关联',exact=True).select_option('independent')
+    await table.get_by_role('combobox',name='合成告警处理记录 本期范围',exact=True).select_option('included')
+    await table.get_by_role('combobox',name='合成告警处理记录 本次改动',exact=True).select_option('new')
+    await table.get_by_role('textbox',name='合成告警处理记录 验收建议 1',exact=True).fill('场站值班人员填写处理内容并保存后，页面显示刚保存的内容。')
+    return table
 
 
 async def scenario(args, variant):
@@ -178,8 +186,7 @@ async def scenario(args, variant):
                     await page.goto(ORIGIN+'/', wait_until='networkidle')
                     await recorder.click(page.get_by_role('button', name=name))
                     workspace = page.locator('.connected-workspace:visible')
-                    if variant!='loading':
-                        await expect(workspace.get_by_role('textbox', name='填写当前需求的原文底稿', exact=True)).to_be_enabled()
+                    await expect(workspace.get_by_role('button',name='和助手聊需求',exact=True)).to_have_attribute('aria-pressed','true')
                     await recorder.click(workspace.get_by_role('button', name='和助手聊需求', exact=True))
                     await recorder.note('1. 新项目起点\n目标、使用者和范围均为空。先在聊天中提供已知信息。')
                     message = MESSAGE
@@ -197,6 +204,12 @@ async def scenario(args, variant):
                     await recorder.click(workspace.locator('.chat-composer-actions').get_by_role('button', name='发送', exact=True))
                     await until(lambda:len([m for m in store.get(pid)['messages'] if m['role']=='assistant'])==1)
                     await page.wait_for_timeout(300)
+                    progress=page.get_by_role('complementary',name='AI 任务进度',exact=True)
+                    if await progress.is_visible():
+                        compact=progress.locator('.ai-progress-compact')
+                        await expect(compact).to_be_visible(timeout=15000)
+                        await compact.click()
+                        await progress.get_by_role('button',name='关闭进度提示',exact=True).click()
                     after_chat = copy.deepcopy(store.get(pid))
                     (output/'project-after-chat.json').write_text(json.dumps(after_chat, ensure_ascii=False, indent=2), encoding='utf-8')
                     assert provider.calls==1 and provider.stages==['interview']
@@ -215,106 +228,90 @@ async def scenario(args, variant):
                         report['checks'].append('目标、使用者、改动同次整理为候选，并绑定本轮真实输入来源')
                     await recorder.note('2. 同一轮聊天已整理摘要\n尚未保存为人工确认。进入完善需求查看核对入口。')
                     field = await open_goal(page, recorder, saved=variant in ('manual','legacy'))
+                    table=workspace.get_by_role('table',name='需求确认表',exact=True)
+                    goal=field.get_by_role('textbox',name='希望达到的目标',exact=True)
                     if variant=='legacy':
-                        await expect(field.get_by_text('已有聊天或资料，尚未形成这项摘要',exact=True)).to_be_visible()
-                        await recorder.click(field.get_by_role('button',name='从已有聊天和资料整理草稿',exact=True))
-                        dialog=page.get_by_role('dialog',name='核对本次任务')
+                        await expect(goal).to_have_value('')
+                        await expect(field).to_contain_text('暂无内容')
+                        await workspace.get_by_role('button',name='AI 补充建议',exact=True).click()
+                        dialog=page.get_by_role('dialog',name='核对本次任务',exact=True)
                         await expect(dialog).to_be_visible()
                         assert provider.calls==1
-                        report['checks'].append('历史聊天无摘要时只打开整理任务核对，不自动调用模型')
+                        await dialog.get_by_role('button',name='返回保留输入',exact=True).click()
+                        assert store.get(pid)==after_chat
+                        report['checks'].append('历史聊天无摘要时保留空内容；主动起草先核对任务，取消不调用也不写入')
                     elif variant=='manual':
-                        card=field.get_by_label('希望达到的目标待核对内容')
-                        await expect(card.get_by_text(MANUAL,exact=True)).to_be_visible()
-                        await recorder.click(field.get_by_text('另有一份 AI 建议，尚未采用',exact=True))
-                        await recorder.click(field.get_by_role('button',name='用这份建议修改',exact=True))
-                        editor=field.get_by_role('textbox',name='希望达到的目标内容',exact=True)
-                        await expect(editor).to_have_value(SUGGESTIONS['intent'])
-                        await recorder.fill(editor,'人工编辑的未保存目标，不能被刷新冲掉。')
-                        support=page.locator('details.requirement-support')
-                        await recorder.click(support.locator('> summary'))
-                        await expect(editor).not_to_be_visible()
-                        await recorder.click(support.locator('> summary'))
-                        await expect(editor).to_have_value('人工编辑的未保存目标，不能被刷新冲掉。')
-                        await recorder.click(workspace.get_by_role('button',name='刷新',exact=True))
-                        await expect(editor).to_have_value('人工编辑的未保存目标，不能被刷新冲掉。')
-                        assert store.get(pid)['product_context']==before['product_context']
-                        await recorder.click(field.get_by_role('button',name='取消本字段修改',exact=True))
-                        await expect(field.get_by_text(MANUAL,exact=True)).to_be_visible()
+                        await expect(goal).to_have_value(MANUAL)
+                        await expect(table.get_by_role('textbox',name='保持不变',exact=True)).to_have_value('')
+                        await expect(table.get_by_role('combobox',name='保持不变 状态',exact=True)).to_have_value('none')
+                        edited='人工编辑的未保存目标，不能被刷新冲掉。'
+                        await goal.fill(edited)
+                        await workspace.get_by_role('button',name='保存草稿',exact=True).click()
+                        await page.reload(wait_until='networkidle')
+                        await expect(workspace.get_by_role('button',name='和助手聊需求',exact=True)).to_have_attribute('aria-pressed','true')
+                        await open_goal(page,recorder,saved=True)
+                        await expect(goal).to_have_value(edited)
+                        await table.get_by_role('combobox',name='需求类型',exact=True).select_option('new_product')
+                        # A populated AI suggestion is still a proposal; the
+                        # human can explicitly mark this optional field inapplicable.
+                        await table.get_by_role('textbox',name='当前现状',exact=True).fill('')
+                        await table.get_by_role('combobox',name='当前现状 状态',exact=True).select_option('not_applicable')
+                        await expect(table.get_by_role('combobox',name='当前现状 状态',exact=True)).to_have_value('not_applicable')
+                        assert store.get(pid)==after_chat
                         assert store.get(pid)['product_context']==before['product_context']
                         assert store.get(pid)['context_field_states']==before['context_field_states']
-                        report['checks'].append('当前人工内容优先；新建议只能主动选择；收起再展开与刷新均保留未保存修改，取消恢复人工内容')
-                        await recorder.click(support.locator('.refine-context-field-list').get_by_role('button',name=re.compile('^保持不变')))
-                        preserve=support.locator('.refine-context-field:visible')
-                        await expect(preserve.locator('.refine-context-empty').get_by_text('已确认没有额外约束',exact=True)).to_be_visible()
-                        assert await preserve.get_by_label('保持不变待核对内容').count()==0
-                        await expect(preserve.get_by_text('另有一份 AI 建议，尚未采用',exact=True)).to_be_visible()
-                        await support.locator('.refine-context-profile').get_by_role('combobox').first.select_option('new_product')
-                        await recorder.click(support.get_by_role('button',name='保存适用场景',exact=True))
-                        await until(lambda:store.get(pid).get('scope_profile',{}).get('scenario')=='new_product')
-                        await expect(support.get_by_role('button',name='保存适用场景',exact=True)).not_to_be_visible()
-                        await recorder.click(support.locator('.refine-context-field-list').get_by_role('button',name=re.compile('^当前现状')))
-                        current=support.locator('.refine-context-field:visible')
-                        await expect(current.locator('.refine-context-empty').get_by_text('不适用',exact=True)).to_be_visible()
-                        assert await current.get_by_label('当前现状待核对内容').count()==0
-                        await expect(current.get_by_text('另有一份 AI 建议，尚未采用',exact=True)).to_be_visible()
-                        assert not store.get(pid)['product_context'].get('current_state')
-                        assert store.get(pid)['context_field_states']['preserve_scope']['status']=='none'
-                        report['checks'].append('显式 none 与新产品隐式不适用空内容仍保留；AI 建议只能另行查看，未显示为已确认正文')
+                        report['checks'].append('人工目标和显式none优先，AI不覆盖；本地编辑、保存刷新保持精确文字，新产品空现状为不适用且未写业务数据')
+                    elif variant=='uncertain':
+                        await expect(goal).to_have_value(UNKNOWN)
+                        await expect(table.get_by_role('combobox',name='希望达到的目标 状态',exact=True)).to_have_value('unknown')
+                        user=table.get_by_role('textbox',name='目标使用者',exact=True)
+                        await expect(user).to_have_value('目标用户待确认')
+                        await expect(table.get_by_role('combobox',name='目标使用者 状态',exact=True)).to_have_value('unknown')
+                        await workspace.get_by_role('button',name='保存草稿',exact=True).click()
+                        await page.reload(wait_until='networkidle');await open_goal(page,recorder)
+                        await expect(goal).to_have_value(UNKNOWN)
+                        await expect(table.get_by_role('combobox',name='目标使用者 状态',exact=True)).to_have_value('unknown')
+                        assert store.get(pid)==after_chat
+                        report['checks'].append('不确定的目标及使用者可保存为本地草稿，刷新仍unknown，未被保存动作升级为人工确认')
                     else:
-                        card=field.get_by_label('希望达到的目标待核对内容')
-                        await expect(card.get_by_text('AI 已整理 · 待你确认',exact=True)).to_be_visible()
-                        await expect(card).to_be_in_viewport(ratio=.8)
-                        await expect(field.get_by_role('button',name=re.compile('^(确认并继续|保存建议，仍待补充)$'))).to_be_in_viewport(ratio=.9)
-                        await expect(card.get_by_text(UNKNOWN if variant=='uncertain' else SUGGESTIONS['intent'],exact=True)).to_be_visible()
-                        assert await field.get_by_role('textbox').count()==0, 'Editing controls appeared before opting in'
-                        await expect(card.get_by_role('button',name='查看整理依据',exact=True)).to_be_visible()
-                        await recorder.note('3. 先读 AI 已整理的目标\n无需重新写一遍。内容不对才点“我来修改”；来源可查看。')
-                        await page.screenshot(path=str(output/'03-pending-summary.png'), full_page=False)
+                        await expect(goal).to_have_value(SUGGESTIONS['intent'])
+                        await expect(goal).to_be_in_viewport(ratio=.8)
+                        await expect(field).to_contain_text('AI 整理 · 待你确认')
+                        assert after_chat['product_context_proposal_evidence']['intent']['uncertain'] is False
+                        await field.get_by_role('button',name='查看来源',exact=True).click()
+                        sources=page.get_by_role('dialog',name='项目资料',exact=True)
+                        await expect(sources).to_contain_text('用于界面验证的合成需求')
+                        attachment=page.get_by_role('dialog',name='附件内容',exact=True)
+                        if await attachment.is_visible():await attachment.get_by_role('button',name='关闭附件',exact=True).click()
+                        await sources.get_by_role('button',name='关闭项目资料',exact=True).click()
+                        assert store.get(pid)==after_chat
+                        await page.screenshot(path=str(output/'03-pending-summary.png'))
+                        table=await add_manual_requirement(page,workspace,store,pid)
+                        pending=copy.deepcopy(store.get(pid))
+                        assert pending.get('product_context')==before.get('product_context')
+                        assert pending.get('context_field_states')==before.get('context_field_states')
                         if variant=='guards':
                             session=(await client.get('/api/session')).json()
                             client.headers.update({'Origin':ORIGIN,'X-CSRF-Token':session['csrf']})
-                            latest=store.get(pid)
-                            source_id=latest['product_context_proposal_evidence']['intent']['source_refs'][0]['source_id']
-                            response=await client.post(f'/api/projects/{pid}/sources/{source_id}/exclude',json={'expected_revision':latest['revision']})
+                            source_id=pending['product_context_proposal_evidence']['intent']['source_refs'][0]['source_id']
+                            response=await client.post(f'/api/projects/{pid}/sources/{source_id}/exclude',json={'expected_revision':pending['revision']})
                             assert response.status_code==200,response.text
-                            await recorder.click(field.get_by_role('button',name='确认并继续',exact=True))
-                            await expect(field.get_by_role('alert')).to_contain_text('来源已不可用')
-                            assert not store.get(pid).get('product_context')
-                            assert not store.get(pid).get('context_field_states')
-                            report['checks'].append('页面停留旧建议时来源被另一客户端排除，确认前拉取最新来源并阻止写入')
-                        elif variant in ('empty','loading'):
-                            assert after_chat['product_context_proposal_evidence']['intent']['uncertain'] is False, 'Unrelated unknown permissions incorrectly marked goal unknown'
-                            await recorder.click(card.get_by_role('button',name='我来修改',exact=True))
-                            await expect(field.get_by_role('textbox',name='希望达到的目标内容',exact=True)).to_have_value(SUGGESTIONS['intent'])
-                            await recorder.click(field.get_by_role('button',name='返回查看',exact=True))
-                            assert not store.get(pid).get('product_context')
-                            await recorder.note('4. 这里演示查看编辑，再返回\n未改内容不写入。现在明确确认这项目标。')
-                            await recorder.click(field.get_by_role('button',name='确认并继续',exact=True))
-                            await until(lambda:(store.get(pid).get('context_field_states') or {}).get('intent',{}).get('status')=='known')
-                            updated=store.get(pid)
-                            assert updated['product_context']=={'intent':SUGGESTIONS['intent']}
-                            assert set(updated['context_field_states'])=={'intent'}
-                            assert not updated['product_context'].get('scope_ids')
-                            await expect(page.locator('.refine-current-heading h3:visible')).not_to_have_text('希望达到的目标')
-                            await expect(page.locator('.refine-current-heading:visible')).to_be_in_viewport(ratio=.8)
-                            report['checks'].append('只读建议可进入编辑并返回；明确确认仅保存目标，其他摘要及本期范围仍未确认')
-                            await recorder.note('5. 目标已确认\n界面继续处理下一项。使用者、范围等仍须各自核对，未被一并确认。',4)
+                            excluded=copy.deepcopy(store.get(pid))
+                            await workspace.locator('.refinement-sheet-footer .primary').click()
+                            await expect(workspace.locator('.sheet-banner-error[role="alert"]')).to_be_visible()
+                            assert any(r['status']==409 and r['path'].endswith('/refinement-confirmation') for r in report['api_requests'])
+                            assert store.get(pid)==excluded
+                            report['checks'].append('另一客户端排除候选来源并改变版本后，旧表确认被服务端拒绝；摘要、字段状态和范围均未被旧页确认')
                         else:
-                            assert after_chat['product_context_proposal_evidence']['intent']['uncertain'] is True
-                            await recorder.click(field.get_by_role('button',name='保存建议，仍待补充',exact=True))
-                            await until(lambda:(store.get(pid).get('product_context') or {}).get('intent')==UNKNOWN)
-                            assert store.get(pid)['context_field_states']['intent']['status']=='unknown'
-                            await expect(field.get_by_text(re.compile('文字已记录，仍待确认'))).to_be_visible()
-                            report['checks'].append('未知目标可以保存文字但保持 unknown，仍留当前项等待补充')
-                            await recorder.click(page.get_by_role('navigation',name='完善需求待办').get_by_role('button',name=re.compile('目标使用者')))
-                            user_field=page.locator('[id^="refine-context-field-"][id$="-users"]:visible')
-                            await expect(user_field.get_by_label('目标使用者待核对内容')).to_contain_text('目标用户待确认')
-                            await recorder.click(user_field.get_by_role('button',name='我来修改',exact=True))
-                            await recorder.fill(user_field.get_by_role('textbox',name='目标使用者内容',exact=True),'目标用户待确认')
-                            await recorder.click(user_field.get_by_role('button',name=re.compile('^(确认并继续|保存建议，仍待补充|保存为待确认)$')))
-                            await until(lambda:(store.get(pid).get('product_context') or {}).get('users')=='目标用户待确认')
-                            assert store.get(pid)['context_field_states']['users']['status']=='unknown'
-                            report['checks'].append('目标用户待确认的候选即使进入编辑保存也不升级为 known')
+                            await workspace.locator('.refinement-sheet-footer .primary').click()
+                            await expect(workspace.get_by_role('heading',name='确认交付版本',exact=True)).to_be_visible()
+                            updated=store.get(pid)
+                            for key,text in SUGGESTIONS.items():
+                                assert updated['product_context'][key]==text
+                                assert updated['context_field_states'][key]['status']=='known'
+                            assert len(updated['product_context']['scope_ids'])==1
+                            assert len([r for r in report['api_requests'] if r['path'].endswith('/refinement-confirmation')])==1
+                            report['checks'].append('候选先同表展示来源且不写人工摘要；明确补充合成需求并整表确认后，摘要和范围一次原子保存，不再使用旧逐字段确认')
                     await page.screenshot(path=str(output/'04-final.png'),full_page=False)
                     assert provider.calls==1 and not report['page_errors']
                     report.update(status='passed',frozen_provider_calls=provider.calls,stages=provider.stages)

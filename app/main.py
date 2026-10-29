@@ -95,6 +95,7 @@ class ActionPlan(Revision):
     benchmark: BenchmarkInput | None = None
     attachment_source_ids: list[str] = Field(default_factory=list)
     allow_review_draft: bool = False
+    draft_request: dict | None = None
 
 class ActionStart(ActionPlan):
     plan_hash: str
@@ -694,8 +695,7 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
         p=store.get(pid)
         require(p['revision']==expected_revision,'STALE_REVISION','页面已过期',409)
         if purpose=='chat_attachment':
-            require(Path(file.filename or '').suffix.lower() in
-                    ('.txt','.md','.docx','.doc','.xlsx','.xls','.pptx','.ppt','.pdf','.png','.jpg','.jpeg','.webp'),
+            require(Path(file.filename or '').suffix.lower() in SOURCE_EXTENSIONS,
                     'SOURCE_FAILED','请选择支持的文档或 PNG、JPEG、WebP 图片')
         s=await asyncio.to_thread(save_source,store,Path(file.filename or 'unknown').name,data,
                                   'goal' if purpose=='chat_attachment' else purpose)
@@ -1026,6 +1026,11 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
     async def action_plan(pid:str,body:ActionPlan):
         return actions.plan(pid,body.model_dump())
 
+    @app.post('/api/projects/{pid}/documents/prd/local-review')
+    async def local_prd_review(pid:str,body:dict):
+        from .local_prd import generate
+        return generate(store,pid,body)
+
     @app.post('/api/projects/{pid}/actions')
     async def action_start(pid:str,body:ActionStart):
         values=body.model_dump()
@@ -1033,8 +1038,8 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
         return actions.start(pid,values,plan_hash,key,authorize)
 
     @app.get('/api/projects/{pid}/actions')
-    async def user_tasks(pid:str):
-        store.get(pid)
+    def user_tasks(pid:str):
+        project=store.get(pid)
         tasks=store.records(pid,'user_task')
         recovered={row['task_id']:row for row in store.records(pid,'local_recovery')}
         for task in tasks:
@@ -1042,6 +1047,9 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
             if task['id'] in recovered:
                 row=recovered[task['id']]
                 task['local_recovery']={k:row[k] for k in ('id','output_revision','candidate_ids','external_model_calls')}
+            elif task['status']=='failed' and task['action'] in ('clarify','change'):
+                from .ingest_recovery import available
+                task['local_recovery_available']=available(store,project,task)
         return tasks
 
     @app.post('/api/projects/{pid}/actions/{tid}/recover-draft')
@@ -1136,7 +1144,7 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
             files=asyncio.run(document_files(p,kind,status,reader=True,mode=mode))
             public_files={(stem+Path(k).suffix if k in (kind.upper()+'.md',kind.upper()+'.docx') else k):v for k,v in files.items() if not k.endswith('.json')}
             body=zip_files(public_files) if fmt=='zip' else files[kind.upper()+'.'+fmt]
-            record=dict(document_type=kind,document_artifact_id=artifact['id'],export_mode=mode,style_version='reader-2',generator_version='1.1',artifact_hashes={k:hashlib.sha256(v).hexdigest() for k,v in files.items()},asset_bindings=files['document_asset_bindings.json'].decode('utf8'))
+            record=dict(document_type=kind,document_artifact_id=artifact['id'],export_mode=mode,style_version='reader-7-charcoal',generator_version='1.1',artifact_hashes={k:hashlib.sha256(v).hexdigest() for k,v in files.items()},asset_bindings=files['document_asset_bindings.json'].decode('utf8'))
             with store.connect() as db:
                 db.execute('BEGIN IMMEDIATE')
                 current=store.get(pid,db)

@@ -77,6 +77,7 @@ def input_identity(store, project, db=None):
 
 def standard_organize(task):
     return (task.get('action') == 'organize' and not task.get('benchmark')
+            and (task.get('draft_request') or {}).get('mode')!='question'
             and not task.get('generation_target') and not task.get('target')
             and not task.get('requirement_recommendation_scope')
             and not (task.get('retry_input') or {}).get('target'))
@@ -232,5 +233,7 @@ def view(store, pid):
 
 def register(app, store):
     @app.get('/api/projects/{pid}/refinement-preparation')
-    async def preparation_status(pid: str):
+    def preparation_status(pid: str):
+        # Historical snapshots can be large. FastAPI runs this read-only work
+        # in its thread pool so opening the table does not stall other requests.
         return view(store, pid)

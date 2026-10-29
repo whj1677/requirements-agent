@@ -13,6 +13,55 @@ const confirmed=[{requirement_id:'REQ-1',current:true}];
 '''
 
 
+def test_explicit_completion_fills_review_drafts_but_preserves_human_answers():
+    run_ts(LOAD+r'''
+      const p=project([],2);p.product_context.intent='';p.context_field_states={intent:{status:'unknown'}};
+      p.product_context_proposal={intent:'建议：便于值班人员核对电价模板。'};
+      p.product_context_proposal_evidence={intent:{uncertain:true}};
+      p.questions=[{id:'Q1',question:'权限采用什么方案？',answer:null,related_refs:['REQ-1']},
+        {id:'Q2',question:'是否保留原筛选？',answer:'人工确认保留',related_refs:['REQ-1']}];
+      const before=initial(p,confirmed);
+      p.scope_profile={scenario:'modify_existing',dependencies:'unknown'};
+      p.refinement_completion={mode:'required',run_id:'RUN-fill',answers:{Q1:{text:'建议：沿用既有授权。'},Q2:{text:'建议：清空筛选。'}},change_types:{'REQ-1':'modified'},scope_ids:['REQ-1']};
+      p.refinement_completion.profile={scenario:'new_module',dependencies:'shared'};
+      const snapshot=JSON.stringify(p),draft=initial(p,confirmed);
+      assert.equal(draft.values.intent,p.product_context_proposal.intent);
+      assert.equal(draft.states.intent.status,'known','a concrete unconfirmed proposal can be reviewed without retyping');
+      assert.equal(draft.answers.Q1,'建议：沿用既有授权。');assert.equal(draft.answers.Q2,'人工确认保留');
+      assert.equal(draft.rows['REQ-1'].change_type,'modified');
+      assert.deepEqual(draft.profile,{scenario:'modify_existing',dependencies:'shared'},'only the missing part of the profile is proposed');
+      const mine=structuredClone(before);mine.answers.Q1='浏览器里尚未确认的人工修改';
+      const merged=mergeSuggestions(mine,before,draft);assert.equal(merged.answers.Q1,mine.answers.Q1);
+      assert.equal(JSON.stringify(p),snapshot,'draft fill cannot save an answer or confirmation');
+    ''')
+
+
+def test_completion_candidate_can_be_reviewed_against_confirmed_row_without_overwriting_it():
+    run_ts(LOAD+r'''
+      const p=project([{...req,id:'REV-fill',target_item_id:'REQ-1',statement:'建议：打开模板后显示地区。',selection_status:'candidate'}],3);
+      const old=initial(p,confirmed);assert.equal(old.rows['REQ-1'].statement,req.statement);
+      p.refinement_completion={mode:'all',candidate_ids:['REV-fill'],answers:{},change_types:{}};
+      const draft=initial(p,confirmed);assert.equal(draft.rows['REQ-1'].statement,'建议：打开模板后显示地区。');
+      assert.equal(draft.rows['REQ-1'].candidate_id,'REV-fill');assert.equal(p.items[0].statement,req.statement);
+      p.items[1].selection_status='deferred';assert.equal(initial(p,confirmed).rows['REQ-1'].statement,req.statement);
+    ''')
+
+
+def test_unclassified_business_supplement_preserves_existing_human_change_choice():
+    run_ts(LOAD+r'''
+      for(const change_type of ['new','modified','preserved']){
+        const p=project([{...req,id:'REV-1',target_item_id:'REQ-1',selection_status:'candidate',
+          statement:'补齐后的需求正文',change_type:'unspecified',scope_evidence:[]}],2);
+        p.items[0]={...p.items[0],change_type};
+        const before=JSON.stringify(p),row=initial(p,[]).rows['REQ-1'];
+        assert.equal(row.statement,'补齐后的需求正文');
+        assert.equal(row.candidate_id,'REV-1');
+        assert.equal(row.change_type,change_type,'an unclassified draft must preserve the saved human choice');
+        assert.equal(JSON.stringify(p),before);
+      }
+    ''')
+
+
 def test_confirmed_requirement_keeps_new_acceptance_candidates_visible():
     run_ts(LOAD+r'''
       const p=project([ac('AC-1','既有验收','selected'),ac('AC-NEW','建议：打开列表后显示模板'),ac('AC-REJECTED','不应出现','rejected'),ac('AC-OLD','不应出现','candidate',{superseded_by:'AC-NEW'})]);

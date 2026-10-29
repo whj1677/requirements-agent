@@ -42,6 +42,51 @@ def setup(tmp_path):
     return p, local, cfg, messages, excerpts, omitted
 
 
+@pytest.mark.parametrize('stage', ['ingest','clarify'])
+@pytest.mark.parametrize('change_type', ['new','modified','preserved'])
+def test_supplement_of_human_classified_row_without_model_quotes(tmp_path, stage, change_type):
+    p, local, _, _, ex, _ = setup(tmp_path)
+    p['items'][0].update(change_type=change_type, scope_evidence=[])
+    before = copy.deepcopy(p)
+    value, report = adapt(packet(draft_row()), p, ex, stage, local if stage=='clarify' else None)
+    assert not report['rejected'] and any(r['requirement_id']==p['items'][0]['id'] for r in report['accepted'])
+    if stage=='clarify':
+        assert report['complete']
+    candidate = next(i for i in value['proposals'] if i['kind']=='requirement')
+    assert candidate['change_type']=='unspecified' and candidate['scope_evidence']==[]
+    assert any(i['kind']=='acceptance' for i in value['proposals'])
+    assert p==before
+    apply_response(p, value)
+    assert p['items'][0]==before['items'][0]
+    assert all(i['selection_status']=='candidate' for i in p['items'][len(before['items']):])
+
+
+def test_supplement_does_not_discard_invalid_existing_classification_evidence(tmp_path):
+    p, local, _, _, ex, _ = setup(tmp_path)
+    p['items'][0].update(change_type='new',scope_evidence=[dict(state='change',
+        quote='不存在于原文的分类依据',source_ref=copy.deepcopy(p['items'][0]['source_refs'][0]))])
+    before=copy.deepcopy(p)
+    value, report=adapt(packet(draft_row()),p,ex,'clarify',local)
+    assert report['rejected'] and not value['proposals'] and p==before
+
+
+def test_whole_table_requests_missing_summary_but_local_draft_cannot_change_it(tmp_path):
+    p, local, cfg, _, _, _ = setup(tmp_path)
+    p['scope_profile']={'scenario':'new_module','dependencies':'independent'}
+    p['product_context']={'users':'管理员','change_scope':'新增时段维护','intent':''}
+    p['context_field_states']={'intent':{'status':'unknown'},'preserve_scope':{'status':'none'}}
+    before=copy.deepcopy(p)
+    for stage, scope, keys in [('ingest',None,['intent']),('clarify',local,[])]:
+        messages,_,_=assemble(p,stage,'',cfg,tmp_path,requirement_recommendation_scope=scope)
+        head=json.loads(messages[0]['content'].split('可信任务头：')[1])
+        ctx=json.loads(messages[1]['content'][0]['text'])
+        assert head['required_summary_fields']==keys
+        assert ctx['required_summary_fields']==keys
+        assert head['schema']['properties']['summary_fields']['required']==keys
+        assert head['draft_scope']==('whole_table' if scope is None else 'single_row')
+    assert p==before
+
+
 def test_assembly_business_only_preserves_sources_user_words_and_reading_limits(tmp_path):
     p, local, cfg, _, _, _ = setup(tmp_path)
     p['messages'] += [dict(role='user', text='业主不应该看到别人的电价模板。'),

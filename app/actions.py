@@ -48,6 +48,10 @@ class Actions:
         p = p or self.store.get(pid)
         require(p['revision']==body['expected_revision'],'STALE_REVISION','内容版本已变化，请保留输入并重新核对',409)
         require(body['action'] in LABELS,'ACTION_INVALID','业务动作不存在')
+        from .refinement_completion import validate as validate_draft_request
+        draft_request=validate_draft_request(p,body.get('draft_request'))
+        require(not draft_request or body['action']=='organize' and not body.get('target') and not body.get('benchmark'),
+                'DRAFT_REQUEST_INVALID','补全草稿请从完善需求表格发起')
         benchmark=body.get('benchmark')
         if benchmark:
             require(body['action']=='organize' and not body.get('target'), 'BENCHMARK_INVALID', '对标请通过需求助手的草稿填充入口发起')
@@ -117,6 +121,10 @@ class Actions:
             open_questions=sum(question_open(q) for q in p['questions']))
         result['pending_image_count']=len(images)
         result['target_label']=target_label
+        if draft_request:
+            result['label']=('为这道问题起草回答' if draft_request['mode']=='question' else
+                '一次起草成文检查全部修改' if draft_request['mode']=='prewrite' else 'AI 补全必填项')
+            result['context_scope']+=' 按本次问题编号起草可直接核对的回答和必填草稿；资料未明确的选择标为建议，不保存为人工回答或确认。'
         if body['action']=='prewrite' or (body['action']=='document' and body['document_type']=='prd'):
             result['prewrite_policy']=dict(mode='before_document',review_draft=bool(body.get('allow_review_draft')),
                 stop_on_business_decisions=not body.get('allow_review_draft'),semantic_review=True,
@@ -148,7 +156,7 @@ class Actions:
         tid=ident('TASK')
         with self.store.connect() as db:
             db.execute('BEGIN IMMEDIATE')
-            existing=next((t for t in self.store.records(pid,'user_task',db) if t['idempotency_key']==idempotency_key),None)
+            existing=next((t for t in self.store.records(pid,'user_task',db) if t.get('idempotency_key')==idempotency_key),None)
             if existing:
                 require(existing['request_hash']==request_hash,'IDEMPOTENCY_CONFLICT','此提交标识已对应另一任务',409)
                 return existing
@@ -193,9 +201,10 @@ class Actions:
                 approved_plan_hash=plan_hash,
                 generation_target=plan['generation_target'],completed_steps=0,
                 step_states=[dict(stage=s,status='NOT_RUN') for s in plan['stages']])
+            if body.get('draft_request'):task['draft_request']=copy.deepcopy(body['draft_request'])
             if plan['max_calls'] is not None:
                 task['request_budget']=initial_budget(plan['max_calls'])
-            if body['action']=='organize' and not benchmark and not body.get('target') and not plan['generation_target']:
+            if body['action']=='organize' and not benchmark and not body.get('target') and not plan['generation_target'] and (body.get('draft_request') or {}).get('mode')!='question':
                 from .refinement_preparation import DRAFT_SCHEMA, input_identity
                 preparation=input_identity(self.store,p,db)
                 task.update(preparation_schema=preparation['schema'], preparation_draft_schema=DRAFT_SCHEMA,
@@ -205,6 +214,7 @@ class Actions:
                 task['requirement_recommendation_scope']=copy.deepcopy(plan['requirement_recommendation_scope'])
             task['retry_input'] = {k:copy.deepcopy(body[k]) for k in
                                    ('action','message','document_type','option_id','target','attachment_source_ids','allow_review_draft') if k in body}
+            if body.get('draft_request'):task['retry_input']['draft_request']=copy.deepcopy(body['draft_request'])
             if benchmark:
                 task['benchmark']=copy.deepcopy(benchmark)
                 task['retry_input']['benchmark']=copy.deepcopy(benchmark)
@@ -238,6 +248,7 @@ class Actions:
                     user_task_id=tid,config_override=config,generation_target=target,
                     prewrite=stage=='review' and (body['action']=='prewrite' or body['action']=='document' and body['document_type']=='prd'),
                     allow_review_draft=bool(body.get('allow_review_draft')),
+                    **({'draft_request':body['draft_request']} if body.get('draft_request') and stage=='ingest' else {}),
                     discussion_target=body.get('target'),**({'benchmark':task['benchmark']} if stage=='ingest' and task.get('benchmark') else {}))
                 ids=current['run_ids']+[run['id']]
                 step_states=copy.deepcopy(current['step_states'])

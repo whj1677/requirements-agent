@@ -1,3 +1,4 @@
+import {Icon} from './ui-icons';
 import React, { useEffect, useRef, useState } from 'react';
 import { activityNotice, hasPendingActivity } from './activity';
 
@@ -11,7 +12,7 @@ export function useDialog(open: boolean, onClose: () => void) {
     const previous = document.activeElement as HTMLElement | null;
     const own=Array.from(document.querySelectorAll<HTMLElement>('[role="dialog"]')).filter(el=>el.offsetParent!==null).at(-1);
     const first=own?.querySelector<HTMLElement>('input,textarea,button');
-    first?.focus();
+    first?.focus({preventScroll:true});
     const escape = (event: KeyboardEvent) => {
       const top=Array.from(document.querySelectorAll<HTMLElement>('[role="dialog"]')).filter(el=>el.offsetParent!==null).at(-1);
       if(top!==own)return;
@@ -28,7 +29,7 @@ export function useDialog(open: boolean, onClose: () => void) {
     document.addEventListener('keydown', escape);
     return () => {
       document.removeEventListener('keydown', escape);
-      requestAnimationFrame(() => { if (previous?.isConnected) previous.focus(); });
+      requestAnimationFrame(() => { if (previous?.isConnected) previous.focus({preventScroll:true}); });
     };
   }, [open]);
 }
@@ -60,7 +61,7 @@ export function ProjectSwitcher({ projects, currentId, name, setName, busy, onCr
       const updated = dateLabel(project.updated_at);
       const created = dateLabel(project.created);
       return <button key={project.id} className={currentId === project.id ? 'active' : ''} aria-current={currentId === project.id ? 'page' : undefined} onClick={() => onSwitch(project.id)} title={project.name}>
-        <span aria-hidden="true">▤</span><span className="project-list-text"><strong>{project.name}</strong><small>{project.flow_current_title || '阶段未提供'}{updated ? ' · 更新于 ' + updated : created ? ' · 创建于 ' + created : ''}{duplicateNames.has(project.name) ? ' · ' + project.id.slice(-6) : ''}</small></span>
+        <Icon name="document"/><span className="project-list-text"><strong>{project.name}</strong><small title={updated?'更新于 '+updated:created?'创建于 '+created:''}>{project.flow_current_title || '阶段未提供'}{duplicateNames.has(project.name) ? ' · ' + project.id.slice(-6) : ''}</small></span>
       </button>;
     })}{!matches.length && <p className="project-empty">{query.trim() ? '没有匹配的项目，请换个关键词。' : '还没有项目，先新建一个。'}</p>}</div>
     {creating && <div className="modal-backdrop"><form className="modal" role="dialog" aria-modal="true" aria-label="新建需求项目" onSubmit={event => { event.preventDefault(); onCreate(); }}><h2>新建需求项目</h2><label>项目名称<input aria-label="新项目名称" disabled={busy} required value={name} onChange={event => setName(event.target.value)} placeholder="给本次改动起一个可辨识的名称" /></label><div className="toolbar"><button type="button" disabled={busy} onClick={() => setCreating(false)}>取消</button><button className="primary" disabled={busy || !name.trim()}>{busy ? '正在创建…' : '创建项目'}</button></div></form></div>}

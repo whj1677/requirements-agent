@@ -82,26 +82,33 @@ function savedImplementations(q:Obj):AnswerImplementationRef[]{
   });
 }
 export function initial(p:Project,states:Obj[]):Sheet{
-  const values=scopeDraft(p),profile=(p as Obj).scope_profile||defaultScopeProfile;
+  const completion=(p as Obj).refinement_completion||{},bulk=completion.mode==='all'||completion.mode==='required';
+  const savedProfile=(p as Obj).scope_profile||defaultScopeProfile;
+  const values=scopeDraft(p),profile=bulk&&completion.profile?{
+    scenario:savedProfile.scenario==='unspecified'?completion.profile.scenario:savedProfile.scenario,
+    dependencies:savedProfile.dependencies==='unknown'?completion.profile.dependencies:savedProfile.dependencies,
+  }:savedProfile;
+  if(bulk)for(const key of Object.keys(scopeLabels))if((!String(values[key]||'').trim()||((p as Obj).context_field_states?.[key]?.status==='unknown'))&&p.product_context_proposal?.[key])values[key]=p.product_context_proposal[key];
   const fieldStates=Object.fromEntries(Object.keys(scopeLabels).map(key=>{
     const saved=(p as Obj).context_field_states?.[key],evidence=(p as Obj).product_context_proposal_evidence?.[key];
     const proposalOnly=!String(p.product_context?.[key]||'').trim()&&!!String(values[key]||'').trim();
-    const status=proposalOnly?(evidence?.uncertain||uncertain(values[key])?'unknown':'known'):fieldStatus(key,p.product_context||{},(p as Obj).context_field_states||{},profile);
+    const status=bulk&&values[key]===p.product_context_proposal?.[key]&&String(values[key]||'').trim()?'known':proposalOnly?(evidence?.uncertain||uncertain(values[key])?'unknown':'known'):fieldStatus(key,p.product_context||{},(p as Obj).context_field_states||{},profile);
     return [key,{...saved,status}];
   }));
   const rows=Object.fromEntries(requirements(p).map(item=>{
     // Wait for the server's content fingerprints before choosing an AI version.
     const confirmed=states.find(row=>row.requirement_id===item.id)?.current;
-    const offered=confirmed?item:p.items.filter(i=>i.target_item_id===item.id&&i.kind==='requirement'&&i.selection_status==='candidate'&&!i.superseded_by).at(-1)||item;
+    const completionOffer=bulk?p.items.filter(i=>completion.candidate_ids?.includes(i.id)&&i.target_item_id===item.id&&i.kind==='requirement'&&i.selection_status==='candidate'&&!i.superseded_by).at(-1):undefined;
+    const offered=completionOffer||(confirmed?item:p.items.filter(i=>i.target_item_id===item.id&&i.kind==='requirement'&&i.selection_status==='candidate'&&!i.superseded_by).at(-1)||item);
     const detailSuggestion=p.items.filter(i=>i.target_item_id===item.id&&i.kind==='requirement'&&i.selection_status==='candidate'&&!i.superseded_by&&i.detail_contract).at(-1);
-    return [item.id,{requirement_id:item.id,statement:offered.statement||'',change_type:offered.change_type||item.change_type||'unspecified',
+    return [item.id,{requirement_id:item.id,statement:offered.statement||'',change_type:offered.change_type&&offered.change_type!=='unspecified'?offered.change_type:item.change_type&&item.change_type!=='unspecified'?item.change_type:bulk?(completion.change_types?.[item.id]||'unspecified'):'unspecified',
       behavior:{...Object.fromEntries(Object.keys(fields).map(key=>[key,''])),...item.behavior,...offered.behavior},
       ...(offered.detail_contract||item.detail_contract?{detail_contract:structuredClone(offered.detail_contract||item.detail_contract)}:{}),
       ...(detailSuggestion&&offered.id!==detailSuggestion.id?{detail_suggestion:{contract:structuredClone(detailSuggestion.detail_contract),candidate_id:detailSuggestion.id}}:{}),
       acceptance_items:acceptance(p,item.id).map(ac=>({id:ac.id,statement:ac.statement,applied_candidate_ids:(ac.confirmed_revisions||[]).map((review:Obj)=>review.candidate_id),ai_suggested:ac.selection_status==='candidate',suggestions:p.items.filter(i=>i.kind==='acceptance'&&i.action==='revise'&&i.target_item_id===ac.id&&i.applies_to==='to_be'&&i.selection_status==='candidate'&&!i.superseded_by).map(i=>({candidate_id:i.id,statement:i.statement}))})),candidate_id:offered.target_item_id?offered.id:undefined}];
   }));
-  return {revision:p.revision,values,states:fieldStates,profile,labels:Object.fromEntries([...p.items.map(item=>[item.id,item.title]),...p.questions.map(q=>[q.id,q.question])]),scope:p.product_context?.scope_ids||requirements(p).filter(i=>i.selection_status==='selected').map(i=>i.id),rows,
-    answers:Object.fromEntries(sheetQuestions(p).map(q=>[q.id,q.answer||''])),
+  return {revision:p.revision,values,states:fieldStates,profile,labels:Object.fromEntries([...p.items.map(item=>[item.id,item.title]),...p.questions.map(q=>[q.id,q.question])]),scope:p.product_context?.scope_ids?.length?p.product_context.scope_ids:bulk?(completion.scope_ids||[]):requirements(p).filter(i=>i.selection_status==='selected').map(i=>i.id),rows,
+    answers:Object.fromEntries(sheetQuestions(p).map(q=>[q.id,q.answer||completion.answers?.[q.id]?.text||''])),
     answer_implementations:Object.fromEntries(sheetQuestions(p).map(q=>[q.id,savedImplementations(q)])),
     linked_clauses:Object.fromEntries(linkedClauseItems(p).map(item=>[item.id,{item_id:item.id,statement:item.statement||'',behavior:Object.fromEntries(Object.keys(fields).map(f=>[f,item.behavior?.[f]||'']))}]))};
 }

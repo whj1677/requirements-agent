@@ -438,7 +438,8 @@ def confirm_table(store, pid, body):
                 # displayed clauses are final. The batch still guards sources,
                 # candidate bindings, scope, shared AC and immutable clause content.
                 inputs = [dict(row, confirmed_question_ids=[]) for row in rows]
-                preview = build_batch_preview(project, dict(expected_revision=project['revision'], rows=inputs))
+                preview = build_batch_preview(project, dict(expected_revision=project['revision'], rows=inputs,
+                    answer_implementations=implementations))
                 summary = apply_batch_preview(project, preview, staging)
                 confirmed_clauses = _apply_linked_clauses(project, clauses, staging)
                 displayed = {row['requirement_id'] for row in preview['rows']}

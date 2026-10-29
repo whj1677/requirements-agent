@@ -224,7 +224,9 @@ async def exercise(page, store, initial, output, report, control, expect):
 
     await drawer.get_by_role('button', name='预览本次落实核对', exact=True).click()
     preview = drawer.locator('.answer-change-preview')
-    await expect(preview).to_be_visible()
+    # The preview validates the whole frozen project. Match the application's
+    # request deadline rather than Playwright's five-second assertion default.
+    await expect(preview).to_be_visible(timeout=30000)
     await expect(preview.locator('.answer-difference')).to_have_count(1)
     await expect(preview.locator('.answer-before-after > div').nth(0)).to_contain_text(rule['statement'])
     await expect(preview.locator('.answer-before-after > div').nth(1)).to_contain_text(rule['statement'])

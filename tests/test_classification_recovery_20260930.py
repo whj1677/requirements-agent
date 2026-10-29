@@ -13,6 +13,8 @@ from app.store import Store
 from app.understanding import normalize_classification_labels
 from app.workflow import Workflow
 from tests.test_runtime import FakeProvider, empty_ingest
+from tests.helpers import EXAMPLES, prepared
+from tests.product_flow_helpers import check_prepared
 
 
 def response(excerpts):
@@ -78,16 +80,28 @@ def test_format_repair_still_cannot_rewrite_statement_or_drop_evidence():
 
 
 @pytest.mark.parametrize('format_repair', [False, True])
-def test_workflow_recovers_label_and_only_creates_candidates(tmp_path, format_repair):
+@pytest.mark.parametrize('stage', ['ingest', 'clarify', 'change'])
+def test_workflow_recovers_label_and_only_creates_candidates(tmp_path, format_repair, stage):
     async def scenario():
         store = Store(tmp_path)
-        project = store.create('合成分类恢复')
+        project = (store.create('合成分类恢复') if stage == 'ingest' else prepared(store))
+        if stage != 'ingest':
+            project = check_prepared(store, project['id'], through=2)
         source = save_source(store, '分类来源.txt', '现有列表可导出单条报告。\n本期在列表增加批量导出。'.encode(), 'goal')
         with store.edit(project['id'], project['revision'], '合成材料授权') as (draft, _):
             draft['sources'].append(source)
-            draft['grants'][origin(DEFAULT)] = {'source_ids': [source['id']]}
+            draft['grants'][origin(DEFAULT)] = {'source_ids': [s['id'] for s in draft['sources']]}
         project = store.get(project['id'])
         valid = response(source['excerpts'])
+        if stage != 'ingest':
+            valid.pop('product_context_proposal')
+            valid['stage'] = stage
+            valid['result'] = copy.deepcopy(EXAMPLES[stage]['result'])
+            valid['proposals'][0].update(action='revise', target_item_id='REQ-0001')
+            if stage == 'change':
+                valid['result']['changes'] = [dict(operation='revise', target_ref='REQ-0001',
+                    proposal_ref='TMP-batch', rationale='合成来源明确给出现有列表本期改动。',
+                    source_refs=copy.deepcopy(valid['used_source_refs']))]
         original = copy.deepcopy(valid)
         outputs = [valid]
         if format_repair:
@@ -97,16 +111,20 @@ def test_workflow_recovers_label_and_only_creates_candidates(tmp_path, format_re
         provider = FakeProvider(outputs)
         workflow = Workflow(store, provider)
         store.setting('model', dict(DEFAULT, max_calls=None))
-        run = workflow.start(project['id'], project['revision'], 'ingest', '')
+        before = copy.deepcopy(project)
+        run = workflow.start(project['id'], project['revision'], stage, '')
         await workflow.tasks[run['id']]
-        return store.get_record(project['id'], run['id']), store.get(project['id']), original, valid
-    run, project, original, valid = asyncio.run(scenario())
+        return store.get_record(project['id'], run['id']), store.get(project['id']), original, valid, before
+    run, project, original, valid, before = asyncio.run(scenario())
     assert run['error'] is None and run['result_applied']
     assert run['calls'] == (2 if format_repair else 1)
     assert valid == original
-    assert project['items'][0]['change_type'] == 'modified'
-    assert project['items'][0]['statement'] == original['proposals'][0]['statement']
-    assert project['items'][0]['scope_evidence'] == original['proposals'][0]['scope_evidence']
-    assert project['items'][0]['selection_status'] == 'candidate'
+    candidate = next(i for i in project['items'] if i['statement'] == original['proposals'][0]['statement'])
+    assert candidate['change_type'] == 'modified'
+    assert candidate['scope_evidence'] == original['proposals'][0]['scope_evidence']
+    assert candidate['selection_status'] == 'candidate'
+    assert project['questions'] == before['questions']
+    for item in before['items']:
+        assert next(i for i in project['items'] if i['id'] == item['id']) == item
     assert project['active_baseline_id'] is None
     assert run['classification_corrections'][0]['temp_id'] == 'TMP-batch'

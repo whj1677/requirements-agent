@@ -41,7 +41,13 @@ def test_complete_flow_is_one_media_image_in_landscape_with_its_heading(tmp_path
     contents=section_contents(document)
     assert len(contents)==3
     text=lambda nodes:' '.join(t.text or '' for n in nodes for t in n.iter(qn('w:t')))
-    assert '业务流程说明' in text(contents[1]) and '业务流程说明' not in text(contents[0])
+    # The cover's clickable contents can mention the flow; its actual heading
+    # must still travel with the full diagram to the landscape section.
+    flow_headings=lambda nodes:[n for n in nodes if n.tag==qn('w:p')
+        and n.find('./'+qn('w:pPr')+'/'+qn('w:pStyle')) is not None
+        and n.find('./'+qn('w:pPr')+'/'+qn('w:pStyle')).get(qn('w:val'))=='Heading1'
+        and '业务流程说明' in text([n])]
+    assert len(flow_headings(contents[1]))==1 and not flow_headings(contents[0])
     assert sum(len(n.findall('.//'+qn('w:drawing'))) for n in contents[1])==1
     assert '流程步骤' in text(contents[2]) and '分支与流转条件' in text(contents[2])
     png=next(data for name,data in files.items() if name.startswith('assets/flow-') and name.endswith('.png'))
@@ -49,7 +55,7 @@ def test_complete_flow_is_one_media_image_in_landscape_with_its_heading(tmp_path
         media=[n for n in archive.namelist() if n.startswith('word/media/')]
         assert len(media)==1 and archive.read(media[0])==png
     assert document.styles['Normal'].font.size.pt==11
-    assert all(run.font.size.pt==9.5 for table in document.tables for row in table.rows
+    assert all(run.font.size.pt==10 for table in document.tables for row in table.rows
                for cell in row.cells for paragraph in cell.paragraphs for run in paragraph.runs)
     assert p==before
 
@@ -61,7 +67,7 @@ def test_image_keeps_full_pixels_and_aspect_ratio_inside_one_landscape_sheet(tmp
     # Different corners make cropping or replacing the original bytes detectable.
     image.putpixel((0,0),(255,0,0));image.putpixel((size[0]-1,size[1]-1),(0,0,255))
     stream=io.BytesIO();image.save(stream,format='PNG');png=stream.getvalue()
-    monkeypatch.setattr('app.detail_rendering.flow_png',lambda _:png)
+    monkeypatch.setattr('app.detail_rendering.flow_png',lambda _,**kwargs:png)
     files=asyncio.run(document_files(p,'prd'))
     document=Document(io.BytesIO(files['PRD.docx']))
     assert len(document.inline_shapes)==1

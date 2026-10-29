@@ -13,12 +13,13 @@ export const taskStageLabels: Record<string, string> = {
 export const taskRunning = (task: UserTask) => ['queued', 'running'].includes(task.status);
 export const taskGenerated = (task: UserTask) => Boolean(task.local_recovery)||['succeeded', 'partial'].includes(task.status);
 export const taskNeedsAttention = (task: UserTask) => !task.local_recovery&&['failed', 'paused_budget', 'awaiting_user'].includes(task.status);
+export const inlinePrewriteFailure = (task:UserTask) => task.status==='failed'&&task.action==='organize'&&task.retry_input?.draft_request?.mode==='prewrite';
 
 export interface ProgressSnapshot {
-  projectId: string; projectName: string; tasks: UserTask[]; busy: boolean; uncertain: boolean;
+  projectId: string; projectName: string; tasks: UserTask[]; busy: boolean; uncertain: boolean; inlineDraft?:boolean;
 }
 export interface ProgressEntry {
-  projectId: string; projectName: string; task: UserTask; busy: boolean; uncertain: boolean;
+  projectId: string; projectName: string; task: UserTask; busy: boolean; uncertain: boolean; inlineDraft?:boolean;
 }
 export interface ProgressState { entries: ProgressEntry[]; selected: string; expanded: boolean; dismissed: string[] }
 export const emptyProgress: ProgressState = { entries: [], selected: '', expanded: false, dismissed: [] };
@@ -33,16 +34,18 @@ export function reconcileProgress(state: ProgressState, snapshot: ProgressSnapsh
     // A late poll cannot restart an already terminal task; retries have new IDs.
     if (previous && !taskRunning(previous.task) && taskRunning(task)) task = previous.task;
     const entry: ProgressEntry = { projectId: snapshot.projectId, projectName: snapshot.projectName,
-      task, busy: snapshot.busy, uncertain: snapshot.uncertain };
+      task, busy: snapshot.busy, uncertain: snapshot.uncertain,...(snapshot.inlineDraft!==undefined?{inlineDraft:snapshot.inlineDraft}:{}) };
+    const inlineDecision=entry.inlineDraft&&(task.status==='awaiting_user'&&['prewrite','document'].includes(task.action)||inlinePrewriteFailure(task));
     if (!previous) {
       entries = entries.filter(row => row.projectId !== snapshot.projectId || taskRunning(row.task));
       entries.push(entry);
       selected = task.id;
-      expanded = !taskGenerated(task);
+      expanded = !taskGenerated(task)&&!inlineDecision;
     } else {
       entries = entries.map(row => row === previous ? entry : row);
       if (taskRunning(previous.task) && taskNeedsAttention(task)) { selected = task.id; expanded = true; }
       if (selected === task.id && taskRunning(previous.task) && taskGenerated(task)) expanded = false;
+      if(selected===task.id&&inlineDecision&&(taskRunning(previous.task)||!previous.inlineDraft))expanded=false;
     }
   }
   return { entries, selected, expanded, dismissed: state.dismissed };

@@ -12,6 +12,7 @@ from app.prewrite import status
 from app.provider import DEFAULT, Provider, origin
 from app.workflow import Workflow
 from tests.test_prewrite_consistency import isolated_store, review
+from tests.provider_transport import reply
 
 
 def _run(tmp_path, monkeypatch, variant):
@@ -51,11 +52,7 @@ def _run(tmp_path, monkeypatch, variant):
 
     def respond(request):
         requests.append(request)
-        return httpx.Response(200, json={
-            'model': 'SYNTHETIC_REVIEW',
-            'choices': [{'message': {'content': raw}, 'finish_reason': 'stop'}],
-            'usage': {'prompt_tokens': 2, 'completion_tokens': 3, 'total_tokens': 5},
-        })
+        return reply(request, raw, model='SYNTHETIC_REVIEW', prompt=2, completion=3)
 
     original = httpx.AsyncClient
     transport = httpx.MockTransport(respond)

@@ -4,6 +4,8 @@ No daily project is loaded: every /api request is routed to a temporary
 create_app instance, and its provider has no network request path.
 """
 
+from tests.browser_navigation import select_project
+
 import argparse
 import asyncio
 import base64
@@ -16,7 +18,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 import httpx
-from playwright.async_api import async_playwright
+from playwright.async_api import async_playwright, expect
 from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -25,7 +27,7 @@ from app.main import create_app
 from app.provider import DEFAULT, Provider, origin
 
 ORIGIN = 'http://127.0.0.1:8765'
-VIEWPORTS = [(1440, 900), (1280, 720), (2552, 1308), (390, 844)]
+VIEWPORTS = [(1440, 900), (1280, 720), (1366, 768), (1536, 864), (2552, 1308), (390, 844)]
 LONG_REPLY = ('这是合成的需求访谈长回复。当前只记录提问和边界，不设定实际电价规则。' * 38)
 
 
@@ -104,7 +106,8 @@ async def composer_geometry(page, button_text='发送'):
         const el=root?.querySelector(selector)||document.querySelector(selector);
         if(el){const r=el.getBoundingClientRect();boxes[selector]={top:r.top,bottom:r.bottom,height:r.height,clientHeight:el.clientHeight,scrollHeight:el.scrollHeight,overflowY:getComputedStyle(el).overflowY,scrollTop:el.scrollTop};}
       }
-      return {viewport:{width:innerWidth,height:innerHeight},textarea:area&&{top:area.top,bottom:area.bottom},button:send&&{top:send.top,bottom:send.bottom},textarea_visible:clickable(textarea,area),button_visible:clickable(button,send),boxes};
+      const style=textarea&&getComputedStyle(textarea);
+      return {viewport:{width:innerWidth,height:innerHeight},textarea:area&&{top:area.top,bottom:area.bottom,height:area.height},input_style:style&&{fontSize:parseFloat(style.fontSize),borderWidth:parseFloat(style.borderTopWidth),background:style.backgroundColor,border:style.borderTopColor},button:send&&{top:send.top,bottom:send.bottom},textarea_visible:clickable(textarea,area),button_visible:clickable(button,send),boxes};
     }''', button_text)
 
 
@@ -159,16 +162,35 @@ async def run(args):
                     page.on('pageerror', lambda error: report['page_errors'].append(str(error)))
                     await page.goto(ORIGIN + '/', wait_until='networkidle')
                     if width <= 700:
-                        await page.get_by_label('切换项目').select_option(pid)
+                        await select_project(page,pid)
                     else:
                         await page.get_by_role('button', name=name).click()
                     await page.locator('.connected-workspace:visible').wait_for()
                     await page.locator('.connected-workspace:visible').get_by_role('button', name='和助手聊需求').click()
                     await page.locator('.connected-workspace:visible .intake-chat').wait_for()
+                    if 1001<=width<=1600 and height<=900:
+                        work=page.locator('.connected-workspace:visible')
+                        toggle=work.get_by_role('button',name='项目语境与资料设置',exact=True)
+                        await expect(toggle).to_have_attribute('aria-expanded','false')
+                        await expect(work.locator('.assistant-context')).not_to_be_visible()
+                        draft=work.get_by_role('textbox',name='你的想法',exact=True)
+                        await draft.fill('笔记本辅助区切换期间保留未发送草稿')
+                        await toggle.click()
+                        await expect(work.locator('.assistant-context')).to_be_visible()
+                        await work.get_by_role('button',name='收起项目语境与资料设置',exact=True).click()
+                        await expect(draft).to_have_value('笔记本辅助区切换期间保留未发送草稿')
+                        await draft.fill('')
                     await page.wait_for_timeout(150)
                     row = {'size': [width, height], 'project_id': pid, 'checks': []}
+                    if width>1000:
+                        grid=page.locator('.connected-workspace:visible .assistant-grid')
+                        row['chat_width']=await grid.locator('main').first.evaluate('e=>Math.round(e.getBoundingClientRect().width)')
                     for round_index in range(3):
                         geometry = await composer_geometry(page)
+                        assert geometry['input_style']['fontSize']>=16 and geometry['textarea']['height']>=80, 'Input text and writing area must remain readable'
+                        assert geometry['input_style']['borderWidth']>=1 and geometry['input_style']['border']!=geometry['input_style']['background'], 'Input needs its own visible boundary'
+                        if 1001<=width<=1600 and height>=720:
+                            assert geometry['boxes']['.chat-messages']['height']>=100, 'Chat history must retain usable reading space on a laptop'
                         row['checks'].append({'round': round_index + 1, 'before': geometry})
                         if args.output:
                             await page.screenshot(path=str(args.output / f'chat-{width}x{height}-round-{round_index + 1}.png'))
@@ -222,6 +244,8 @@ async def run(args):
                 await dialog.wait_for()
                 after_upload = store.get(image_pid)
                 attached = [s for s in after_upload['sources'] if s.get('origin') == 'interview_attachment']
+                await dialog.locator('.task-source-scope > summary').click()
+                await dialog.get_by_text('查看来源编号',exact=True).click()
                 assert len(attached) == 1 and attached[0]['id'] in await dialog.inner_text(), 'pasted image not bound to reviewed plan'
                 await dialog.get_by_role('button', name='返回保留输入').click()
                 assert await page.locator('.connected-chat .chat-pasted-image').count() == 1, 'cancel discarded attachment'
@@ -253,13 +277,18 @@ async def run(args):
                   element.dispatchEvent(new ClipboardEvent('paste',{clipboardData:data,bubbles:true,cancelable:true}));
                 }''', encoded)
                 await page.locator('.connected-workspace:visible .connected-steps button').nth(1).click()
+                await page.locator('.connected-workspace:visible .connected-entry-error').get_by_text('聊天框还有未发送的文字或附件。请先发送，或移除本轮输入，再进入完善需求。', exact=True).wait_for()
+                assert not store.get(image_save_pid)['sources'], 'entering refinement silently saved an unsent attachment'
+                # Entering refinement preserves unsent chat input. Leaving for a
+                # different project still exercises the actual save-before-leave dialog.
+                await page.get_by_role('button', name='图片待识别隔离项目').click()
                 leave_dialog = page.get_by_role('dialog', name='未保存的修改')
                 await leave_dialog.wait_for()
                 await leave_dialog.get_by_role('button', name='保存后离开').click()
                 await leave_dialog.wait_for(state='hidden')
                 saved_sources = [s for s in store.get(image_save_pid)['sources'] if s.get('origin') == 'interview_attachment']
                 assert len(saved_sources) == 1, 'save-before-leave did not upload pasted image'
-                assert provider.calls == 12, 'save-before-leave called model'
+                assert provider.calls == calls_before, 'save-before-leave called model'
                 await page.reload(wait_until='networkidle')
                 await page.get_by_role('button', name='图片保存恢复隔离项目').click()
                 await page.locator('.connected-workspace:visible .connected-steps').get_by_role('button', name='提供信息').click()
@@ -282,7 +311,7 @@ async def run(args):
                 page = await context.new_page()
                 page.on('pageerror', lambda error: report['page_errors'].append(str(error)))
                 await page.goto(ORIGIN + '/', wait_until='networkidle')
-                await page.get_by_label('切换项目').select_option(image_send_pid)
+                await select_project(page,image_send_pid)
                 await page.locator('.connected-workspace:visible').get_by_role('button', name='和助手聊需求').click()
                 await page.locator('.connected-workspace:visible textarea[aria-label="你的想法"]').evaluate('''(element, encoded) => {
                   const raw=atob(encoded), bytes=new Uint8Array(raw.length);
@@ -337,7 +366,7 @@ async def run(args):
     failures = [row['size'] for row in report['viewports'] if len(row['checks']) != 3 or
                 any(not check['before']['textarea_visible'] or not check['before']['button_visible'] or
                     (check.get('after_fill') and not check['after_fill']['button_visible']) for check in row['checks'])]
-    if failures or report['provider_calls'] != 16 or report['page_errors'] or not report.get('image_plan', {}).get('cancel_kept_input') or not report.get('image_save', {}).get('restored_after_reload') or not report.get('image_send', {}).get('history_thumbnail'):
+    if failures or report['provider_calls'] != len(VIEWPORTS)*3+4 or report['page_errors'] or not report.get('image_plan', {}).get('cancel_kept_input') or not report.get('image_save', {}).get('restored_after_reload') or not report.get('image_send', {}).get('history_thumbnail'):
         raise AssertionError(f'composer not reachable in {failures}; offline calls={report["provider_calls"]}; page errors={report["page_errors"]}')
     print(json.dumps({'viewports': [row['size'] for row in report['viewports']], 'provider_calls': report['provider_calls'], 'page_errors': report['page_errors']}, ensure_ascii=False))
 

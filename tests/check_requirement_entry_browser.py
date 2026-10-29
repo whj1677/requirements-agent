@@ -1,7 +1,7 @@
 """Isolated entry-path regression for the requirement table.
 
-Starts from the support task list and summary continuation, never silently
-substitutes a direct table entry. Synthetic tariff requirements reproduce a
+Uses the current single-table navigation and assistant-first restoration.
+Historical per-field confirmation is replaced by explicit atomic table review. Synthetic tariff requirements reproduce a
 selected legacy row with unknown change type and missing business/acceptance
 text. Only the Provider transport is frozen; plans, grants, revisions, preview
 and commit run through the actual application. No daily data or model network.
@@ -70,24 +70,23 @@ class FrozenRecommendation(Provider):
     async def request(self,config,messages,evidence=None):
         header=json.loads(messages[0]['content'].split('可信任务头：')[-1])
         raw=messages[1]['content']; ctx=json.loads(raw if isinstance(raw,str) else raw[0]['text'])
-        assert header['stage']=='clarify' and header['requirement_recommendation_contract']['requirement_id']==RID
+        assert header['stage']=='clarify' and header['response_protocol']=='business-draft-v1'
+        assert len(ctx['current_rows'])==1 and ctx['current_rows'][0]['title']==TITLE
         ex=next(ex for ex in ctx['excerpts'] if '合成入口验收资料' in ex['text'])
-        refs=[dict(source_id=ex['source_id'],excerpt_id=ex['id'])]
-        original=next(i for i in ctx['requirement_recommendation']['clauses'] if i['id']==RID)
+        refs=[dict(source=ex['source'],locator=ex['locator'])]
         self.requests.append(dict(stage=header['stage'],requirement_id=RID,source_refs=refs))
         evidence.before_send(config)
-        value=dict(schema_version='1.1',stage='clarify',summary='已按本条真实合成来源整理业务与验收候选，待人工确认。',
-            proposals=[dict(temp_id='TMP-TARIFF',action='revise',target_item_id=RID,kind='requirement',title=TITLE,
-                statement=AFTER,applies_to='to_be',epistemic_status='reported',source_refs=refs,
-                related_refs=original.get('related_refs',[]),change_type='new',
-                scope_evidence=[dict(state='change',quote='大型储能云平台本期新增独立的电价模板列表及历史版本查询。',source_ref=refs[0])],
-                classification_reason='资料明确说明本期新增，原系统没有对应模块。',
-                behavior=dict(actor='电价管理员',entry='从云平台电价管理进入电价模板列表',
-                    flow='查看电价模板列表',data='模板名称和所属地区',permissions='',exceptions='',result='显示已保存模板的名称和所属地区')),
-                dict(temp_id='TMP-TARIFF-AC',action='add',target_item_id=None,kind='acceptance',title=ACTITLE,
-                    statement=AC,applies_to='to_be',epistemic_status='reported',source_refs=refs,related_refs=[RID])],
-            questions=[],findings=[],used_source_refs=refs,limitations=['权限及边界异常尚无明确来源，保持未说明。'],
-            result=dict(scope_summary='只完善电价模板列表',outstanding_decisions=[],next_focus='人工核对本条'))
+        def field(text):
+            return dict(text=text,basis='fact' if text else 'unknown',sources=refs if text else [])
+        behavior=dict(actor='电价管理员',entry='从云平台电价管理进入电价模板列表',
+            flow='查看电价模板列表',data='模板名称和所属地区',permissions='',exceptions='',result='显示已保存模板的名称和所属地区')
+        detail=dict(schema_version=1,applicability={key:dict(applicable=key=='fields',reason='' if key=='fields' else '合成只读列表仅定义展示字段，不包含独立操作或状态流转') for key in ('fields','interactions','flow','state_transitions')},
+            fields=[dict(id='F1',name='模板名称',meaning='已保存模板的名称',data_type='text',source='已保存模板',required='只读展示，不适用',default_value='无默认值',constraints='按已保存内容展示',visibility='本例页面显示',editability='只读')],
+            interactions=[],flow=dict(nodes=[],edges=[]),state_transitions=[])
+        value=dict(summary='本条业务与验收候选，待人工核对。',summary_fields={},
+            requirements=[dict(row_key=ctx['current_rows'][0]['row_key'],title=TITLE,statement=field(AFTER),
+                behavior={key:field(behavior[key]) for key in FIELDS},acceptance=[field(AC)],questions=[],detail_contract=detail)],
+            limitations=['权限及边界异常尚无明确来源，保持未说明。'])
         usage=dict(prompt_tokens=20,completion_tokens=20,total_tokens=40)
         evidence.response(content=json.dumps(value,ensure_ascii=False),http_status=200,finish_reason='stop',usage=usage,response_model='OFFLINE_ENTRY')
         return value,dict(request_model=config['model'],response_model='OFFLINE_ENTRY',usage=usage,origin=origin(config),finish_reason='stop')
@@ -171,200 +170,140 @@ class Journey:
     async def open(self):
         await self.page.goto(ORIGIN,wait_until='networkidle')
         await self.rec.click(self.page.locator('aside.sidebar button[title="'+NAME+'"]'))
+        await expect(self.work().get_by_role('button',name='和助手聊需求',exact=True)).to_have_attribute('aria-pressed','true')
+        await self.rec.click(self.work().get_by_role('button',name='直接填写需求',exact=True))
         await expect(self.work().get_by_role('textbox',name='填写当前需求的原文底稿',exact=True)).to_have_value(SOURCE)
         # Explicit no-AI entry intentionally preserves this legacy fixture;
         # automatic preparation has its own actual-action browser suite.
-        await self.rec.click(self.work().get_by_role('button',name='不使用 AI，直接完善',exact=True))
+        await self.rec.click(self.work().get_by_role('button',name='2 完善需求',exact=True))
         await expect(self.work().get_by_role('table',name='需求确认表')).to_be_visible()
-    async def open_support(self):
-        if await self.support().get_attribute('open') is None:
-            await self.rec.click(self.support().locator(':scope > summary'))
     async def select_task(self,title=TITLE):
-        await self.open_support()
-        await self.rec.click(self.tasks().get_by_role('button',name=re.compile(r'^\d+\s+'+re.escape(title)+r'$')))
+        # The single table replaces the old support task panel. Acceptance
+        # entries belong to their requirement; cross-row questions stay shared.
+        await self.work().get_by_role('combobox',name='定位到需求',exact=True).select_option(RID if title in (TITLE,ACTITLE) else OTHER)
     async def table_only(self):
-        editor=self.editor()
-        await expect(editor).to_be_visible()
-        await expect(editor.get_by_role('heading',name=TITLE,exact=True)).to_be_in_viewport(ratio=.8)
-        assert await self.work().locator('.requirement-task-field:visible, .requirement-task-review:visible, [id^="behavior-review-"]:visible').count()==0
-        assert await self.work().get_by_role('dialog',name='补充关联验收条件',exact=True).count()==0
-        return editor
+        table=self.work().get_by_role('table',name='需求确认表',exact=True)
+        await expect(table).to_be_visible()
+        await expect(table.get_by_role('textbox',name=TITLE+' 需求内容',exact=True)).to_be_in_viewport(ratio=.8)
+        assert await self.work().locator('.requirement-task-field:visible, .requirement-task-review:visible').count()==0
+        return table
     def save(self,name):
         (self.output/name).write_text(json.dumps(self.project(),ensure_ascii=False,indent=2),encoding='utf-8')
 
 
 async def entry_flow(j):
     original=copy.deepcopy(j.project()); other=copy.deepcopy(j.item(OTHER))
-    await j.rec.note('1. 从原来的待办入口开始\n这条电价模板需求已纳入本期，但缺少业务说明、验收和改动性质。')
-    await j.select_task(); editor=await j.table_only()
-    ai=editor.get_by_role('button',name='让 AI 起草业务说明与验收',exact=True)
-    await expect(ai).to_be_in_viewport()
+    await j.select_task(); table=await j.table_only()
+    ai=table.get_by_role('button',name='请 AI 完善此需求',exact=True).first
     assert not j.provider.requests and j.item()['change_type']=='unspecified'
-    await j.page.screenshot(path=str(j.output/'01-task-to-table.png'))
-    j.report['checks'].append('旧support单需求待办打开同一表格详情；未知改动性质和缺验收没有退回逐字段旧编辑器')
-    await j.rec.note('2. 点击 AI 起草\n先核对本次资料和接收端，尚未调用。')
     await j.rec.click(ai)
     dialog=j.page.get_by_role('dialog',name='核对本次任务')
     await expect(dialog).to_be_visible()
-    assert not j.provider.requests
     plan=next(r for r in reversed(j.report['api_requests']) if r['path'].endswith('/actions/plan'))
-    assert plan['body']['target']==dict(kind='item',id=RID)
-    await j.rec.click(dialog.get_by_role('button',name='返回保留输入',exact=True))
-    assert not j.provider.requests
-    await j.rec.click(ai)
-    await j.rec.click(dialog.get_by_role('button',name='授权本次范围并运行',exact=True))
+    assert plan['body']['target']==dict(kind='item',id=RID) and not j.provider.requests
+    await dialog.get_by_role('button',name='返回保留输入',exact=True).click()
+    assert j.project()==original
+    await ai.click(); await dialog.get_by_role('button',name='授权本次范围并运行',exact=True).click()
     await until(lambda:any(i.get('target_item_id')==RID for i in j.project()['items']),'Frozen recommendation did not arrive')
-    await expect(editor.get_by_role('textbox',name=TITLE+' 需求内容',exact=True)).to_have_value(AFTER)
-    await expect(editor.get_by_role('textbox',name=TITLE+' 验收建议 1',exact=True)).to_have_value(AC)
-    assert len(j.provider.requests)==1 and j.item()['change_type']=='unspecified' and j.item()['statement']==BEFORE
+    await expect(table.get_by_role('textbox',name=TITLE+' 需求内容',exact=True)).to_have_value(AFTER)
+    await expect(table.get_by_role('textbox',name=TITLE+' 验收建议 1',exact=True)).to_have_value(AC)
+    assert len(j.provider.requests)==1 and j.item()['statement']==BEFORE and j.item()['change_type']=='unspecified'
     created=[i for i in j.project()['items'] if i['id'] not in {x['id'] for x in original['items']}]
-    assert len(created)==2 and all(i['selection_status']=='candidate' for i in created)
-    assert j.item(OTHER)==other
-    j.report['checks'].append('AI入口先计划授权，取消0调用；一次冻结真实动作只生成当前REQ及验收候选，不自动采纳或改动原文/性质')
-    await j.rec.note('3. AI 建议已显示\n需求正文与验收一起看；权限和异常没有依据，仍保留未说明。',4)
-    await j.page.screenshot(path=str(j.output/'03-ai-candidate.png'))
-    change=editor.get_by_role('combobox',name=TITLE+' 本次改动',exact=True)
-    await expect(change).to_have_value('new')
-    await j.rec.click(editor.get_by_role('button',name='查看确认内容',exact=True))
-    preview=editor.get_by_role('region',name='本条确认预览',exact=True)
-    await expect(preview).to_contain_text(AFTER)
-    await expect(preview).to_contain_text(AC)
-    await expect(preview).to_contain_text('新增')
-    assert j.item()['change_type']=='unspecified' and j.item()['statement']==BEFORE
-    preview_call=next(r for r in reversed(j.report['api_requests']) if r['path'].endswith('/requirement-confirmation/preview'))
-    assert preview_call['body']['change_type']=='new'
-    await j.rec.note('4. 人工核对本次确认内容\n新增性质、需求、业务说明与验收一起预览。此时原数据仍未改变。',4)
-    await j.page.screenshot(path=str(j.output/'04-confirm-preview.png'))
-    await j.rec.click(preview.get_by_role('button',name='确认这条需求',exact=True))
-    await until(lambda:confirmation_current(j.project(),j.item()),'Final row confirmation did not become current')
-    assert j.item()['change_type']=='new' and j.item()['statement']==AFTER and j.item(OTHER)==other
+    assert len(created)==2 and all(i['selection_status']=='candidate' for i in created) and j.item(OTHER)==other
+    j.report['checks'].append('定位需求进入同一表；单行AI先计划授权，取消0调用，一次冻结动作只新增当前需求与验收候选，未改原文或其他行')
+    await expect(table.get_by_role('combobox',name=TITLE+' 本次改动',exact=True)).to_have_value('unspecified')
+    await table.get_by_role('combobox',name=TITLE+' 本次改动',exact=True).select_option('new')
+    await j.work().locator('.refinement-sheet-footer .primary').click()
+    await expect(j.work().get_by_role('heading',name='确认交付版本',exact=True)).to_be_visible()
+    await until(lambda:confirmation_current(j.project(),j.item()),'Table confirmation did not become current')
+    assert j.item()['statement']==AFTER and j.item()['change_type']=='new'
     assert j.item()['behavior']['permissions']=='' and j.item()['behavior']['exceptions']==''
-    table_row=j.work().locator('tr[data-requirement-id="'+RID+'"]')
-    await expect(table_row).to_contain_text('已确认')
-    await expect(table_row.get_by_role('rowheader')).to_be_in_viewport(ratio=.8)
-    await j.rec.note('5. 一次确认整条\n表格保留已确认状态；没有要求填满无依据的七个字段。',4)
-    j.report['checks'].append('预览显示新增性质及正文验收但不写原条款，人工一次commit才原子确认；未知字段仍为空，其他行不变')
+    assert j.item(OTHER)['statement']==other['statement']
+    writes=[r for r in j.report['api_requests'] if r['path'].endswith('/refinement-confirmation')]
+    assert len(writes)==1 and writes[0]['status']==200
+    assert not [r for r in j.report['api_requests'] if r['path'].endswith('/requirement-confirmation/commit')]
+    j.report['checks'].append('明确整表确认才原子保存摘要、需求和验收并进入交付；未知权限/异常仍为空，另一行正文保留')
 
 
 async def continuation_flow(j):
-    assert 'change_scope' not in j.project()['context_field_states']
-    await j.open_support()
-    await j.rec.click(j.tasks().get_by_role('button',name=re.compile(r'^\d+\s+本次改动$')))
-    field=j.work().locator('[id^="refine-context-field-"][id$="-change_scope"]:visible')
-    await expect(field).to_contain_text(CHANGE)
-    await expect(field).to_contain_text('AI 已整理 · 待你确认')
-    await j.rec.click(field.get_by_role('button',name='确认并继续',exact=True))
-    await until(lambda:j.project().get('context_field_states',{}).get('change_scope',{}).get('status')=='known','Summary did not confirm')
-    await j.table_only()
-    assert j.item()['change_type']=='unspecified' and not j.provider.requests
-    j.report['checks'].append('最后一项摘要起始待确认；人工确认后真实自动续办进入需求表格，没有走回旧手填面板或调用AI')
-    await j.open_support()
-    await j.rec.click(j.tasks().get_by_role('button',name=re.compile(r'^\d+\s+电价历史版本查询$')))
-    await expect(j.work().get_by_role('region',name='电价历史版本查询 需求确认',exact=True)).to_be_visible()
-    assert await j.work().locator('.requirement-task-field:visible').count()==0
+    initial=copy.deepcopy(j.project())
+    table=j.work().get_by_role('table',name='需求确认表',exact=True)
+    await j.work().get_by_role('navigation',name='需求表定位').get_by_role('button',name='项目摘要',exact=True).click()
+    field=table.get_by_role('textbox',name='本次改动',exact=True)
+    await field.scroll_into_view_if_needed(); await expect(field).to_have_value(CHANGE)
+    await expect(table.locator('tr[data-cell-key="context-change_scope"]')).to_contain_text('AI 整理 · 待你确认')
+    await field.fill(CHANGE+' 人工补充：只核对本期资料。')
+    await j.select_task(OTHER)
+    await expect(table.get_by_role('textbox',name='电价历史版本查询 需求内容',exact=True)).to_be_in_viewport(ratio=.8)
     await j.select_task(); await j.table_only()
-    j.report['checks'].append('同一待办列表可切换两条需求并返回，始终定位对应表格行，不开旧字段流程')
-    ready=j.work().get_by_role('region',name='需求核对准备').filter(visible=True).first
-    await j.rec.click(ready.get_by_role('button',name='查看核对清单',exact=True))
-    row=ready.locator('.connected-blocker-row').filter(has=j.page.get_by_text(TITLE,exact=True))
-    await j.rec.click(row.get_by_role('button',name='查看与确认 →',exact=True))
-    await j.table_only()
-    assert not j.provider.requests
-    j.report['checks'].append('完成清单的单条确认入口也回同一表格，不因入口不同换编辑器')
+    await j.work().get_by_role('button',name='保存草稿',exact=True).click()
+    assert j.project()==initial and not j.provider.requests
+    await j.page.reload(wait_until='networkidle')
+    await expect(j.work().get_by_role('button',name='和助手聊需求',exact=True)).to_have_attribute('aria-pressed','true')
+    await j.work().get_by_role('button',name='2 完善需求',exact=True).click()
+    await expect(field).to_have_value(CHANGE+' 人工补充：只核对本期资料。')
+    assert j.project()==initial and not j.provider.requests
+    j.report['checks'].append('摘要候选、需求定位和刷新恢复使用同一表；本地摘要编辑及保存不会单独确认字段或触发模型，刷新先回助手')
 
 
 async def guards_flow(j):
     frozen=copy.deepcopy(j.project())
-    await j.select_task(ACTITLE)
-    editor=await j.table_only()
-    await expect(editor.get_by_role('textbox',name=TITLE+' 验收建议 1',exact=True)).to_have_value(AC)
-    j.report['checks'].append('单关联验收待办映射回所属需求表格，不打开单独验收弹窗或定位其他需求')
-    text=editor.get_by_role('textbox',name=TITLE+' 需求内容',exact=True)
+    await j.select_task(ACTITLE); table=await j.table_only()
+    await expect(table.get_by_role('textbox',name=TITLE+' 验收建议 1',exact=True)).to_have_value(AC)
+    text=table.get_by_role('textbox',name=TITLE+' 需求内容',exact=True)
     draft=AFTER+'人工未保存草稿：模板名称保持来源原文。'
     await text.fill(draft)
-    await j.open_support()
-    await j.rec.click(j.tasks().get_by_role('button',name=re.compile(re.escape(QUESTION))))
+    await j.work().get_by_role('navigation',name='需求表定位').get_by_role('button',name='待落实回答',exact=True).click()
+    question=table.get_by_role('textbox',name=QUESTION+' 我的回答',exact=True)
+    await expect(question).to_be_in_viewport(ratio=.8)
+    await j.select_task(); await expect(text).to_have_value(draft)
+    assert j.project()==frozen and not j.provider.requests
+    # Navigation within one persistent table needs no discard dialog. Leaving
+    # the table must still protect unsaved edits.
+    nav=j.page.get_by_role('navigation',name='需求工作流程')
+    await nav.get_by_role('button',name=re.compile('提供信息')).click()
     guard=j.page.get_by_role('dialog',name='未保存的修改',exact=True)
     await expect(guard).to_be_visible()
-    await j.rec.click(guard.get_by_role('button',name='留在当前页',exact=True))
+    await guard.get_by_role('button',name='留在当前页',exact=True).click()
     await expect(text).to_have_value(draft)
+    scope=table.get_by_role('combobox',name='电价历史版本查询 本期范围',exact=True)
+    await scope.select_option('excluded')
     assert j.project()==frozen
-    j.report['checks'].append('表格未保存草稿切换support问题受保护，取消导航保留原稿且不写任何业务数据')
-    # Restore original visible candidate in the editor; no mutation or discard
-    # shortcut is used. Cross-requirement discussion must stay in support.
-    await text.fill(AFTER)
-    await j.open_support()
-    await j.rec.click(j.tasks().get_by_role('button',name=re.compile(re.escape(QUESTION))))
-    await expect(j.support()).to_have_attribute('open','')
-    await expect(j.support().locator('.refine-task-current')).to_contain_text(QUESTION)
-    await expect(j.support().locator('.refine-current-heading')).to_be_in_viewport(ratio=.8)
+    await j.work().get_by_role('button',name='保存草稿',exact=True).click()
+    await j.page.reload(wait_until='networkidle')
+    await j.work().get_by_role('button',name='2 完善需求',exact=True).click()
+    await expect(scope).to_have_value('excluded'); await expect(text).to_have_value(draft)
     assert j.project()==frozen and not j.provider.requests
-    j.report['checks'].append('跨需求共同问题留在support处理，不错误归入第一条；查看不写入也不调用模型')
-    await j.rec.click(j.support().get_by_text('查看或修改其他内容',exact=True))
-    await j.rec.click(j.support().get_by_role('button',name='调整本期范围',exact=True))
-    scope=j.work().get_by_role('group',name='本期需求范围',exact=True)
-    scope_panel=j.work().locator('details.requirement-scope')
-    await expect(scope).to_be_visible()
-    await expect(scope.get_by_role('checkbox',name='纳入本期 '+TITLE,exact=True)).to_be_checked()
-    other=scope.get_by_role('checkbox',name='纳入本期 电价历史版本查询',exact=True)
-    await expect(other).to_be_checked()
-    await j.rec.click(other)
-    await expect(scope_panel.get_by_role('button',name='保存本期范围',exact=True)).to_be_visible()
-    assert j.project()==frozen
-    await j.rec.click(scope_panel.get_by_role('button',name='放弃范围修改',exact=True))
-    await expect(other).to_be_checked()
-    assert await scope.locator('textarea:visible, [id^="behavior-review-"]:visible').count()==0
-    assert j.project()==frozen and not j.provider.requests
-    j.report['checks'].append('整体范围只显示纳入勾选，放弃范围修改恢复原选择；不出现旧逐条表单、不隐式采纳或确认')
-    await j.rec.click(other)
-    await j.rec.click(scope_panel.get_by_role('button',name='保存本期范围',exact=True))
-    await until(lambda:j.project()['product_context']['scope_ids']==[RID],'Explicit scope save did not update only selection')
-    assert j.project()['items']==frozen['items'] and j.project()['questions']==frozen['questions']
-    assert not j.provider.requests
-    write=next(r for r in reversed(j.report['api_requests']) if r['path'].endswith('/product-context') and r['method']=='POST')
-    assert write['body']['scope_ids']==[RID] and write['body']['values']=={}
-    j.report['checks'].append('明确保存范围只改变用户勾选的scope_ids，需求正文、条款状态与问题不变且无模型调用')
+    j.report['checks'].append('关联验收与共享问题同表定位；表内跳转不丢草稿，离表取消保留输入；本期范围仅在浏览器保存，未隐式写入或采纳')
 
 
 async def answer_guard_flow(j):
-    frozen=copy.deepcopy(j.project())
-    await j.select_task();editor=await j.table_only()
-    answer=editor.get_by_role('textbox',name=QUESTION+' 我的回答',exact=True)
+    frozen=copy.deepcopy(j.project());table=j.work().get_by_role('table',name='需求确认表',exact=True)
+    answer=table.get_by_role('textbox',name=QUESTION+' 我的回答',exact=True)
     text='分别筛选，不在两个模块之间联动筛选条件。'
     await answer.fill(text)
-    guard=j.page.get_by_role('dialog',name='未保存的修改',exact=True)
-    for button in ('查看确认内容','让 AI 调整本行'):
-        await j.rec.click(editor.get_by_role('button',name=button,exact=True))
-        await expect(guard).to_be_visible()
-        await j.rec.click(guard.get_by_role('button',name='留在当前页',exact=True))
-        await expect(answer).to_have_value(text)
-        assert j.project()==frozen and not j.provider.requests
-    j.report['checks'].append('未保存回答进入预览或AI均受保护，留当前保留完整回答，无计划执行或业务写入')
-    await j.rec.click(editor.get_by_role('button',name='查看确认内容',exact=True))
-    await j.rec.click(guard.get_by_role('button',name='保存后离开',exact=True))
-    preview=editor.get_by_role('region',name='本条确认预览',exact=True)
-    await expect(preview).to_be_visible()
-    await expect(preview).to_contain_text(text)
-    saved=copy.deepcopy(j.project())
-    assert saved['revision']>frozen['revision'] and saved['items']==frozen['items']
-    assert next(q for q in saved['questions'] if q['id']=='Q-SHARED')['answer']==text
-    call=next(r for r in reversed(j.report['api_requests']) if r['path'].endswith('/requirement-confirmation/preview'))
-    assert call['body']['expected_revision']==saved['revision'] and call['status']==200
-    await j.rec.click(preview.get_by_role('button',name='返回修改',exact=True))
-    if await editor.locator('details.table-questions').get_attribute('open') is None:
-        await j.rec.click(editor.locator('details.table-questions > summary'))
-    await expect(answer).to_have_value(text)
-    await answer.fill(text+'这是本次明确回答。')
-    await j.rec.click(editor.get_by_role('button',name='让 AI 调整本行',exact=True))
-    await expect(guard).to_be_visible()
-    await j.rec.click(guard.get_by_role('button',name='保存后离开',exact=True))
+    ai=j.work().get_by_role('button',name='AI 补充建议',exact=True)
+    await ai.click()
     dialog=j.page.get_by_role('dialog',name='核对本次任务')
     await expect(dialog).to_be_visible()
-    assert next(q for q in j.project()['questions'] if q['id']=='Q-SHARED')['answer']==text+'这是本次明确回答。'
+    assert not j.provider.requests and j.project()==frozen
+    await dialog.get_by_role('button',name='返回保留输入',exact=True).click()
+    await expect(answer).to_have_value(text)
+    await j.page.reload(wait_until='networkidle')
+    await expect(j.work().get_by_role('button',name='和助手聊需求',exact=True)).to_have_attribute('aria-pressed','true')
+    await j.work().get_by_role('button',name='2 完善需求',exact=True).click()
+    await expect(answer).to_have_value(text)
+    await expect(table.locator('.answer-implementation input[type="checkbox"]')).to_have_count(0)
+    await expect(j.work().locator('.refinement-sheet-footer .primary')).to_have_text('保存并继续核对')
+    assert j.project()==frozen and not j.provider.requests
+    await j.work().locator('.refinement-sheet-footer .primary').click()
+    await until(lambda:next(q for q in j.project()['questions'] if q['id']=='Q-SHARED')['answer']==text,'Answer was not saved')
+    question=next(q for q in j.project()['questions'] if q['id']=='Q-SHARED')
+    assert question.get('understanding_status')!='applied' and not question.get('applied_item_ids')
+    await expect(table).to_be_visible()
+    await expect(table.get_by_role('combobox',name=TITLE+' 答案落文位置',exact=True)).to_be_focused()
     assert not j.provider.requests
-    await j.rec.click(dialog.get_by_role('button',name='返回保留输入',exact=True))
-    await expect(answer).to_have_value(text+'这是本次明确回答。')
-    j.report['checks'].append('保存回答后预览使用最新revision并展示原话；AI计划使用保存后的回答，取消计划仍0模型且不丢回答')
+    j.report['checks'].append('AI核对取消与刷新保留本地回答且0模型；明确保存仅记录原话，无原文核对依据时仍待落实，留表聚焦选择位置，未跳交付')
 
 
 SCENARIOS={'entry':entry_flow,'continuation':continuation_flow,'guards':guards_flow,'answer_guard':answer_guard_flow}

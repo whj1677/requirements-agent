@@ -416,6 +416,39 @@ def context(p, *, include_sketch=True):
             reference_notice='当前章节参考由可信任务头 content_profile 指定；项目材料与章节参考不是同一对象。'))
 
 
+def normalize_structured_explanations(plan,p,kind):
+    """Recover the explicit layout contract for program-rendered requirements.
+
+    Such references cannot support a second model-written explanation. Preserve
+    their full normative/context bindings on the chapter and let the existing
+    compiler emit the exact saved facts. Keep original prose in diagnostics;
+    never detach references while retaining unsupported narrative.
+    """
+    value=copy.deepcopy(plan);changes=[]
+    if kind!='prd' or not isinstance(value,dict) or value.get('plan_version')!='4':return value,changes
+    contract=plan_contract(p,kind);rendered=set(contract['program_rendered_detail_ids']);contexts=set(contract['context_ref_ids'])
+    if not rendered or not isinstance(value.get('sections'),list):return value,changes
+    for index,section in enumerate(value['sections']):
+        if not isinstance(section,dict) or not all(isinstance(section.get(k),list) for k in ('context_refs','normative_refs','explanations')):continue
+        if not all(isinstance(ref,str) for ref in section['context_refs']+section['normative_refs']):continue
+        kept=[]
+        for n,explanation in enumerate(section['explanations']):
+            if not isinstance(explanation,dict) or set(explanation)!={'text','evidence_refs'} or not isinstance(explanation['text'],str):kept.append(explanation);continue
+            basis=explanation['evidence_refs']
+            if (not isinstance(basis,dict) or set(basis)!={'context_refs','normative_refs','business_claim_refs'}
+                or not all(isinstance(basis[k],list) and all(isinstance(ref,str) for ref in basis[k]) for k in basis)
+                or not basis['normative_refs'] or not set(basis['normative_refs'])<=rendered
+                or not set(basis['context_refs'])<=contexts or basis['business_claim_refs']):
+                kept.append(explanation);continue
+            section['normative_refs']=list(dict.fromkeys(section['normative_refs']+basis['normative_refs']))
+            section['context_refs']=list(dict.fromkeys(section['context_refs']+basis['context_refs']))
+            changes.append(dict(path=f'sections[{index}].explanations[{n}]',raw=copy.deepcopy(explanation),
+                rule='program-rendered-detail-no-duplicate-explanation',
+                reason='所引需求已由程序完整成文；保留章节的全部条款及上下文绑定，重复解释原文留作诊断。'))
+        section['explanations']=kept
+    return value,changes
+
+
 def compile_plan(plan, p, kind, omitted=(), *, include_sketch=True):
     if not include_sketch:p=without_sketch(p)
     version=plan.get('plan_version')
