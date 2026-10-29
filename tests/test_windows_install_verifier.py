@@ -78,18 +78,22 @@ def test_descendant_selection_does_not_include_peers_or_other_process_trees():
     assert verifier.descendant_order(10, parents) == [12, 11]
 
 
-def test_cleanup_terminates_only_the_verified_process_handle_created_by_the_verifier(tmp_path):
+def test_cleanup_terminates_only_the_verified_process_handle_created_by_the_verifier(tmp_path, monkeypatch):
     # Use the base interpreter so a venv launcher does not introduce another host process.
     executable = Path(getattr(sys, '_base_executable', sys.executable))
     process = verifier.OwnedProcess([str(executable), '-c', 'import time;time.sleep(30)'],
                                     dict(os.environ), tmp_path, tmp_path / 'install')
+    # This fixture creates one childless process. Test its real root identity
+    # and termination without importing unrelated system snapshot entries.
+    monkeypatch.setattr(verifier, 'process_parents', lambda: {process.process.pid: os.getpid()})
     try:
         assert process.process.poll() is None
         process.terminate_owned()
         assert process.process.poll() is not None
     finally:
         if process.process.poll() is None:
-            process.terminate_owned()
+            process.process.terminate()
+            process.process.wait(timeout=10)
 
 
 def test_cleanup_refuses_identity_mismatch_before_terminating_process(tmp_path, monkeypatch):
@@ -99,11 +103,16 @@ def test_cleanup_refuses_identity_mismatch_before_terminating_process(tmp_path, 
     try:
         with monkeypatch.context() as patch:
             patch.setattr(verifier, 'process_identity', lambda _handle: (tmp_path / 'unrelated.exe', process.created))
+            patch.setattr(verifier, 'process_parents', lambda: pytest.fail('mismatched root must not enumerate descendants'))
             with pytest.raises(verifier.VerificationFailure, match='CLEANUP_ROOT_IDENTITY_CHANGED'):
                 process.terminate_owned()
         assert process.process.poll() is None
     finally:
-        process.terminate_owned()
+        # Fixture teardown uses only the exact Popen handle it created; the
+        # rejection above is the production ownership behavior under test.
+        if process.process.poll() is None:
+            process.process.terminate()
+            process.process.wait(timeout=10)
 
 
 def test_uninstall_ownership_guard_rejects_other_installation(tmp_path, monkeypatch):
