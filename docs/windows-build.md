@@ -2,12 +2,12 @@
 
 从 1.2.2 起，客户安装包取消设备许可证和激活校验，直接打开固定 8765 工作台。包含 Python、解析依赖、前端、Playwright 驱动与 Chromium；模型 API Key 由客户自行配置。安装步骤见 [安装与模型配置](windows-installation.md)。
 
-## 本轮任务状态卡（2026-09-29）
+## 当前构建与验收（2026-10-29）
 
-- 阶段：设备授权移除、构建与安装验收。
+- 阶段：字节一致性、快捷方式与跨版本升级验收。
 - 目标：交付无需设备许可证、包含最新已修复工作台的自包含 Windows 试用安装器。
-- 输入：当前 main 源码、锁定依赖、已有 Windows 构建与安装验证流程。
-- 交付物：1.2.2 安装器、SHA-256、清单、实际验证记录和随包指南。
+- 输入：已审核的精确源码提交、锁定依赖、已有 Windows 构建与安装验证流程。
+- 交付物：`app/version.py` 指定版本的安装器、SHA-256、清单、实际验证记录和随包指南。
 - 验收：干净构建；新用户不带许可证直接进入工作台；打包后的解析与内置浏览器可运行；升级和卸载保留用户数据；不携带用户材料、凭据或授权运行组件。
 - 边界：保留模型 API Key、本机访问保护、材料外发确认；不增加业务功能，不重新执行付费模型评测，不创建公开 Release。
 - 停止条件：上述构建和有限安装验收完成并交付，未覆盖的第二台物理电脑与企业环境另列实际限制。
@@ -18,15 +18,17 @@
 
 1. 将相互依赖的实现、测试、构建脚本及文档提交。
 2. 从 Actions 的 **Windows customer distribution** 选择已审核分支手动运行，实际检出提交作为版本事实源。
-3. 构建前执行桌面运行和打包边界测试；构建后进行实际安装、EXE 离线 smoke、直接启动、原位重装及卸载验证。
+3. 构建前执行桌面运行、启动/导入和打包边界测试；构建后执行新版本全新安装，以及已验收 1.2.8 到新版本的跨版本升级。两轮均核对快捷方式、离线运行、数据保留和卸载。
 4. 下载 `requirements-agent-windows-<提交SHA>` 工件，核对安装器 SHA-256、`source_commit`、`working_tree_dirty=false`、`native_file_bytes_verified=true`、`device_license_required=false` 和发行标识 `windows-x64-direct`。
-5. 构建清单的 `BUILT_NOT_ACCEPTED` 仅说明构建完成；实际安装结论以 `installation-verification.json` 为准。
+5. 构建清单的 `BUILT_NOT_ACCEPTED` 仅说明构建完成；实际结论分别以 `installation-verification/installation-verification.json` 和 `upgrade-verification/installation-verification.json` 为准。
 
-验证命令：`python scripts/verify_windows_install.py --installer <安装器> --output <新目录>`。它在新用户目录、仅含 Windows 系统目录的 PATH 下运行安装后的 EXE，不依赖主机 Python/Node/浏览器缓存。先执行内置 DOCX/XLSX/PPTX/图片读取与 Chromium smoke，再启动业务 API 创建合成项目，退出、原位重装并读取同一项目，最后卸载并核对数据文件不变。旧许可证哨兵仅验证保留，不具备授权作用。全程模型请求为零。
+全新安装验证命令：`python scripts/verify_windows_install.py --installer <新版安装器> --shortcuts --output <新目录>`。跨版本验证另用新的输出目录，增加 `--upgrade-from <已核验的1.2.8安装器>`。没有指定旧安装器时，仅能称为同版本原位重装。
+
+验证器使用隔离用户数据目录、仅含 Windows 系统目录的 PATH，不依赖主机 Python/Node/浏览器缓存。执行内置 DOCX/XLSX/PPTX/图片读取与 Chromium smoke，实际创建并打开桌面和开始菜单快捷方式，重复打开检查实例复用；通过业务 API 创建合成项目、附件和模型配置，升级后读取，并在卸载后核对文件保留。合成 Key 仅检查保存与重载，不调用模型。旧许可证哨兵仅验证保留，不具备授权作用。
 
 同 AppId 已安装、输出目录已存在或 8765 已占用时验证器拒绝开始。清理只处理本次创建并核对映像及创建时间的进程；CI 只上传脱敏结果与允许的构建日志，`private/` 不上传。`DIRECT_INSTALLATION_VERIFIED` 是这些实际安装检查的结论，不代表客户完整业务与真实模型语义验收。
 
-旧 `app/activation.py`、`app/licensing.py`、`app/license_trust.py`、原生授权组件与激活页面仅留作源码历史维护，均不被新入口调用或装入新包。构建时显式排除旧模块；升级时只清除程序目录中的旧组件，不动用户目录。
+旧设备授权源码与激活页面已从当前源码删除，可从 Git 历史查阅。构建继续显式排除旧模块；升级时只清除程序目录中的旧组件，不动用户目录。
 
 ## 固定输入与构建工具
 
@@ -50,6 +52,8 @@ Inno 下载地址为其 [官方 GitHub 发布](https://github.com/jrsoftware/iss
 
 构建产物保留上游许可证和组件元数据，客户包包括离线 HTML 使用说明。当前应用与安装器未做商业代码签名。第三方组件的开源许可证继续随包保留，与已取消的设备授权无关。
 
+安装器工具与测试 Agent 统一为 Inno Setup 6.7.3；PyInstaller 负责需求 Agent 的 Python 运行环境封装。本机若存在不同读取器看到不同文件字节的问题，应从同一精确提交在已获准的干净 Windows CI 重新构建，不能通过更换后缀、读取器或改写受保护材料让校验过关。
+
 ## 本机构建命令
 
 只在经过允许、能够向各程序提供一致文件字节的 Windows x64 构建环境执行。不要在运行中的日常工作台目录替换 `web/dist`；本脚本将前端和打包中间结果放入新的指定输出目录。
@@ -59,7 +63,7 @@ python -m pip install -r requirements.lock.txt -r packaging/requirements-build.t
 npm.cmd --prefix web ci
 $env:PLAYWRIGHT_BROWSERS_PATH = 'C:\approved-build\browsers'
 python -m playwright install --only-shell chromium
-python scripts/build_windows.py --output C:\approved-build\release-1.2.2 `
+python scripts/build_windows.py --output C:\approved-build\release-current `
   --iscc 'C:\approved-build\InnoSetup-6.7.3\ISCC.exe' `
   --browser-cache C:\approved-build\browsers
 ```

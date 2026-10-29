@@ -339,3 +339,266 @@ def test_verifier_routes_business_and_desktop_csrf_without_network(monkeypatch, 
     assert other_header not in observed['headers']
     assert observed['headers']['origin'] == verifier.ORIGIN
     assert observed['url'] == verifier.ORIGIN + path
+
+
+def test_shortcut_opt_in_enables_icons_without_changing_default_install(tmp_path):
+    args = (tmp_path / 'setup.exe', tmp_path / 'app', tmp_path / 'install.log')
+    normal = verifier.install_command(*args)
+    shortcuts = verifier.install_command(*args, shortcuts=True)
+    assert '/NOICONS' in normal and '/TASKS=!desktopicon' in normal
+    assert '/NOICONS' not in shortcuts and '/TASKS=desktopicon' in shortcuts
+
+
+def test_existing_shortcut_refuses_install_before_creating_output(tmp_path, monkeypatch):
+    installer = installer_fixture(tmp_path)
+    existing = tmp_path / 'user-shortcut.lnk'
+    existing.write_bytes(b'existing-user-link')
+    monkeypatch.setattr(verifier, 'shortcut_paths', lambda: {'desktop': existing})
+    monkeypatch.setattr(verifier, 'prepare_paths', lambda *_: pytest.fail('must not prepare installation'))
+    with pytest.raises(verifier.VerificationFailure, match='EXISTING_SHORTCUT'):
+        verifier.verify(installer, tmp_path / 'new-output', shortcuts=True)
+    assert existing.read_bytes() == b'existing-user-link'
+    assert not (tmp_path / 'new-output').exists()
+
+
+@pytest.mark.parametrize('changed,code', [('target', 'SHORTCUT_TARGET_MISMATCH'),
+                                         ('working_directory', 'SHORTCUT_WORKDIR_MISMATCH'),
+                                         ('arguments', 'SHORTCUT_ARGUMENTS_UNEXPECTED')])
+def test_shortcut_metadata_rejects_wrong_target_cwd_or_hidden_arguments(tmp_path, monkeypatch, changed, code):
+    install = tmp_path / 'app'
+    links = {name: tmp_path / (name + '.lnk') for name in ('desktop', 'start_menu', 'guide')}
+    for path in links.values():
+        path.write_bytes(b'synthetic-link-not-executed')
+    expected = dict(target=str(install / 'RequirementsAgent.exe'), working_directory=str(install), arguments='')
+    rows = {name: dict(expected) for name in ('desktop', 'start_menu')}
+    rows['guide'] = {'target': str(install / 'docs/windows-installation.html')}
+    monkeypatch.setattr(verifier, 'shell_json', lambda *_: rows)
+    verifier.verify_shortcuts(links, install)
+    rows['desktop'][changed] = str(tmp_path / 'other.exe') if changed != 'arguments' else '--serve'
+    with pytest.raises(verifier.VerificationFailure, match=code):
+        verifier.verify_shortcuts(links, install)
+
+
+def test_shortcut_launch_opens_actual_link_through_shell_and_keeps_isolated_environment(tmp_path, monkeypatch):
+    import base64
+    captured = {}
+    link = tmp_path / "user's 需求 Agent.lnk"
+    environment = {'LOCALAPPDATA': str(tmp_path / 'private-profile')}
+    def capture(command, env, private, install):
+        captured.update(command=command, environment=env, private=private, install=install)
+        return 'owned-shell-wrapper'
+    monkeypatch.setattr(verifier, 'OwnedProcess', capture)
+    assert verifier.open_shortcut(link, environment, tmp_path, tmp_path / 'app') == 'owned-shell-wrapper'
+    code = base64.b64decode(captured['command'][-1]).decode('utf-16le')
+    assert "Start-Process -FilePath '" + str(link).replace("'", "''") + "'" in code
+    assert '-WindowStyle Hidden' in code and '--serve' not in code
+    assert captured['environment'] is environment
+
+
+def test_real_temporary_shortcut_inherits_isolated_profile_without_running_product(tmp_path):
+    private = tmp_path / 'private'; private.mkdir()
+    environment, _ = verifier.customer_environment(private)
+    script = private / 'synthetic_environment.py'
+    output = private / 'observed-environment.json'
+    script.write_text("import json,os,sys\nfrom pathlib import Path\n"
+                      "Path(sys.argv[1]).write_text(json.dumps({k:os.environ.get(k) for k in "
+                      "('LOCALAPPDATA','USERPROFILE','APPDATA')}),encoding='utf-8')\n", 'utf-8')
+    link = private / 'synthetic-profile-probe.lnk'
+    executable = Path(getattr(sys, '_base_executable', sys.executable)).resolve()
+    verifier.shell_json("$value=[Console]::In.ReadToEnd() | ConvertFrom-Json; "
+                        "$shell=New-Object -ComObject WScript.Shell; $link=$shell.CreateShortcut($value.link); "
+                        "$link.TargetPath=$value.target; $link.Arguments=$value.arguments; "
+                        "$link.WorkingDirectory=$value.cwd; $link.Save(); @{created=$true} | ConvertTo-Json",
+                        {'link': str(link), 'target': str(executable), 'cwd': str(private),
+                         'arguments': subprocess.list2cmdline(['-I', str(script), str(output)])})
+    process = verifier.open_shortcut(link, environment, private, tmp_path / 'unused-install')
+    try:
+        assert process.wait(20) == 0
+        observed = json.loads(output.read_text('utf-8'))
+        assert observed == {key: environment[key] for key in ('LOCALAPPDATA', 'USERPROFILE', 'APPDATA')}
+    finally:
+        if process.process.poll() is None:
+            process.terminate_owned()
+
+
+def test_shortcut_launcher_may_exit_before_its_owned_service_is_ready(monkeypatch):
+    from types import SimpleNamespace
+    process = SimpleNamespace(process=SimpleNamespace(poll=lambda: 0))
+    monkeypatch.setattr(verifier, 'request_json', lambda *_: (200, {'instance_id': 'owned'}))
+    assert verifier.wait_for_instance(process, 'owned', launcher=True)['instance_id'] == 'owned'
+    with pytest.raises(verifier.VerificationFailure, match='DESKTOP_PROCESS_EXITED'):
+        verifier.wait_for_instance(process, 'owned')
+    with pytest.raises(verifier.VerificationFailure, match='DESKTOP_INSTANCE_IDENTITY_MISMATCH'):
+        verifier.wait_for_instance(process, 'different', launcher=True)
+
+
+@pytest.mark.parametrize('restarted', [False, True])
+def test_repeat_shortcut_requires_same_service_start_time(monkeypatch, tmp_path, restarted):
+    from types import SimpleNamespace
+    times = iter(['first-start', 'new-start' if restarted else 'first-start'])
+    def response(path):
+        return (200, {'backend': {'started_at': next(times)}}) if path == '/api/session' else (200, {'instance_id': 'owned'})
+    opened = []
+    monkeypatch.setattr(verifier, 'request_json', response)
+    monkeypatch.setattr(verifier, 'open_shortcut', lambda link, *_: opened.append(link) or SimpleNamespace(wait=lambda _: 0))
+    links = {'desktop': tmp_path / 'desktop.lnk', 'start_menu': tmp_path / 'menu.lnk'}
+    if restarted:
+        with pytest.raises(verifier.VerificationFailure, match='SHORTCUT_REPEAT_RESTARTED_SERVICE'):
+            verifier.check_shortcut_reuse(links, 'desktop', 'owned', {}, tmp_path, tmp_path, [])
+    else:
+        verifier.check_shortcut_reuse(links, 'desktop', 'owned', {}, tmp_path, tmp_path, [])
+    assert opened == [links['start_menu']]
+
+
+def test_synthetic_project_attachment_config_and_protected_key_survive_reopen(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    from app.main import create_app
+
+    def bridge(client):
+        def request(path, method='GET', csrf=None, payload=None, origin=verifier.ORIGIN, *, raw_body=None, content_type=None):
+            headers = {'Origin': 'http://testserver'}
+            if csrf:
+                headers['X-CSRF-Token'] = csrf
+            if content_type:
+                headers['Content-Type'] = content_type
+            response = client.request(method, path, headers=headers, json=payload, content=raw_body)
+            return response.status_code, response.content, response.headers
+        monkeypatch.setattr(verifier, 'request', request)
+
+    folder = tmp_path / 'data'
+    with TestClient(create_app(folder, env_path=tmp_path / 'absent.env')) as client:
+        bridge(client)
+        pid, sid = verifier.seed_business_data()
+        before = verifier.business_snapshot(pid, sid)
+    credentials = {p.name: p.read_bytes() for p in (folder / '.credentials').glob('*.dpapi')}
+    assert credentials and all(b'installer-synthetic-key' not in value for value in credentials.values())
+    with TestClient(create_app(folder, env_path=tmp_path / 'absent.env')) as client:
+        bridge(client)
+        assert verifier.business_snapshot(pid, sid) == before
+        next((folder / '.credentials').glob('*.dpapi')).write_bytes(b'invalid-synthetic-key-file')
+        with pytest.raises(verifier.VerificationFailure, match='PERSISTED_KEY_UNREADABLE'):
+            verifier.business_snapshot(pid, sid)
+    assert len(before['history']) >= 2
+    assert before['models']['model']['key_source'] == 'protected_store'
+    assert before['models']['model']['model'] == 'synthetic-never-called'
+
+
+@pytest.mark.parametrize('scenario', ['reinstall', 'upgrade', 'changed-data', 'same-version-source',
+                                     'shortcuts', 'leftover-shortcut'])
+def test_installation_flow_distinguishes_reinstall_from_upgrade_and_detects_data_loss(tmp_path, monkeypatch,
+                                                                                   scenario):
+    import copy
+    cross_version = scenario != 'reinstall'
+    changed_data = scenario == 'changed-data'
+    shortcuts = scenario in ('shortcuts', 'leftover-shortcut')
+    same_version = scenario == 'same-version-source'
+    target = tmp_path / 'new.exe'; target.write_bytes(b'new-installer')
+    previous = tmp_path / 'old.exe'; previous.write_bytes(b'old-installer')
+    output = tmp_path / 'verification'
+    state = {'seeded': False, 'upgraded': False, 'commands': [], 'starts': []}
+    home = output / 'private/profile/Local/RequirementsAgent'
+    install = output / 'installed-app'
+    links = {name: tmp_path / (name + '.lnk') for name in ('desktop', 'start_menu', 'guide')}
+
+    def prepare(installer, folder):
+        folder.mkdir()
+        return installer.resolve(), folder.resolve()
+
+    class Process:
+        def __init__(self, command, *_args):
+            state['commands'].append(command)
+            self.process = self
+            self.finished = False
+            if Path(command[0]) in (target, previous):
+                state['upgraded'] = state['seeded']
+                state['version'] = '1.2.8' if Path(command[0]) == previous and not same_version else '1.2.9'
+                install.mkdir(exist_ok=True)
+                (install / 'RequirementsAgent.exe').write_bytes(state['version'].encode())
+                (install / 'unins000.exe').write_bytes(b'synthetic-uninstaller')
+                if shortcuts:
+                    assert '/TASKS=desktopicon' in command and '/NOICONS' not in command
+                    for path in links.values():
+                        path.write_bytes(b'synthetic-installed-link')
+            elif Path(command[0]).name == 'unins000.exe':
+                (install / 'RequirementsAgent.exe').unlink()
+                for name, path in links.items():
+                    if scenario != 'leftover-shortcut' or name != 'desktop':
+                        path.unlink(missing_ok=True)
+
+        def wait(self, _timeout):
+            self.finished = True
+            return 0
+
+        def poll(self):
+            return 0 if self.finished else None
+
+        def terminate_owned(self):
+            self.finished = True
+
+    def seed():
+        state['seeded'] = True
+        folder = home / 'data/.credentials'; folder.mkdir(parents=True)
+        (folder / 'synthetic.dpapi').write_bytes(b'encrypted-synthetic')
+        (home / 'data/requirements.sqlite3').write_bytes(b'synthetic-database')
+        return 'P-synthetic', 'SRC-synthetic'
+
+    baseline = dict(project={'id': 'P-synthetic', 'name': '合成', 'items': [{'statement': 'preserve original'}]},
+                    history=[{'revision': 1}, {'revision': 0}], models={'model': {'key_source': 'protected_store'}},
+                    attachment_sha256='synthetic-hash')
+    def snapshot(*_):
+        value = copy.deepcopy(baseline)
+        if changed_data and state['upgraded']:
+            value['project']['items'][0]['statement'] = 'lost original'
+        return value
+
+    monkeypatch.setattr(verifier, 'prepare_paths', prepare)
+    monkeypatch.setattr(verifier, 'shortcut_paths', lambda: links)
+    monkeypatch.setattr(verifier, 'verify_shortcuts', lambda *_: state.setdefault('shortcut_verified_versions', []).append(state['version']))
+    monkeypatch.setattr(verifier, 'open_shortcut', lambda path, *_: Process([str(path)]))
+    monkeypatch.setattr(verifier, 'check_shortcut_reuse', lambda _links, first, *_: state.setdefault('shortcut_first', []).append(first))
+    monkeypatch.setattr(verifier, 'OwnedProcess', Process)
+    monkeypatch.setattr(verifier, 'owned_registration', lambda *_: None)
+    monkeypatch.setattr(verifier, 'registrations', lambda: [])
+    monkeypatch.setattr(verifier, 'verify_installed_files', lambda *_: {'version': state['version'], 'source_commit': 'synthetic', 'files': {'app.exe': 'hash'}})
+    monkeypatch.setattr(verifier, 'verify_packaged_smoke', lambda *args: state.setdefault('smoke_versions', []).append(state['version']))
+    def ready(_process, expected, **_kwargs):
+        state['starts'].append(expected)
+        return {'product': 'requirements-agent', 'business_ready': True}
+    monkeypatch.setattr(verifier, 'wait_for_instance', ready)
+    monkeypatch.setattr(verifier, 'verify_business_http', lambda *_: ({'csrf': 'csrf'}, [baseline['project']] if state['seeded'] else []))
+    monkeypatch.setattr(verifier, 'verify_shutdown_security', lambda *_: None)
+    monkeypatch.setattr(verifier, 'seed_business_data', seed)
+    monkeypatch.setattr(verifier, 'business_snapshot', snapshot)
+    monkeypatch.setattr(verifier, 'request_json', lambda *_: (200, [baseline['project']]))
+    monkeypatch.setattr(verifier, 'shutdown_owned', lambda process, *_: process.wait(20))
+    report = verifier.verify(target, output, upgrade_from=previous if cross_version else None, shortcuts=shortcuts)
+    assert Path(state['commands'][0][0]) == (previous if cross_version else target)
+    assert report['initial_version'] == ('1.2.8' if cross_version and not same_version else '1.2.9')
+    assert report['target_version'] == '1.2.9'
+    assert report['initial_installer_sha256'] == verifier.sha256(previous if cross_version else target)
+    assert report['installer_sha256'] == verifier.sha256(target)
+    assert report['upgrade_mode'] == ('cross_version_upgrade' if cross_version and not same_version else 'same_version_reinstall')
+    if same_version:
+        assert report['status'] == 'INSTALLATION_VERIFICATION_FAILED'
+        assert report['failure_code'] == 'UPGRADE_VERSION_UNCHANGED'
+        assert len(state['starts']) == 1
+        return
+    assert (state['starts'][0] != state['starts'][1]) == cross_version
+    assert state['smoke_versions'] == (['1.2.8', '1.2.9'] if cross_version else ['1.2.9'])
+    if shortcuts:
+        assert state['shortcut_first'] == ['desktop', 'start_menu']
+        assert state['shortcut_verified_versions'] == ['1.2.8', '1.2.9']
+        assert not any('--serve' in command for command in state['commands'])
+    if scenario == 'leftover-shortcut':
+        assert report['status'] == 'INSTALLATION_VERIFICATION_FAILED'
+        assert report['failure_code'] == 'UNINSTALL_LEFT_SHORTCUTS'
+        assert links['desktop'].read_bytes() == b'synthetic-installed-link'
+    elif changed_data:
+        assert report['status'] == 'INSTALLATION_VERIFICATION_FAILED'
+        assert report['failure_code'] == 'UPGRADE_CHANGED_PROJECT'
+    else:
+        assert report['status'] == 'DIRECT_INSTALLATION_VERIFIED'
+        assert report['preserved_data']['key_source'] == 'protected_store'
+        assert report['checks']['upgrade_preserves_project_history_attachment_config_and_protected_key']
+        assert (home / 'data/.credentials/synthetic.dpapi').read_bytes() == b'encrypted-synthetic'
+        assert (home / '.env').is_file()

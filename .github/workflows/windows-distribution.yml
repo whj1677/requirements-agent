@@ -6,6 +6,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: windows-distribution-${{ github.ref }}
@@ -113,7 +114,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $junit = Join-Path $env:RA_BUILD_LOGS 'boundary-tests.xml'
-          python -m pytest tests/test_desktop_distribution.py tests/test_windows_packaging.py tests/test_windows_install_verifier.py -q `
+          python -m pytest tests/test_desktop_distribution.py tests/test_windows_packaging.py tests/test_windows_install_verifier.py tests/test_app_lifecycle.py tests/test_architecture_boundaries.py -q `
             "--junitxml=$junit" 2>&1 |
             Tee-Object -FilePath (Join-Path $env:RA_BUILD_LOGS 'boundary-tests.log')
           if ($LASTEXITCODE -ne 0) { throw 'Offline distribution boundary checks failed' }
@@ -136,15 +137,43 @@ jobs:
           "Installer SHA-256: $($result.installer_sha256)" >> $env:GITHUB_STEP_SUMMARY
           'Status: BUILT_NOT_ACCEPTED. Direct startup and customer-runtime installation checks follow.' >> $env:GITHUB_STEP_SUMMARY
 
-      - name: Verify direct startup, bundled dependencies, upgrade and uninstall
+      - name: Download the verified previous installer for cross-version upgrade
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $previous = Join-Path $env:RA_BUILD_BASE 'previous-release'
+          gh run download 40616644463 --repo $env:GITHUB_REPOSITORY `
+            --name 'requirements-agent-windows-72c9189f02818cb1db5d25e663982b88615bbc16' --dir $previous
+          if ($LASTEXITCODE -ne 0) { throw 'Verified 1.2.8 upgrade baseline could not be downloaded' }
+          $installers = @(Get-ChildItem -LiteralPath $previous -Recurse -Filter 'RequirementsAgent-1.2.8-windows-x64-setup.exe')
+          if ($installers.Count -ne 1) { throw 'Previous installer is missing or ambiguous' }
+          $installer = $installers[0].FullName
+          $expected = '4e4a0d298f3bf31fbffac64f082ab81ae7a0c219c17821c776c39463fcb2be35'
+          if ((Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expected) {
+            throw 'Previous installer does not match the accepted 1.2.8 SHA-256'
+          }
+          "RA_PREVIOUS_INSTALLER=$installer" >> $env:GITHUB_ENV
+
+      - name: Verify fresh installation, shortcuts and uninstall
         run: |
           $ErrorActionPreference = 'Stop'
           $installer = $env:RA_BUILD_INSTALLER
           $verification = Join-Path $env:RA_BUILD_BASE 'installation-verification'
-          python scripts/verify_windows_install.py --installer $installer --output $verification 2>&1 |
+          python scripts/verify_windows_install.py --installer $installer --shortcuts --output $verification 2>&1 |
             Tee-Object -FilePath (Join-Path $env:RA_BUILD_LOGS 'installation-verification.log')
           if ($LASTEXITCODE -ne 0) { throw 'Real installation or direct runtime verification failed' }
-          'Direct installation: VERIFIED. Real-model semantic evaluation remains separate.' >> $env:GITHUB_STEP_SUMMARY
+          'Fresh installation and shortcuts: VERIFIED. Real-model semantic evaluation remains separate.' >> $env:GITHUB_STEP_SUMMARY
+
+      - name: Verify 1.2.8 to current upgrade and data preservation
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $verification = Join-Path $env:RA_BUILD_BASE 'upgrade-verification'
+          python scripts/verify_windows_install.py --installer $env:RA_BUILD_INSTALLER `
+            --upgrade-from $env:RA_PREVIOUS_INSTALLER --shortcuts --output $verification 2>&1 |
+            Tee-Object -FilePath (Join-Path $env:RA_BUILD_LOGS 'upgrade-verification.log')
+          if ($LASTEXITCODE -ne 0) { throw 'Cross-version upgrade or data preservation verification failed' }
+          'Upgrade from verified 1.2.8 and uninstall data preservation: VERIFIED.' >> $env:GITHUB_STEP_SUMMARY
 
       - name: Upload installer and release manifests
         if: success()
@@ -161,6 +190,7 @@ jobs:
             ${{ env.RA_BUILD_OUTPUT }}/build-result.json
             ${{ env.RA_BUILD_OUTPUT }}/native-byte-verification.json
             ${{ runner.temp }}/requirements-agent-build/installation-verification/installation-verification.json
+            ${{ runner.temp }}/requirements-agent-build/upgrade-verification/installation-verification.json
 
       - name: Upload allowlisted build diagnostics
         if: always()
@@ -181,3 +211,5 @@ jobs:
             ${{ runner.temp }}/requirements-agent-build/output/native-byte-verification.json
             ${{ runner.temp }}/requirements-agent-build/logs/installation-verification.log
             ${{ runner.temp }}/requirements-agent-build/installation-verification/installation-verification.json
+            ${{ runner.temp }}/requirements-agent-build/logs/upgrade-verification.log
+            ${{ runner.temp }}/requirements-agent-build/upgrade-verification/installation-verification.json

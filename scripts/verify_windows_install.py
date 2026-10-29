@@ -6,6 +6,7 @@ The output directory must be new. Upload installation-verification.json only;
 the private working directory is deliberately excluded from CI artifacts.
 """
 import argparse
+import base64
 import ctypes
 from ctypes import wintypes
 from datetime import datetime, timezone
@@ -281,14 +282,16 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def request(path, method='GET', csrf=None, payload=None, origin=ORIGIN):
+def request(path, method='GET', csrf=None, payload=None, origin=ORIGIN, *, raw_body=None, content_type=None):
     headers = {'Origin': origin} if origin is not None else {}
     if csrf is not None:
         headers['X-Desktop-CSRF' if path.startswith('/desktop/') else 'X-CSRF-Token'] = csrf
     if payload is not None:
         headers['Content-Type'] = 'application/json'
+    if content_type:
+        headers['Content-Type'] = content_type
     req = urllib.request.Request(ORIGIN + path, method=method,
-                                 data=json.dumps(payload).encode('utf-8') if payload is not None else
+                                 data=raw_body if raw_body is not None else json.dumps(payload).encode('utf-8') if payload is not None else
                                  (b'' if method == 'POST' else None), headers=headers)
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
     try:
@@ -315,10 +318,11 @@ def instance_identity(executable, home):
     return hashlib.sha256((sha256(executable) + str(home.resolve()).casefold()).encode('utf-8')).hexdigest()[:24]
 
 
-def wait_for_instance(process, expected, timeout=45):
+def wait_for_instance(process, expected, timeout=45, launcher=False):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        require(process.process.poll() is None, 'DESKTOP_PROCESS_EXITED')
+        exit_code = process.process.poll()
+        require(exit_code is None or (launcher and exit_code == 0), 'DESKTOP_PROCESS_EXITED')
         try:
             status, value = request_json('/desktop/api/instance')
             require(status == 200 and value.get('instance_id') == expected,
@@ -337,13 +341,22 @@ def shutdown_owned(process, expected):
     status, value = request_json('/desktop/api/shutdown', 'POST', value['csrf'])
     require(status == 200 and value.get('status') == 'STOPPING', 'GRACEFUL_SHUTDOWN_REJECTED')
     require(process.wait(20) == 0, 'GRACEFUL_SHUTDOWN_EXIT_FAILED')
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-        if hasattr(socket, 'SO_EXCLUSIVEADDRUSE'):
-            probe.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
-        try:
-            probe.bind(('127.0.0.1', PORT))
-        except OSError as error:
-            raise VerificationFailure('PORT_NOT_RELEASED') from error
+    wait_for_port_release()
+
+
+def wait_for_port_release(timeout=10):
+    deadline = time.monotonic() + timeout
+    while True:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            if hasattr(socket, 'SO_EXCLUSIVEADDRUSE'):
+                probe.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+            try:
+                probe.bind(('127.0.0.1', PORT))
+                return
+            except OSError as error:
+                if time.monotonic() >= deadline:
+                    raise VerificationFailure('PORT_NOT_RELEASED') from error
+        time.sleep(0.1)
 
 
 def verify_installed_files(install):
@@ -401,16 +414,158 @@ def verify_shutdown_security(csrf):
     require(status == 403, 'SHUTDOWN_CSRF_NOT_ENFORCED')
 
 
-def install_command(installer, install, log):
+def powershell_command(script):
+    executable = Path(os.environ['SystemRoot']) / 'System32/WindowsPowerShell/v1.0/powershell.exe'
+    encoded = base64.b64encode(script.encode('utf-16le')).decode('ascii')
+    return [str(executable), '-NoProfile', '-NonInteractive', '-EncodedCommand', encoded]
+
+
+def shell_json(script, payload=None):
+    script = "$ErrorActionPreference='Stop'; [Console]::OutputEncoding=New-Object Text.UTF8Encoding($false); " + script
+    result = subprocess.run(powershell_command(script),
+                            input=json.dumps(payload, ensure_ascii=True).encode('ascii'),
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30,
+                            creationflags=subprocess.CREATE_NO_WINDOW)
+    require(result.returncode == 0, 'SHORTCUT_INSPECTION_FAILED')
+    return json.loads(result.stdout.decode('utf-8-sig'))
+
+
+def shortcut_paths():
+    # Shell known folders belong to the actual Windows user, not the synthetic
+    # LOCALAPPDATA override. Only opt in on a disposable CI/user account.
+    folders = shell_json("[pscustomobject]@{ desktop=[Environment]::GetFolderPath('Desktop'); "
+                         "programs=[Environment]::GetFolderPath('Programs') } | ConvertTo-Json -Compress")
+    require(folders.get('desktop') and folders.get('programs'), 'SHORTCUT_FOLDERS_UNAVAILABLE')
+    group = Path(folders['programs']) / '需求 Agent'
+    return {'desktop': Path(folders['desktop']) / '需求 Agent.lnk',
+            'start_menu': group / '需求 Agent.lnk', 'guide': group / '使用说明.lnk'}
+
+
+def verify_shortcuts(links, install):
+    require(all(path.is_file() for path in links.values()), 'SHORTCUT_MISSING')
+    values = shell_json("$paths=[Console]::In.ReadToEnd() | ConvertFrom-Json; "
+                        "$shell=New-Object -ComObject WScript.Shell; $result=@{}; "
+                        "foreach($entry in $paths.PSObject.Properties) { "
+                        "$link=$shell.CreateShortcut([string]$entry.Value); "
+                        "$result[$entry.Name]=@{target=$link.TargetPath; working_directory=$link.WorkingDirectory; arguments=$link.Arguments} }; "
+                        "$result | ConvertTo-Json -Depth 3 -Compress",
+                        {name: str(path) for name, path in links.items()})
+    for name in ('desktop', 'start_menu'):
+        row = values[name]
+        require(Path(row['target']).resolve() == (install / 'RequirementsAgent.exe').resolve(),
+                'SHORTCUT_TARGET_MISMATCH')
+        require(Path(row['working_directory']).resolve() == install.resolve(), 'SHORTCUT_WORKDIR_MISMATCH')
+        require(not row['arguments'], 'SHORTCUT_ARGUMENTS_UNEXPECTED')
+    require(Path(values['guide']['target']).resolve() == (install / 'docs/windows-installation.html').resolve(),
+            'SHORTCUT_GUIDE_TARGET_MISMATCH')
+
+
+def open_shortcut(path, environment, private, install):
+    # Open the actual .lnk through ShellExecute. Wait only for the launcher;
+    # the service it starts is subsequently checked and stopped through its
+    # installation/profile identity and CSRF endpoint, never guessed by PID.
+    quoted = str(path).replace("'", "''")
+    script = ("$ErrorActionPreference='Stop'; $process=Start-Process -FilePath '" + quoted +
+              "' -PassThru -WindowStyle Hidden; $process.WaitForExit(); exit $process.ExitCode")
+    return OwnedProcess(powershell_command(script), environment, private, install)
+
+
+def check_shortcut_reuse(links, first, expected, environment, private, install, processes):
+    status, before = request_json('/api/session')
+    started = before.get('backend', {}).get('started_at')
+    require(status == 200 and started, 'SHORTCUT_RUNTIME_IDENTITY_UNAVAILABLE')
+    # The other shortcut exercises the same launcher while the first service
+    # is still running. A second service must not replace its startup identity.
+    second = 'start_menu' if first == 'desktop' else 'desktop'
+    repeated = open_shortcut(links[second], environment, private, install)
+    processes.append(repeated)
+    require(repeated.wait(60) == 0, 'SHORTCUT_REPEAT_EXIT_FAILED')
+    status, instance = request_json('/desktop/api/instance')
+    require(status == 200 and instance.get('instance_id') == expected, 'SHORTCUT_REPEAT_INSTANCE_CHANGED')
+    status, after = request_json('/api/session')
+    require(status == 200 and after.get('backend', {}).get('started_at') == started,
+            'SHORTCUT_REPEAT_RESTARTED_SERVICE')
+
+
+SYNTHETIC_ATTACHMENT = b'SYNTHETIC INSTALLER CHECK: preserve this source attachment and its history.\n'
+
+
+def seed_business_data():
+    status, session = request_json('/api/session')
+    require(status == 200 and session.get('csrf'), 'BUSINESS_SESSION_UNAVAILABLE')
+    csrf = session['csrf']
+    status, project = request_json('/api/projects', 'POST', csrf,
+                                  payload={'name': '离线安装验收合成项目'})
+    require(status == 200 and isinstance(project.get('id'), str), 'SYNTHETIC_PROJECT_CREATE_FAILED')
+    pid = project['id']
+    boundary = 'requirements-agent-installer-check'
+    parts = [f'--{boundary}\r\nContent-Disposition: form-data; name="expected_revision"\r\n\r\n{project["revision"]}\r\n'.encode(),
+             f'--{boundary}\r\nContent-Disposition: form-data; name="purpose"\r\n\r\ngoal\r\n'.encode(),
+             f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="installer-synthetic.txt"\r\nContent-Type: text/plain\r\n\r\n'.encode(),
+             SYNTHETIC_ATTACHMENT, f'\r\n--{boundary}--\r\n'.encode()]
+    status, body, _ = request(f'/api/projects/{pid}/sources/file', 'POST', csrf,
+                              raw_body=b''.join(parts), content_type='multipart/form-data; boundary=' + boundary)
+    require(status == 200, 'SYNTHETIC_ATTACHMENT_UPLOAD_FAILED')
+    source = json.loads(body)
+    require(source.get('sha256') == hashlib.sha256(SYNTHETIC_ATTACHMENT).hexdigest(),
+            'SYNTHETIC_ATTACHMENT_HASH_MISMATCH')
+    config = dict(name='Installer offline verification', base_url='https://installer-verification.invalid',
+                  model='synthetic-never-called', key_env='RA_INSTALLER_SYNTHETIC_KEY', vision='unsupported')
+    require(request_json('/api/models/model', 'PUT', csrf, config)[0] == 200, 'SYNTHETIC_CONFIG_SAVE_FAILED')
+    status, key_state = request_json('/api/models/model/key', 'PUT', csrf,
+                                    {'key': 'installer-synthetic-key-never-sent-20261029', 'persist': True})
+    require(status == 200 and key_state.get('key_configured') is True and
+            key_state.get('key_source') == 'protected_store', 'SYNTHETIC_KEY_NOT_PERSISTED')
+    return pid, source['id']
+
+
+def business_snapshot(pid, source_id):
+    result = {}
+    for name, path in [('project', f'/api/projects/{pid}'), ('history', f'/api/projects/{pid}/history'),
+                       ('models', '/api/models')]:
+        status, result[name] = request_json(path)
+        require(status == 200, 'BUSINESS_SNAPSHOT_UNREADABLE')
+    require(result['project'].get('id') == pid and len(result['history']) >= 2, 'BUSINESS_HISTORY_MISSING')
+    model = result['models']['model']
+    require(model.get('key_configured') is True and model.get('key_source') == 'protected_store' and
+            not model.get('key_storage_error'), 'PERSISTED_KEY_UNREADABLE')
+    status, body, _ = request(f'/api/projects/{pid}/sources/{source_id}/file')
+    require(status == 200 and body == SYNTHETIC_ATTACHMENT, 'SAVED_ATTACHMENT_UNREADABLE')
+    result['attachment_sha256'] = hashlib.sha256(body).hexdigest()
+    return result
+
+
+def install_command(installer, install, log, shortcuts=False):
+    icons = ['/TASKS=desktopicon'] if shortcuts else ['/NOICONS', '/TASKS=!desktopicon']
     return [str(installer), '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART',
-            '/CURRENTUSER', '/NOICONS', '/TASKS=!desktopicon', '/DIR=' + str(install),
-            '/LOG=' + str(log)]
+            '/CURRENTUSER', *icons, '/DIR=' + str(install), '/LOG=' + str(log)]
 
 
-def verify(installer, output):
+def verify_packaged_smoke(executable, environment, private, install, processes, name):
+    result_file = private / (name + '-offline-smoke.json')
+    check = OwnedProcess([str(executable), '--smoke-test', '--output', str(result_file)],
+                         environment, private, install)
+    processes.append(check)
+    require(check.wait(120) == 0, 'OFFLINE_SMOKE_EXIT_FAILED')
+    value = json.loads(result_file.read_text('utf-8'))
+    expected_checks = {'docx_subprocess', 'xlsx_subprocess', 'pptx_subprocess',
+                       'image_subprocess', 'bundled_chromium', 'session', 'frontend', 'projects'}
+    require(value.get('status') == 'OFFLINE_SMOKE_VERIFIED' and value.get('model_calls') == 0 and
+            isinstance(value.get('checks'), dict) and
+            all(value['checks'].get(name) is True for name in expected_checks),
+            'OFFLINE_SMOKE_WRONG_RESULT')
+
+
+def verify(installer, output, upgrade_from=None, shortcuts=False):
+    initial_installer = Path(upgrade_from).resolve() if upgrade_from else Path(installer).resolve()
+    require(initial_installer.is_file() and initial_installer.suffix.lower() == '.exe', 'INITIAL_INSTALLER_NOT_FOUND')
+    links = shortcut_paths() if shortcuts else {}
+    require(not any(path.exists() for path in links.values()), 'EXISTING_SHORTCUT')
     installer, output = prepare_paths(installer, output)
     report = {'format_version': 1, 'status': 'INSTALLATION_VERIFICATION_RUNNING',
               'installer_sha256': sha256(installer), 'checks': {}, 'model_calls': 0,
+              'shortcuts_requested': shortcuts,
+              'initial_installer_sha256': sha256(initial_installer),
               'business_validation': {'synthetic_offline': 'RUNNING', 'real_model': 'NOT_RUN'}}
     private, install = output / 'private', output / 'installed-app'
     private.mkdir()
@@ -420,7 +575,7 @@ def verify(installer, output):
     expected_instance = None
     uninstalled = False
     try:
-        setup = OwnedProcess(install_command(installer, install, private / 'setup.log'),
+        setup = OwnedProcess(install_command(initial_installer, install, private / 'setup.log', shortcuts),
                              environment, private, install)
         processes.append(setup)
         require(setup.wait(240) == 0, 'INSTALLER_EXIT_FAILED')
@@ -428,73 +583,91 @@ def verify(installer, output):
         require(executable.is_file(), 'INSTALLED_EXE_MISSING')
         owned_registration(install)
         manifest = verify_installed_files(install)
+        initial_version = manifest['version']
+        report.update(initial_version=initial_version, initial_source_commit=manifest['source_commit'],
+                      initial_exe_sha256=sha256(executable))
         report.update(version=manifest['version'], source_commit=manifest['source_commit'],
                       installed_exe_sha256=sha256(executable), installed_file_count=len(manifest['files']))
         report['checks']['silent_install_and_file_hashes'] = True
 
-        result_file = private / 'offline-smoke.json'
-        check = OwnedProcess([str(executable), '--smoke-test', '--output', str(result_file)],
-                             environment, private, install)
-        processes.append(check)
-        require(check.wait(120) == 0, 'OFFLINE_SMOKE_EXIT_FAILED')
-        value = json.loads(result_file.read_text('utf-8'))
-        expected_checks = {'docx_subprocess', 'xlsx_subprocess', 'pptx_subprocess',
-                           'image_subprocess', 'bundled_chromium', 'session', 'frontend', 'projects'}
-        require(value.get('status') == 'OFFLINE_SMOKE_VERIFIED' and value.get('model_calls') == 0 and
-                isinstance(value.get('checks'), dict) and
-                all(value['checks'].get(name) is True for name in expected_checks),
-                'OFFLINE_SMOKE_WRONG_RESULT')
+        verify_packaged_smoke(executable, environment, private, install, processes, 'initial')
         report['checks']['packaged_offline_smoke'] = True
 
         expected_instance = instance_identity(executable, home)
-        service = OwnedProcess([str(executable), '--serve'], environment, private, install)
+        if shortcuts:
+            verify_shortcuts(links, install)
+            service = open_shortcut(links['desktop'], environment, private, install)
+        else:
+            service = OwnedProcess([str(executable), '--serve'], environment, private, install)
         processes.append(service)
-        instance = wait_for_instance(service, expected_instance)
+        instance = wait_for_instance(service, expected_instance, launcher=shortcuts)
         require(instance.get('product') == 'requirements-agent' and instance.get('business_ready') is True,
                 'DIRECT_INSTANCE_NOT_READY')
         desktop, projects = verify_business_http(expected_instance)
         require(not projects, 'FRESH_PROFILE_HAS_PROJECTS')
+        if shortcuts:
+            check_shortcut_reuse(links, 'desktop', expected_instance, environment, private, install, processes)
+            report['checks']['initial_desktop_start_and_start_menu_reuse'] = True
         verify_shutdown_security(desktop['csrf'])
         report['checks']['direct_business_http_and_shutdown_security'] = True
-        project_name = '离线安装验收合成项目'
-        status, business_session = request_json('/api/session')
-        require(status == 200 and isinstance(business_session.get('csrf'), str) and
-                business_session['csrf'], 'BUSINESS_SESSION_UNAVAILABLE')
-        status, project = request_json('/api/projects', 'POST', business_session['csrf'],
-                                      payload={'name': project_name})
-        require(status == 200 and isinstance(project, dict) and isinstance(project.get('id'), str),
-                'SYNTHETIC_PROJECT_CREATE_FAILED')
-        project_id = project['id']
+        project_id, source_id = seed_business_data()
+        before = business_snapshot(project_id, source_id)
         require(any(row.get('id') == project_id for row in request_json('/api/projects')[1]),
                 'SYNTHETIC_PROJECT_NOT_LISTED')
         shutdown_owned(service, expected_instance)
+        service = None
         report['checks']['origin_csrf_shutdown_and_port_release'] = True
+        credential_files = {path.relative_to(home): sha256(path) for path in (home / 'data/.credentials').glob('*.dpapi')}
+        require(credential_files, 'SYNTHETIC_CREDENTIAL_FILE_MISSING')
 
         # The legacy marker is inert; the synthetic project is real persisted business data.
-        markers = [home / 'profile-preserve.sentinel', home / 'license/ci-preserve.sentinel']
+        markers = [home / 'profile-preserve.sentinel', home / 'license/ci-preserve.sentinel', home / '.env']
         sentinel = b'INSTALLER_PRESERVATION_TEST_ONLY_NOT_A_LICENSE\n'
         for marker in markers:
             marker.parent.mkdir(parents=True, exist_ok=True)
             marker.write_bytes(sentinel)
         owned_registration(install)
-        upgrade = OwnedProcess(install_command(installer, install, private / 'upgrade.log'),
+        upgrade = OwnedProcess(install_command(installer, install, private / 'upgrade.log', shortcuts),
                                environment, private, install)
         processes.append(upgrade)
         require(upgrade.wait(240) == 0, 'UPGRADE_INSTALLER_EXIT_FAILED')
         owned_registration(install)
-        verify_installed_files(install)
-        service = OwnedProcess([str(executable), '--serve'], environment, private, install)
+        manifest = verify_installed_files(install)
+        report.update(version=manifest['version'], target_version=manifest['version'],
+                      source_commit=manifest['source_commit'], installed_exe_sha256=sha256(executable),
+                      installed_file_count=len(manifest['files']),
+                      upgrade_mode='cross_version_upgrade' if manifest['version'] != initial_version else 'same_version_reinstall')
+        require(not upgrade_from or manifest['version'] != initial_version, 'UPGRADE_VERSION_UNCHANGED')
+        if upgrade_from:
+            verify_packaged_smoke(executable, environment, private, install, processes, 'target')
+        expected_instance = instance_identity(executable, home)
+        if shortcuts:
+            verify_shortcuts(links, install)
+            service = open_shortcut(links['start_menu'], environment, private, install)
+        else:
+            service = OwnedProcess([str(executable), '--serve'], environment, private, install)
         processes.append(service)
-        wait_for_instance(service, expected_instance)
+        wait_for_instance(service, expected_instance, launcher=shortcuts)
         _desktop, projects = verify_business_http(expected_instance)
-        require(any(row.get('id') == project_id and row.get('name') == project_name for row in projects),
+        require(any(row.get('id') == project_id and row.get('name') == before['project']['name'] for row in projects),
                 'UPGRADE_LOST_SYNTHETIC_PROJECT')
-        status, loaded = request_json('/api/projects/' + project_id)
-        require(status == 200 and loaded.get('id') == project_id and loaded.get('name') == project_name,
-                'UPGRADE_PROJECT_UNREADABLE')
+        after = business_snapshot(project_id, source_id)
+        for name in before:
+            require(after[name] == before[name], 'UPGRADE_CHANGED_' + name.upper())
+        require(all((home / relative).is_file() and sha256(home / relative) == digest
+                    for relative, digest in credential_files.items()), 'UPGRADE_CHANGED_CREDENTIAL_FILES')
+        if shortcuts:
+            check_shortcut_reuse(links, 'start_menu', expected_instance, environment, private, install, processes)
+            report['checks']['target_start_menu_start_and_desktop_reuse'] = True
         require(all(marker.read_bytes() == sentinel for marker in markers), 'UPGRADE_DELETED_PROFILE_MARKER')
         report['checks']['in_place_upgrade_preserves_synthetic_project'] = True
+        report['checks']['upgrade_preserves_project_history_attachment_config_and_protected_key'] = True
+        report['preserved_data'] = dict(project_json='identical', history_entries=len(after['history']),
+                                       history='identical', attachment_sha256=after['attachment_sha256'],
+                                       model_config='identical', key_source=after['models']['model']['key_source'],
+                                       credential_files=len(credential_files))
         shutdown_owned(service, expected_instance)
+        service = None
         data_files = {p.relative_to(home): sha256(p) for p in (home / 'data').rglob('*') if p.is_file()}
         require(data_files, 'SYNTHETIC_PROJECT_DATA_MISSING')
         owned_registration(install)
@@ -508,6 +681,9 @@ def verify(installer, output):
             time.sleep(0.1)
         require(not executable.exists() and not registrations(), 'UNINSTALL_INCOMPLETE')
         uninstalled = True
+        require(not any(path.exists() for path in links.values()), 'UNINSTALL_LEFT_SHORTCUTS')
+        if shortcuts:
+            report['checks']['uninstall_removes_created_shortcuts'] = True
         require(all(marker.read_bytes() == sentinel for marker in markers), 'UNINSTALL_DELETED_PROFILE_MARKER')
         require(all((home / relative).is_file() and sha256(home / relative) == digest
                     for relative, digest in data_files.items()), 'UNINSTALL_CHANGED_BUSINESS_DATA')
@@ -520,11 +696,17 @@ def verify(installer, output):
     finally:
         cleanup_errors = (['CREATED_PROCESS_INITIALIZATION_CLEANUP_FAILED']
                           if report.get('failure_code') == 'CREATED_PROCESS_INITIALIZATION_CLEANUP_FAILED' else [])
-        if service is not None and service.process.poll() is None:
+        if service is not None:
             try:
                 shutdown_owned(service, expected_instance)
             except Exception:
-                pass
+                if shortcuts:
+                    # A shortcut launcher may already have exited. Without a
+                    # matching service identity there is no safe process to kill.
+                    try:
+                        wait_for_port_release(timeout=1)
+                    except VerificationFailure:
+                        cleanup_errors.append('SHORTCUT_SERVICE_CLEANUP_UNCONFIRMED')
         for owned in reversed(processes):
             if owned.process.poll() is None:
                 try:
@@ -540,6 +722,7 @@ def verify(installer, output):
                                         '/NORESTART'], environment, private, install)
                 require(cleanup.wait(120) == 0, 'CLEANUP_UNINSTALL_FAILED')
                 require(not registrations(), 'CLEANUP_REGISTRATION_REMAINS')
+                require(not any(path.exists() for path in links.values()), 'CLEANUP_SHORTCUTS_REMAIN')
             except Exception as error:
                 cleanup_errors.append(str(error) if isinstance(error, VerificationFailure) else type(error).__name__)
         report['cleanup_status'] = 'OWNED_PROCESSES_STOPPED' if not cleanup_errors else 'CLEANUP_INCOMPLETE'
@@ -555,10 +738,12 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--installer', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--upgrade-from', type=Path, help='Install this older release before upgrading to --installer')
+    parser.add_argument('--shortcuts', action='store_true', help='Verify real desktop/menu shortcuts on a clean CI or Windows user account')
     args = parser.parse_args()
     require(os.name == 'nt', 'WINDOWS_REQUIRED')
     try:
-        report = verify(args.installer, args.output)
+        report = verify(args.installer, args.output, upgrade_from=args.upgrade_from, shortcuts=args.shortcuts)
     except Exception as error:
         code = str(error) if isinstance(error, VerificationFailure) else type(error).__name__
         print(json.dumps({'status': 'INSTALLATION_VERIFICATION_NOT_STARTED', 'failure_code': code}))
