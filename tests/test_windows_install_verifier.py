@@ -361,6 +361,59 @@ def test_existing_shortcut_refuses_install_before_creating_output(tmp_path, monk
     assert not (tmp_path / 'new-output').exists()
 
 
+def test_shortcut_folders_use_installer_environment_before_directories_exist(tmp_path, monkeypatch):
+    import base64
+    from types import SimpleNamespace
+    environment, _ = verifier.customer_environment(tmp_path)
+    folders = {'desktop': str(tmp_path / 'profile/Desktop'),
+               'programs': str(tmp_path / 'profile/AppData/Roaming/Microsoft/Windows/Start Menu/Programs')}
+    def run(command, **kwargs):
+        assert kwargs['env'] is environment
+        code = base64.b64decode(command[-1]).decode('utf-16le')
+        assert "GetFolderPath('DesktopDirectory','DoNotVerify')" in code
+        assert "GetFolderPath('Programs','DoNotVerify')" in code
+        return SimpleNamespace(returncode=0, stdout=json.dumps(folders).encode())
+    monkeypatch.setattr(verifier.subprocess, 'run', run)
+    links = verifier.shortcut_paths(environment)
+    assert links['desktop'] == Path(folders['desktop']) / '需求 Agent.lnk'
+    assert links['start_menu'] == Path(folders['programs']) / '需求 Agent/需求 Agent.lnk'
+    assert not any(Path(path).exists() for path in folders.values())
+
+
+def test_existing_shortcut_in_installer_environment_is_not_overwritten(tmp_path, monkeypatch):
+    installer = installer_fixture(tmp_path)
+    existing = tmp_path / 'isolated-existing.lnk'; existing.write_bytes(b'keep')
+    def prepare(installer, output):
+        output.mkdir()
+        return installer, output
+    monkeypatch.setattr(verifier, 'prepare_paths', prepare)
+    monkeypatch.setattr(verifier, 'shortcut_paths', lambda environment=None:
+                        {'desktop': existing if environment else tmp_path / 'host-missing.lnk'})
+    monkeypatch.setattr(verifier, 'OwnedProcess', lambda *_: pytest.fail('must not start installer'))
+    report = verifier.verify(installer, tmp_path / 'output', shortcuts=True)
+    assert report['failure_code'] == 'EXISTING_SHORTCUT'
+    assert existing.read_bytes() == b'keep'
+
+
+def test_missing_shortcut_still_fails_and_reports_present_link_metadata(tmp_path, monkeypatch):
+    install = tmp_path / 'app'
+    links = {name: tmp_path / (name + '.lnk') for name in ('desktop', 'start_menu', 'guide')}
+    links['desktop'].write_bytes(b'synthetic-link-not-executed')
+    metadata = {'target': str(install / 'RequirementsAgent.exe'), 'working_directory': str(install), 'arguments': ''}
+    def inspect(_script, payload):
+        assert payload == {'desktop': str(links['desktop'])}
+        return {'desktop': metadata}
+    monkeypatch.setattr(verifier, 'shell_json', inspect)
+    diagnostics = {}
+    with pytest.raises(verifier.VerificationFailure, match='SHORTCUT_MISSING'):
+        verifier.verify_shortcuts(links, install, diagnostics)
+    assert diagnostics['desktop']['found'] == metadata
+    assert diagnostics['desktop']['exists'] is True
+    assert diagnostics['start_menu']['exists'] is False and diagnostics['start_menu']['found'] is None
+    assert diagnostics['start_menu']['path'] == str(links['start_menu'])
+    assert diagnostics['start_menu']['expected_target'] == str(install / 'RequirementsAgent.exe')
+
+
 @pytest.mark.parametrize('changed,code', [('target', 'SHORTCUT_TARGET_MISMATCH'),
                                          ('working_directory', 'SHORTCUT_WORKDIR_MISMATCH'),
                                          ('arguments', 'SHORTCUT_ARGUMENTS_UNEXPECTED')])
@@ -554,6 +607,10 @@ def test_installation_flow_distinguishes_reinstall_from_upgrade_and_detects_data
                     assert '/TASKS=desktopicon' in command and '/NOICONS' not in command
                     for path in links.values():
                         path.write_bytes(b'synthetic-installed-link')
+                    log = Path(next(arg[5:] for arg in command if arg.startswith('/LOG=')))
+                    log.write_text('SYNTHETIC PRIVATE LOG EXCLUDED\n'
+                                   '2026-10-29 00:00:00.000   Dest filename: ' + str(links['desktop']) + '\n'
+                                   '2026-10-29 00:00:00.001   Successfully created the icon.\n', 'utf-8-sig')
             elif Path(command[0]).name == 'unins000.exe':
                 (install / 'RequirementsAgent.exe').unlink()
                 for name, path in links.items():
@@ -587,7 +644,11 @@ def test_installation_flow_distinguishes_reinstall_from_upgrade_and_detects_data
         return value
 
     monkeypatch.setattr(verifier, 'prepare_paths', prepare)
-    monkeypatch.setattr(verifier, 'shortcut_paths', lambda: links)
+    def resolve_shortcuts(environment=None):
+        if environment is not None:
+            assert Path(environment['USERPROFILE']) == output / 'private/profile'
+        return links
+    monkeypatch.setattr(verifier, 'shortcut_paths', resolve_shortcuts)
     monkeypatch.setattr(verifier, 'verify_shortcuts', lambda *_: state.setdefault('shortcut_verified_versions', []).append(state['version']))
     monkeypatch.setattr(verifier, 'open_shortcut', lambda path, *_: Process([str(path)]))
     monkeypatch.setattr(verifier, 'check_shortcut_reuse', lambda _links, first, *_: state.setdefault('shortcut_first', []).append(first))
@@ -624,6 +685,9 @@ def test_installation_flow_distinguishes_reinstall_from_upgrade_and_detects_data
         assert state['shortcut_first'] == ['desktop', 'start_menu']
         assert state['shortcut_verified_versions'] == ['1.2.8', '1.2.9']
         assert not any('--serve' in command for command in state['commands'])
+        assert set(report['shortcut_installer_logs']) == {'setup', 'upgrade'}
+        assert all(len(lines) == 2 and 'PRIVATE' not in ''.join(lines)
+                   for lines in report['shortcut_installer_logs'].values())
     if scenario == 'leftover-shortcut':
         assert report['status'] == 'INSTALLATION_VERIFICATION_FAILED'
         assert report['failure_code'] == 'UNINSTALL_LEFT_SHORTCUTS'

@@ -425,36 +425,45 @@ def powershell_command(script):
     return [str(executable), '-NoProfile', '-NonInteractive', '-EncodedCommand', encoded]
 
 
-def shell_json(script, payload=None):
+def shell_json(script, payload=None, *, environment=None):
     script = "$ErrorActionPreference='Stop'; [Console]::OutputEncoding=New-Object Text.UTF8Encoding($false); " + script
     result = subprocess.run(powershell_command(script),
                             input=json.dumps(payload, ensure_ascii=True).encode('ascii'),
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30,
+                            env=environment,
                             creationflags=subprocess.CREATE_NO_WINDOW)
     require(result.returncode == 0, 'SHORTCUT_INSPECTION_FAILED')
     return json.loads(result.stdout.decode('utf-8-sig'))
 
 
-def shortcut_paths():
-    # Shell known folders belong to the actual Windows user, not the synthetic
-    # LOCALAPPDATA override. Only opt in on a disposable CI/user account.
-    folders = shell_json("[pscustomobject]@{ desktop=[Environment]::GetFolderPath('Desktop'); "
-                         "programs=[Environment]::GetFolderPath('Programs') } | ConvertTo-Json -Compress")
+def shortcut_paths(environment=None):
+    # Windows expands known-folder registry values in the caller's environment,
+    # just as Inno does. Resolve even before the installer creates these folders.
+    folders = shell_json("[pscustomobject]@{ desktop=[Environment]::GetFolderPath('DesktopDirectory','DoNotVerify'); "
+                         "programs=[Environment]::GetFolderPath('Programs','DoNotVerify') } | ConvertTo-Json -Compress",
+                         environment=environment)
     require(folders.get('desktop') and folders.get('programs'), 'SHORTCUT_FOLDERS_UNAVAILABLE')
     group = Path(folders['programs']) / '需求 Agent'
     return {'desktop': Path(folders['desktop']) / '需求 Agent.lnk',
             'start_menu': group / '需求 Agent.lnk', 'guide': group / '使用说明.lnk'}
 
 
-def verify_shortcuts(links, install):
-    require(all(path.is_file() for path in links.values()), 'SHORTCUT_MISSING')
+def verify_shortcuts(links, install, diagnostics=None):
+    present = {name: str(path) for name, path in links.items() if path.is_file()}
     values = shell_json("$paths=[Console]::In.ReadToEnd() | ConvertFrom-Json; "
                         "$shell=New-Object -ComObject WScript.Shell; $result=@{}; "
                         "foreach($entry in $paths.PSObject.Properties) { "
                         "$link=$shell.CreateShortcut([string]$entry.Value); "
                         "$result[$entry.Name]=@{target=$link.TargetPath; working_directory=$link.WorkingDirectory; arguments=$link.Arguments} }; "
                         "$result | ConvertTo-Json -Depth 3 -Compress",
-                        {name: str(path) for name, path in links.items()})
+                        present) if present else {}
+    if diagnostics is not None:
+        diagnostics.update({name: {'path': str(path), 'exists': name in present,
+                                  'expected_target': str(install / ('docs/windows-installation.html' if name == 'guide'
+                                                                    else 'RequirementsAgent.exe')),
+                                  'expected_working_directory': str(install) if name != 'guide' else None,
+                                  'found': values.get(name)} for name, path in links.items()})
+    require(len(present) == len(links), 'SHORTCUT_MISSING')
     for name in ('desktop', 'start_menu'):
         row = values[name]
         require(Path(row['target']).resolve() == (install / 'RequirementsAgent.exe').resolve(),
@@ -613,6 +622,9 @@ def verify(installer, output, upgrade_from=None, shortcuts=False):
     expected_instance = None
     uninstalled = False
     try:
+        if shortcuts:
+            links = shortcut_paths(environment)
+            require(not any(path.exists() for path in links.values()), 'EXISTING_SHORTCUT')
         setup = OwnedProcess(install_command(initial_installer, install, private / 'setup.log', shortcuts),
                              environment, private, install)
         processes.append(setup)
@@ -633,7 +645,8 @@ def verify(installer, output, upgrade_from=None, shortcuts=False):
 
         expected_instance = instance_identity(executable, home)
         if shortcuts:
-            verify_shortcuts(links, install)
+            report['shortcut_checks'] = {'initial': {}}
+            verify_shortcuts(links, install, report['shortcut_checks']['initial'])
             service = open_shortcut(links['desktop'], environment, private, install)
         else:
             service = OwnedProcess([str(executable), '--serve'], environment, private, install)
@@ -680,7 +693,8 @@ def verify(installer, output, upgrade_from=None, shortcuts=False):
             verify_packaged_smoke(executable, environment, private, install, processes, 'target')
         expected_instance = instance_identity(executable, home)
         if shortcuts:
-            verify_shortcuts(links, install)
+            report['shortcut_checks']['target'] = {}
+            verify_shortcuts(links, install, report['shortcut_checks']['target'])
             service = open_shortcut(links['start_menu'], environment, private, install)
         else:
             service = OwnedProcess([str(executable), '--serve'], environment, private, install)
@@ -770,6 +784,15 @@ def verify(installer, output, upgrade_from=None, shortcuts=False):
         if shortcuts:
             report['shortcut_launches'] = [shortcut_diagnostics(owned) for owned in processes
                                           if hasattr(owned, 'shortcut_trace')]
+            report['shortcut_installer_logs'] = {}
+            for name in ('setup', 'upgrade'):
+                log = private / (name + '.log')
+                if log.is_file():
+                    # Only shortcut destination/creation lines, no command line
+                    # or unrelated installer context, enter the public report.
+                    report['shortcut_installer_logs'][name] = [line for line in log.read_text('utf-8-sig').splitlines()
+                        if ('Dest filename: ' in line and line.endswith('.lnk')) or
+                        line.endswith(('Creating the icon.', 'Successfully created the icon.'))]
         report['finished_at'] = datetime.now(timezone.utc).isoformat()
         (output / 'installation-verification.json').write_text(json.dumps(report, ensure_ascii=False, indent=2) + '\n', 'utf-8')
     return report
