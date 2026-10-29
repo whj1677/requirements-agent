@@ -450,11 +450,14 @@ def shortcut_paths(environment=None):
 
 def verify_shortcuts(links, install, diagnostics=None):
     present = {name: str(path) for name, path in links.items() if path.is_file()}
+    # WScript.Shell.CreateShortcut silently loses paths outside the system
+    # ANSI code page. Read existing links through the Unicode Windows Shell.
     values = shell_json("$paths=[Console]::In.ReadToEnd() | ConvertFrom-Json; "
-                        "$shell=New-Object -ComObject WScript.Shell; $result=@{}; "
+                        "$shell=New-Object -ComObject Shell.Application; $result=@{}; "
                         "foreach($entry in $paths.PSObject.Properties) { "
-                        "$link=$shell.CreateShortcut([string]$entry.Value); "
-                        "$result[$entry.Name]=@{target=$link.TargetPath; working_directory=$link.WorkingDirectory; arguments=$link.Arguments} }; "
+                        "$folder=$shell.Namespace([IO.Path]::GetDirectoryName([string]$entry.Value)); "
+                        "$item=$folder.ParseName([IO.Path]::GetFileName([string]$entry.Value)); $link=$item.GetLink; "
+                        "$result[$entry.Name]=@{target=$link.Path; working_directory=$link.WorkingDirectory; arguments=$link.Arguments} }; "
                         "$result | ConvertTo-Json -Depth 3 -Compress",
                         present) if present else {}
     if diagnostics is not None:

@@ -412,6 +412,34 @@ def test_missing_shortcut_still_fails_and_reports_present_link_metadata(tmp_path
     assert diagnostics['start_menu']['exists'] is False and diagnostics['start_menu']['found'] is None
     assert diagnostics['start_menu']['path'] == str(links['start_menu'])
     assert diagnostics['start_menu']['expected_target'] == str(install / 'RequirementsAgent.exe')
+    assert not links['start_menu'].exists() and not links['guide'].exists()
+
+
+def test_real_shell_metadata_reads_existing_unicode_links_without_creating_missing_links(tmp_path):
+    install = tmp_path / 'app'; install.mkdir()
+    (install / 'RequirementsAgent.exe').write_bytes(b'SYNTHETIC METADATA ONLY, NEVER EXECUTED')
+    (install / 'docs').mkdir()
+    (install / 'docs/windows-installation.html').write_text('synthetic guide', 'utf-8')
+    folder = tmp_path / '需求快捷方式-🧪'; folder.mkdir()
+    links = {name: folder / (name + '-需求 Agent-🧪.lnk') for name in ('desktop', 'start_menu', 'guide')}
+    for name, path in links.items():
+        # Create under an ASCII name, then rename with Python's Unicode API.
+        # WScript cannot itself save paths outside the active ANSI code page.
+        temporary_link = tmp_path / (name + '.lnk')
+        target = install / ('docs/windows-installation.html' if name == 'guide' else 'RequirementsAgent.exe')
+        verifier.shell_json("$v=[Console]::In.ReadToEnd() | ConvertFrom-Json; "
+                            "$shell=New-Object -ComObject WScript.Shell; $link=$shell.CreateShortcut($v.link); "
+                            "$link.TargetPath=$v.target; $link.WorkingDirectory=$v.cwd; $link.Save(); "
+                            "@{created=$true} | ConvertTo-Json",
+                            {'link': str(temporary_link), 'target': str(target), 'cwd': str(install)})
+        temporary_link.rename(path)
+    diagnostics = {}
+    verifier.verify_shortcuts(links, install, diagnostics)
+    assert all(row['found']['target'] == row['expected_target'] for row in diagnostics.values())
+    links['start_menu'].unlink()
+    with pytest.raises(verifier.VerificationFailure, match='SHORTCUT_MISSING'):
+        verifier.verify_shortcuts(links, install)
+    assert not links['start_menu'].exists()
 
 
 @pytest.mark.parametrize('changed,code', [('target', 'SHORTCUT_TARGET_MISMATCH'),
@@ -489,6 +517,9 @@ def test_real_temporary_shortcut_inherits_isolated_profile_without_running_produ
                         "$link.WorkingDirectory=$value.cwd; $link.Save(); @{created=$true} | ConvertTo-Json",
                         {'link': str(link), 'target': str(executable), 'cwd': str(private),
                          'arguments': subprocess.list2cmdline(['-I', str(script), str(output)])})
+    unicode_link = private / '需求 Agent-🧪.lnk'
+    link.rename(unicode_link)
+    link = unicode_link
     process = verifier.open_shortcut(link, environment, private, tmp_path / 'unused-install')
     try:
         # Match the real repeat-shortcut budget: clean CI may cold-start both
