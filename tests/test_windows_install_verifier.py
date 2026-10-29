@@ -125,6 +125,100 @@ def test_shutdown_never_posts_to_an_unrelated_instance(monkeypatch):
     assert calls == [('/desktop/api/instance', 'GET')]
 
 
+@pytest.mark.parametrize('invalid_csrf', [False, True])
+def test_real_gateway_shutdown_waits_for_active_request_but_never_retries_bad_csrf(monkeypatch, invalid_csrf):
+    import threading
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+    from types import SimpleNamespace
+    import anyio
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from app.desktop_gateway import DesktopGateway
+
+    entered, release = threading.Event(), threading.Event()
+    business = FastAPI()
+    @business.get('/held-request')
+    async def held_request():
+        entered.set()
+        await anyio.to_thread.run_sync(release.wait)
+        return {'done': True}
+
+    stopped, waited, ports = [], [], []
+    gateway = DesktopGateway(business_factory=lambda: business, shutdown=lambda: stopped.append(True),
+                             instance_id='owned-test-instance')
+    process = SimpleNamespace(wait=lambda timeout: waited.append(timeout) or 0,
+                              terminate_owned=lambda: pytest.fail('must never force termination'))
+    calls = []
+    with TestClient(gateway, base_url=verifier.ORIGIN, client=('127.0.0.1', 53210)) as client:
+        def request_json(path, method='GET', csrf=None):
+            headers = {'Origin': verifier.ORIGIN}
+            if csrf is not None:
+                headers['X-Desktop-CSRF'] = 'incorrect' if invalid_csrf else csrf
+            response = client.request(method, path, headers=headers)
+            calls.append((path, response.status_code))
+            return response.status_code, response.json()
+        monkeypatch.setattr(verifier, 'request_json', request_json)
+        monkeypatch.setattr(verifier, 'wait_for_port_release', lambda: ports.append(True))
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            pending = executor.submit(client.get, '/held-request')
+            try:
+                assert entered.wait(3) and gateway.active_requests == 1
+                def wait_for_browser_poll(_seconds):
+                    assert not invalid_csrf and calls[-1] == ('/desktop/api/shutdown', 409)
+                    release.set()
+                    assert pending.result(timeout=3).status_code == 200
+                    assert gateway.active_requests == 0
+                monkeypatch.setattr(verifier, 'time', SimpleNamespace(monotonic=time.monotonic,
+                                                                      sleep=wait_for_browser_poll))
+                if invalid_csrf:
+                    with pytest.raises(verifier.VerificationFailure, match='GRACEFUL_SHUTDOWN_REJECTED'):
+                        verifier.shutdown_owned(process, 'owned-test-instance')
+                    assert process.shutdown_attempts == [{'http_status': 403, 'code': 'CSRF_DENIED'}]
+                    assert not stopped and not waited and not ports
+                else:
+                    verifier.shutdown_owned(process, 'owned-test-instance')
+                    assert process.shutdown_attempts == [{'http_status': 409, 'code': 'WORKBENCH_BUSY'},
+                                                         {'http_status': 200, 'code': None}]
+                    assert stopped == [True] and waited == [20] and ports == [True]
+                    assert calls == [('/desktop/api/instance', 200), ('/desktop/api/status', 200),
+                                     ('/desktop/api/shutdown', 409), ('/desktop/api/instance', 200),
+                                     ('/desktop/api/status', 200), ('/desktop/api/shutdown', 200)]
+            finally:
+                release.set()
+                pending.result(timeout=3)
+
+
+@pytest.mark.parametrize('scenario', ['persistent_busy', 'other_conflict', 'server_error', 'changed_instance'])
+def test_shutdown_retry_is_bounded_and_rechecks_identity(monkeypatch, scenario):
+    from types import SimpleNamespace
+    calls, waits = [], []
+    clock = iter([0, 0, 5])
+    monkeypatch.setattr(verifier, 'time', SimpleNamespace(monotonic=lambda: next(clock), sleep=waits.append))
+    def request_json(path, method='GET', csrf=None):
+        calls.append(path)
+        if path.endswith('/instance'):
+            return 200, {'instance_id': 'unrelated' if scenario == 'changed_instance' and waits else 'owned'}
+        if path.endswith('/status'):
+            return 200, {'csrf': 'synthetic-never-reported'}
+        status = 500 if scenario == 'server_error' else 409
+        return status, {'code': 'OTHER_CONFLICT' if scenario == 'other_conflict' else 'WORKBENCH_BUSY',
+                        'message': 'synthetic-private-body-not-reported'}
+    monkeypatch.setattr(verifier, 'request_json', request_json)
+    process = SimpleNamespace(wait=lambda *_: pytest.fail('must not wait for refused shutdown'),
+                              terminate_owned=lambda: pytest.fail('must never force termination'))
+    expected = 'SHUTDOWN_INSTANCE_IDENTITY_MISMATCH' if scenario == 'changed_instance' else 'GRACEFUL_SHUTDOWN_REJECTED'
+    with pytest.raises(verifier.VerificationFailure, match=expected) as error:
+        verifier.shutdown_owned(process, 'owned')
+    assert len(process.shutdown_attempts) == (2 if scenario == 'persistent_busy' else 1)
+    assert waits == ([0.2] if scenario in ('persistent_busy', 'changed_instance') else [])
+    assert 'synthetic-' not in json.dumps(process.shutdown_attempts)
+    if scenario == 'changed_instance':
+        assert calls[-1] == '/desktop/api/instance'
+    else:
+        assert json.loads(error.value.__notes__[0])['shutdown_response'] == process.shutdown_attempts[-1]
+
+
 def test_installed_manifest_cannot_read_files_outside_install_directory(tmp_path):
     install = tmp_path / 'install'
     install.mkdir()
@@ -697,7 +791,10 @@ def test_installation_flow_distinguishes_reinstall_from_upgrade_and_detects_data
     monkeypatch.setattr(verifier, 'seed_business_data', seed)
     monkeypatch.setattr(verifier, 'business_snapshot', snapshot)
     monkeypatch.setattr(verifier, 'request_json', lambda *_: (200, [baseline['project']]))
-    monkeypatch.setattr(verifier, 'shutdown_owned', lambda process, *_: process.wait(20))
+    def shutdown(process, *_):
+        process.shutdown_attempts = [{'http_status': 200, 'code': None}]
+        return process.wait(20)
+    monkeypatch.setattr(verifier, 'shutdown_owned', shutdown)
     report = verifier.verify(target, output, upgrade_from=previous if cross_version else None, shortcuts=shortcuts)
     assert Path(state['commands'][0][0]) == (previous if cross_version else target)
     assert report['initial_version'] == ('1.2.8' if cross_version and not same_version else '1.2.9')
@@ -728,6 +825,7 @@ def test_installation_flow_distinguishes_reinstall_from_upgrade_and_detects_data
         assert report['failure_code'] == 'UPGRADE_CHANGED_PROJECT'
     else:
         assert report['status'] == 'DIRECT_INSTALLATION_VERIFIED'
+        assert report['shutdown_attempts'] == [{'http_status': 200, 'code': None}] * 2
         assert report['preserved_data']['key_source'] == 'protected_store'
         assert report['checks']['upgrade_preserves_project_history_attachment_config_and_protected_key']
         assert (home / 'data/.credentials/synthetic.dpapi').read_bytes() == b'encrypted-synthetic'

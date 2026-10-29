@@ -339,12 +339,26 @@ def wait_for_instance(process, expected, timeout=45, launcher=False):
 
 
 def shutdown_owned(process, expected):
-    status, value = request_json('/desktop/api/instance')
-    require(status == 200 and value.get('instance_id') == expected, 'SHUTDOWN_INSTANCE_IDENTITY_MISMATCH')
-    status, value = request_json('/desktop/api/status')
-    require(status == 200 and isinstance(value.get('csrf'), str), 'SHUTDOWN_CSRF_UNAVAILABLE')
-    status, value = request_json('/desktop/api/shutdown', 'POST', value['csrf'])
-    require(status == 200 and value.get('status') == 'STOPPING', 'GRACEFUL_SHUTDOWN_REJECTED')
+    deadline = time.monotonic() + 5
+    while True:
+        status, value = request_json('/desktop/api/instance')
+        require(status == 200 and value.get('instance_id') == expected, 'SHUTDOWN_INSTANCE_IDENTITY_MISMATCH')
+        status, value = request_json('/desktop/api/status')
+        require(status == 200 and isinstance(value.get('csrf'), str), 'SHUTDOWN_CSRF_UNAVAILABLE')
+        status, value = request_json('/desktop/api/shutdown', 'POST', value['csrf'])
+        if not hasattr(process, 'shutdown_attempts'):
+            process.shutdown_attempts = []
+        attempt = {'http_status': status, 'code': value.get('code')}
+        process.shutdown_attempts.append(attempt)
+        if status == 200 and value.get('status') == 'STOPPING':
+            break
+        # A real browser may still be finishing a poll. Only the gateway's
+        # explicit busy response allows a short wait; each retry rechecks identity.
+        if status != 409 or value.get('code') != 'WORKBENCH_BUSY' or time.monotonic() >= deadline:
+            failure = VerificationFailure('GRACEFUL_SHUTDOWN_REJECTED')
+            failure.add_note(json.dumps({'shutdown_response': attempt}))
+            raise failure
+        time.sleep(0.2)
     require(process.wait(20) == 0, 'GRACEFUL_SHUTDOWN_EXIT_FAILED')
     wait_for_port_release()
 
@@ -784,6 +798,8 @@ def verify(installer, output, upgrade_from=None, shortcuts=False):
         if cleanup_errors:
             report['cleanup_errors'] = cleanup_errors
             report['status'] = 'INSTALLATION_VERIFICATION_FAILED'
+        report['shutdown_attempts'] = [attempt for owned in processes
+                                       for attempt in getattr(owned, 'shutdown_attempts', [])]
         if shortcuts:
             report['shortcut_launches'] = [shortcut_diagnostics(owned) for owned in processes
                                           if hasattr(owned, 'shortcut_trace')]
