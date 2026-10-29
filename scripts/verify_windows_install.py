@@ -202,8 +202,13 @@ class OwnedProcess:
         try:
             return self.process.wait(timeout=timeout)
         except subprocess.TimeoutExpired as error:
+            diagnostics = shortcut_diagnostics(self) if hasattr(self, 'shortcut_trace') else None
             self.terminate_owned()
-            raise VerificationFailure('OWNED_PROCESS_TIMEOUT') from error
+            failure = VerificationFailure('OWNED_PROCESS_TIMEOUT')
+            if diagnostics is not None:
+                diagnostics['wrapper_exit_code_after_cleanup'] = self.process.poll()
+                failure.add_note(json.dumps({'shortcut_launch': diagnostics}))
+            raise failure from error
 
     def terminate_owned(self):
         """Only held root handle and verified, younger descendants may be stopped."""
@@ -465,9 +470,42 @@ def open_shortcut(path, environment, private, install):
     # the service it starts is subsequently checked and stopped through its
     # installation/profile identity and CSRF endpoint, never guessed by PID.
     quoted = str(path).replace("'", "''")
-    script = ("$ErrorActionPreference='Stop'; $process=Start-Process -FilePath '" + quoted +
-              "' -PassThru -WindowStyle Hidden; $process.WaitForExit(); exit $process.ExitCode")
-    return OwnedProcess(powershell_command(script), environment, private, install)
+    trace = private / ('shortcut-' + str(time.time_ns()) + '.trace')
+    trace_path = str(trace).replace("'", "''")
+    # Record before invoking cmdlets so a cold PowerShell or Shell startup can
+    # be distinguished from waiting for the target. Never log arguments/env.
+    script = ("$ErrorActionPreference='Stop'; $trace='" + trace_path + "'; "
+              "$clock=[Diagnostics.Stopwatch]::StartNew(); "
+              "function Trace([string]$name,[string]$value) { "
+              "[IO.File]::AppendAllText($trace,$name+\"`t\"+$value+\"`t\"+$clock.ElapsedMilliseconds+[Environment]::NewLine) }; "
+              "Trace 'phase' 'powershell_started'; try { "
+              "Trace 'phase' 'shell_open_requested'; $process=Start-Process -FilePath '" + quoted +
+              "' -PassThru -WindowStyle Hidden; Trace 'phase' 'shell_open_returned'; "
+              "Trace 'target_pid' ([string]$process.Id); "
+              "try { Trace 'target_image' $process.ProcessName } catch { Trace 'target_image' 'unavailable' }; "
+              "Trace 'phase' 'wait_for_target'; $process.WaitForExit(); "
+              "Trace 'target_exit_code' ([string]$process.ExitCode); Trace 'phase' 'target_exited'; "
+              "exit $process.ExitCode } catch { Trace 'phase' 'shell_error'; exit 1 }")
+    owned = OwnedProcess(powershell_command(script), environment, private, install)
+    owned.shortcut_trace = trace
+    return owned
+
+
+def shortcut_diagnostics(owned):
+    result = {'wrapper_exit_code': owned.process.poll(), 'stages': []}
+    trace = owned.shortcut_trace
+    if trace.is_file():
+        for line in trace.read_text('utf-8-sig').splitlines():
+            fields = line.split('\t')
+            # A timeout can sample the last append before its line is complete.
+            if len(fields) != 3 or not fields[2].isdigit():
+                continue
+            name, value, elapsed = fields
+            if name == 'phase':
+                result['stages'].append({'phase': value, 'elapsed_ms': int(elapsed)})
+            elif name in ('target_pid', 'target_image', 'target_exit_code'):
+                result[name] = value
+    return result
 
 
 def check_shortcut_reuse(links, first, expected, environment, private, install, processes):
@@ -729,6 +767,9 @@ def verify(installer, output, upgrade_from=None, shortcuts=False):
         if cleanup_errors:
             report['cleanup_errors'] = cleanup_errors
             report['status'] = 'INSTALLATION_VERIFICATION_FAILED'
+        if shortcuts:
+            report['shortcut_launches'] = [shortcut_diagnostics(owned) for owned in processes
+                                          if hasattr(owned, 'shortcut_trace')]
         report['finished_at'] = datetime.now(timezone.utc).isoformat()
         (output / 'installation-verification.json').write_text(json.dumps(report, ensure_ascii=False, indent=2) + '\n', 'utf-8')
     return report

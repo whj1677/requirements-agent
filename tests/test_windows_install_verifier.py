@@ -381,21 +381,46 @@ def test_shortcut_metadata_rejects_wrong_target_cwd_or_hidden_arguments(tmp_path
 
 def test_shortcut_launch_opens_actual_link_through_shell_and_keeps_isolated_environment(tmp_path, monkeypatch):
     import base64
+    from types import SimpleNamespace
     captured = {}
+    owned = SimpleNamespace()
     link = tmp_path / "user's 需求 Agent.lnk"
     environment = {'LOCALAPPDATA': str(tmp_path / 'private-profile')}
     def capture(command, env, private, install):
         captured.update(command=command, environment=env, private=private, install=install)
-        return 'owned-shell-wrapper'
+        return owned
     monkeypatch.setattr(verifier, 'OwnedProcess', capture)
-    assert verifier.open_shortcut(link, environment, tmp_path, tmp_path / 'app') == 'owned-shell-wrapper'
+    assert verifier.open_shortcut(link, environment, tmp_path, tmp_path / 'app') is owned
     code = base64.b64decode(captured['command'][-1]).decode('utf-16le')
     assert "Start-Process -FilePath '" + str(link).replace("'", "''") + "'" in code
     assert '-WindowStyle Hidden' in code and '--serve' not in code
     assert captured['environment'] is environment
+    assert owned.shortcut_trace.parent == tmp_path
 
 
-def test_real_temporary_shortcut_inherits_isolated_profile_without_running_product(tmp_path):
+def test_shortcut_timeout_keeps_stage_diagnostics_and_still_cleans_owned_wrapper(tmp_path):
+    from types import SimpleNamespace
+    trace = tmp_path / 'shortcut.trace'
+    trace.write_text('phase\tpowershell_started\t0\nphase\tshell_open_returned\t250\n'
+                     'target_pid\t123\t251\ntarget_image\tpython\t252\n'
+                     'phase\twait_for_target\t253\nphase\ttarget_', 'utf-8')
+    state = {'exit': None}
+    def wait(timeout):
+        raise subprocess.TimeoutExpired(['synthetic-wrapper'], timeout)
+    owned = verifier.OwnedProcess.__new__(verifier.OwnedProcess)
+    owned.process = SimpleNamespace(wait=wait, poll=lambda: state['exit'])
+    owned.shortcut_trace = trace
+    owned.terminate_owned = lambda: state.update(exit=1)
+    with pytest.raises(verifier.VerificationFailure, match='OWNED_PROCESS_TIMEOUT') as error:
+        owned.wait(60)
+    details = json.loads(error.value.__notes__[0])['shortcut_launch']
+    assert details['stages'][-1] == {'phase': 'wait_for_target', 'elapsed_ms': 253}
+    assert details['target_image'] == 'python' and details['target_pid'] == '123'
+    assert details['wrapper_exit_code'] is None and details['wrapper_exit_code_after_cleanup'] == 1
+    assert state['exit'] == 1
+
+
+def test_real_temporary_shortcut_inherits_isolated_profile_without_running_product(tmp_path, record_property):
     private = tmp_path / 'private'; private.mkdir()
     environment, _ = verifier.customer_environment(private)
     script = private / 'synthetic_environment.py'
@@ -413,12 +438,22 @@ def test_real_temporary_shortcut_inherits_isolated_profile_without_running_produ
                          'arguments': subprocess.list2cmdline(['-I', str(script), str(output)])})
     process = verifier.open_shortcut(link, environment, private, tmp_path / 'unused-install')
     try:
-        assert process.wait(20) == 0
+        # Match the real repeat-shortcut budget: clean CI may cold-start both
+        # PowerShell and Shell. The trace identifies the stage if it times out.
+        assert process.wait(60) == 0
         observed = json.loads(output.read_text('utf-8'))
         assert observed == {key: environment[key] for key in ('LOCALAPPDATA', 'USERPROFILE', 'APPDATA')}
+    except Exception as error:
+        diagnostics = verifier.shortcut_diagnostics(process)
+        diagnostics['target_witness_exists'] = output.is_file()
+        error.add_note(json.dumps({'shortcut_probe': diagnostics}))
+        raise
     finally:
         if process.process.poll() is None:
             process.terminate_owned()
+        diagnostics = verifier.shortcut_diagnostics(process)
+        diagnostics['target_witness_exists'] = output.is_file()
+        record_property('shortcut_probe', json.dumps(diagnostics))
 
 
 def test_shortcut_launcher_may_exit_before_its_owned_service_is_ready(monkeypatch):
