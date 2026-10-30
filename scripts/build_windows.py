@@ -115,11 +115,16 @@ def copy_browser(source, destination):
 
 
 def installed_requirements(root):
+    from packaging.requirements import Requirement
     found = {}
     for line in (root / 'requirements.lock.txt').read_text('utf-8').splitlines():
         if not line.strip() or line.startswith('#'):
             continue
-        name, expected = line.split('==', 1)
+        requirement = Requirement(line)
+        if requirement.marker and not requirement.marker.evaluate():
+            continue
+        name = requirement.name
+        expected = next(rule.version for rule in requirement.specifier if rule.operator == '==')
         actual = importlib.metadata.version(name)
         if actual != expected:
             raise RuntimeError(f'Locked dependency mismatch: {name} {actual} != {expected}')
@@ -363,6 +368,7 @@ def build(args):
                '--collect-submodules', 'PIL', '--collect-data', 'jsonschema_specifications',
                '--hidden-import', 'tkinter', '--hidden-import', 'tkinter.filedialog',
                '--hidden-import', 'tkinter.messagebox', '--hidden-import', 'playwright.async_api',
+               '--hidden-import', 'pythoncom', '--hidden-import', 'pywintypes', '--hidden-import', 'win32com.client.dynamic',
                '--hidden-import', 'playwright.sync_api', '--exclude-module', 'pytest',
                '--exclude-module', 'IPython', '--exclude-module', 'matplotlib']
     for name in LEGACY_MODULES:
@@ -397,7 +403,7 @@ def build(args):
                     pyinstaller=BUILD_VERSION, dependencies=requirements,
                     browsers=[entry for _, entry in browser_specs],
                     frontend_built_from_source=True, data_and_credentials_included=False,
-                    native_file_bytes_verified=True, native_file_count=native_reads['checked'],
+                    native_file_bytes_verified=True, native_file_count=native_reads['checked'], local_office_engine='native-com',
                     verification_status='BUILT_NOT_ACCEPTED',
                     code_signing='unsigned', installer_compiler_sha256=sha256(iscc))
     json_write(target / 'release-manifest.json', manifest)

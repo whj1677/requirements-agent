@@ -214,6 +214,10 @@ def smoke_test():
     buf = io.BytesIO()
     Image.new('RGB', (20, 20), 'white').save(buf, format='PNG')
     checks['image_subprocess'] = parse_bounded('test.png', buf.getvalue())[1] == 'awaiting_vision'
+    from .office import probe_runtime
+    import tempfile
+    with tempfile.TemporaryDirectory(prefix='ra-com-runtime-') as folder:
+        checks['windows_com_runtime'] = probe_runtime(folder)
     from playwright.sync_api import sync_playwright
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
@@ -233,6 +237,10 @@ def smoke_test():
 
 
 def main(argv=None):
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    if arguments and arguments[0] == '--office-worker':
+        from .office_worker import main as office_main
+        return office_main(arguments[1:])
     parser = argparse.ArgumentParser()
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument('--serve', action='store_true')
@@ -240,7 +248,7 @@ def main(argv=None):
     modes.add_argument('--smoke-test', action='store_true')
     modes.add_argument('--check-idle', action='store_true')
     parser.add_argument('--output')
-    args = parser.parse_args(argv)
+    args = parser.parse_args(arguments)
     if args.check_idle:
         try:
             idle = not port_in_use() and not active_tasks()

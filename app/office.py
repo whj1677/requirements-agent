@@ -4,14 +4,13 @@ import os
 from pathlib import Path
 import re
 import subprocess
-import shutil
 import tempfile
 import threading
 
 OFFICE_EXTENSIONS = {'.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx'}
 OFFICE_TIMEOUT = 90
 _office_lock = threading.Lock()
-WORKER = Path(__file__).with_name('office_worker.ps1')
+WORKER = Path(__file__).with_name('office_worker.py')
 APPLICATIONS = {
     'Word': (('KWPS.Application', 'wps', 'WPS 文字'), ('Word.Application', 'WINWORD', 'Microsoft Word')),
     'Excel': (('KET.Application', 'et', 'WPS 表格'), ('Excel.Application', 'EXCEL', 'Microsoft Excel')),
@@ -39,10 +38,19 @@ def registered_application(kind):
     return None
 
 
-def powershell_host():
-    modern = Path(os.environ.get('ProgramFiles', 'C:/Program Files')) / 'PowerShell/7/pwsh.exe'
-    legacy = Path(os.environ.get('SystemRoot', 'C:/Windows')) / 'System32/WindowsPowerShell/v1.0/powershell.exe'
-    return shutil.which('pwsh.exe') or (str(modern) if modern.exists() else str(legacy))
+def worker_command():
+    import sys
+    return [sys.executable, '--office-worker'] if getattr(sys, 'frozen', False) else [sys.executable, '-m', 'app.office_worker']
+
+
+def probe_runtime(folder):
+    with tempfile.TemporaryDirectory(prefix='com-probe-', dir=folder) as temporary:
+        output = Path(temporary).resolve() / 'result.json'
+        completed = subprocess.run(worker_command() + ['--probe-runtime', '--output', str(output)],
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=20,
+                                   cwd=WORKER.parent.parent,
+                                   creationflags=subprocess.CREATE_NO_WINDOW)
+        return completed.returncode == 0 and output.is_file() and json.loads(output.read_text('utf-8')).get('status') == 'COM_RUNTIME_READY'
 
 
 def extract_office(title, data, folder):
@@ -62,40 +70,35 @@ def extract_office(title, data, folder):
         source = temp / ('source' + Path(title).suffix.lower())
         source.write_bytes(data)
         output, owner = temp / 'result.json', temp / 'owner.json'
-        shell = powershell_host()
-        # Honor the selected host's execution policy; do not use ExecutionPolicy Bypass.
-        command = [shell, '-NoProfile', '-NonInteractive', '-STA', '-File', str(WORKER)]
+        command = worker_command() + ['--input', str(source), '--output', str(output), '--owner', str(owner),
+                                      '--progid', application['progid'], '--process', application['process']]
         flags = subprocess.CREATE_NO_WINDOW
+        result = None
         try:
-            completed = subprocess.run(command + ['-InputPath', str(source), '-OutputPath', str(output), '-OwnerPath', str(owner),
-                                                  '-ProgId', application['progid'], '-ProcessName', application['process']],
+            completed = subprocess.run(command,
                            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                           cwd=WORKER.parent.parent,
                            timeout=OFFICE_TIMEOUT, creationflags=flags, check=False)
             if not output.exists():
-                diagnostic = (completed.stderr or b'').decode('utf-8', errors='replace')
-                blocked = 'PSSecurityException' in diagnostic or ('SecurityError' in diagnostic and 'UnauthorizedAccess' in diagnostic)
-                reason = ('PowerShell 执行策略拒绝运行本机读取脚本；尚未打开资料，请由本机管理员确认允许的读取方式。' if blocked else
-                          f'本机文档读取进程未返回结果（退出码 {completed.returncode}），可能在启动或脚本执行阶段受限；尚不能据此判断办公软件是否安装、激活或文件是否可读。')
-                return dict(status='office_required', reason=reason, rows=[],
-                            code='OFFICE_WORKER_POLICY_BLOCKED' if blocked else 'OFFICE_NO_RESULT', failure_stage='worker_execution',
-                            worker_exit_code=completed.returncode, application=application['application'],
-                            automation_progid=application['progid'], process_name=application['process'], worker_shell=Path(shell).name)
-            result = json.loads(output.read_text(encoding='utf-8-sig'))
+                result = dict(status='office_required', reason=f'本机原生读取进程未返回结果（退出码 {completed.returncode}）；原件保留，尚未取得可用内容。',
+                              rows=[], code='OFFICE_NO_RESULT', failure_stage='worker_execution', worker_exit_code=completed.returncode)
+            else:
+                result = json.loads(output.read_text(encoding='utf-8-sig'))
             if result.get('status') not in ('partial', 'read', 'office_required', 'permission_denied'):
                 raise ValueError('Invalid Office status')
-            result.update(application=application['application'], automation_progid=application['progid'],
-                          process_name=application['process'])
-            return result
         except subprocess.TimeoutExpired:
-            return dict(status='office_required', reason='本机 Office 读取超时（90 秒），可能等待登录、密码或权限提示；未取得内容，原件保留。', rows=[], code='OFFICE_TIMEOUT')
+            result = dict(status='office_required', reason='本机办公软件读取超时（90 秒），可能等待登录、密码或权限提示；未取得内容，原件保留。', rows=[], code='OFFICE_TIMEOUT', failure_stage='worker_timeout')
         except (OSError, ValueError):
-            return dict(status='office_required', reason='当前本机 Office 读取方式不可用，未取得有效内容；原件保留。', rows=[], code='OFFICE_UNAVAILABLE')
+            result = dict(status='office_required', reason='当前本机原生读取组件不可用，未取得有效内容；原件保留。', rows=[], code='OFFICE_UNAVAILABLE', failure_stage='worker_execution')
         finally:
-            # Worker records PID + creation time only after verifying a new instance.
-            # Never use taskkill /IM or close a pre-existing user application.
             if owner.exists():
+                from .office_process import cleanup_owned
                 try:
-                    subprocess.run(command + ['-CleanupOwner', str(owner)], stdout=subprocess.DEVNULL,
-                                   stderr=subprocess.DEVNULL, timeout=10, creationflags=flags, check=False)
-                except (OSError, subprocess.TimeoutExpired):
-                    pass
+                    cleaned = cleanup_owned(owner)
+                except (OSError, ValueError, KeyError):
+                    cleaned = False
+                if result is not None:
+                    result['owned_process_cleanup'] = 'verified' if cleaned else 'unconfirmed'
+        result.update(application=application['application'], automation_progid=application['progid'],
+                      process_name=application['process'], engine='native-com')
+        return result

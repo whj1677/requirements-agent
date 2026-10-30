@@ -132,41 +132,45 @@ def test_upload_retry_persists_old_source_and_requires_new_external_grant(tmp_pa
 def test_office_timeout_cleanup_is_scoped(tmp_path, monkeypatch):
     from app import office
     calls=[]
+    cleaned=[]
+    from app import office_process
+    monkeypatch.setattr(office_process, 'cleanup_owned', lambda owner: cleaned.append(owner) or True)
     monkeypatch.setattr(office, 'registered_application', lambda _kind:
                         dict(progid='Word.Application', process='winword', application='Microsoft Word'))
     def run(cmd, **kwargs):
         calls.append(cmd)
-        if '-OwnerPath' in cmd:
-            Path(cmd[cmd.index('-OwnerPath')+1]).write_text('{}')
+        if '--owner' in cmd:
+            Path(cmd[cmd.index('--owner')+1]).write_text('{}')
             raise subprocess.TimeoutExpired(cmd, 90)
         return subprocess.CompletedProcess(cmd, 0)
     monkeypatch.setattr(office.subprocess, 'run', run)
     if os.name != 'nt': pytest.skip('Windows cleanup command')
     result=extract_office('a.docx', b'synthetic', tmp_path)
     assert result['code'] == 'OFFICE_TIMEOUT'
-    assert '-CleanupOwner' in calls[-1] and len(calls) == 2
+    assert len(calls) == 1 and len(cleaned) == 1
+    assert result['owned_process_cleanup'] == 'verified'
     assert not list(tmp_path.iterdir())
 
 
-def test_office_fallback_finds_system_powershell_without_developer_path(tmp_path, monkeypatch):
+def test_office_fallback_uses_python_without_any_powershell_dependency(tmp_path, monkeypatch):
     from app import office
     if os.name != 'nt': pytest.skip('Windows PowerShell discovery')
     monkeypatch.setattr(office, 'registered_application', lambda _kind:
                         dict(progid='Word.Application', process='winword', application='Microsoft Word'))
     monkeypatch.setenv('ProgramFiles', str(tmp_path / 'no-powershell-seven'))
     monkeypatch.setenv('SystemRoot', str(tmp_path / 'Windows'))
-    monkeypatch.setattr(office.shutil, 'which', lambda _name: None)
     commands = []
     def run(command, **kwargs):
         commands.append(command)
         return subprocess.CompletedProcess(command, 1)
     monkeypatch.setattr(office.subprocess, 'run', run)
     result = extract_office('synthetic.docx', b'synthetic', tmp_path)
-    assert commands[0][0] == str(tmp_path / 'Windows/System32/WindowsPowerShell/v1.0/powershell.exe')
-    assert '-File' in commands[0] and '-ExecutionPolicy' not in commands[0]
+    import sys
+    assert commands[0][:3] == [sys.executable, '-m', 'app.office_worker']
+    assert '--input' in commands[0] and not any('powershell' in arg.lower() or arg == '-ExecutionPolicy' for arg in commands[0])
     assert result['code'] == 'OFFICE_NO_RESULT'
     assert result['failure_stage'] == 'worker_execution' and result['worker_exit_code'] == 1
-    assert '尚不能据此判断' in result['reason']
+    assert result['engine'] == 'native-com'
 
 
 @pytest.mark.skipif(os.environ.get('RA_TEST_LOCAL_OFFICE') != '1', reason='Explicit opt-in: starts local installed Office with synthetic documents')

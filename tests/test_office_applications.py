@@ -8,7 +8,7 @@ import pytest
 
 from app import office
 
-pytestmark = pytest.mark.skipif(os.name != 'nt', reason='Windows registry and PowerShell')
+pytestmark = pytest.mark.skipif(os.name != 'nt', reason='Windows registry and COM')
 
 
 @pytest.mark.parametrize('kind,progid,process,label', [
@@ -55,10 +55,10 @@ def test_wps_worker_arguments_and_recorded_provider_are_explicit(tmp_path, monke
         return dict(progid=progid, process=process, application=label)
     monkeypatch.setattr(office, 'registered_application', select)
     def run(command, **_kwargs):
-        assert '-STA' in command and '-ExecutionPolicy' not in command
-        assert command[command.index('-ProgId') + 1] == progid
-        assert command[command.index('-ProcessName') + 1] == process
-        Path(command[command.index('-OutputPath') + 1]).write_text(json.dumps(dict(
+        assert '-m' in command and 'app.office_worker' in command
+        assert command[command.index('--progid') + 1] == progid
+        assert command[command.index('--process') + 1] == process
+        Path(command[command.index('--output') + 1]).write_text(json.dumps(dict(
             status='partial', rows=[['正文段落 1', '合成资料']], reason='人工正文未核对',
             content_match='not_verified')), 'utf-8')
         return subprocess.CompletedProcess(command, 0)
@@ -72,32 +72,24 @@ def test_wps_worker_arguments_and_recorded_provider_are_explicit(tmp_path, monke
 @pytest.mark.parametrize('extension,progid,process', [
     ('.docx', 'KWPS.Application', 'wps'), ('.xlsx', 'KET.Application', 'et'), ('.pptx', 'KWPP.Application', 'wpp'),
 ])
-def test_worker_refuses_existing_wps_before_com_or_security_changes(tmp_path, extension, progid, process):
-    output = tmp_path / 'result.json'
-    # Replace the process query in this subprocess with a synthetic busy app.
-    # New-Object must never run, so no real COM application is created.
-    wrapper = tmp_path / 'busy.ps1'
-    quote = lambda path: "'" + str(path).replace("'", "''") + "'"
-    wrapper.write_text("function Get-Process { [pscustomobject]@{Id=12345} }\n"
-                       "function New-Object { throw 'COM_MUST_NOT_START' }\n"
-                       '& ' + quote(office.WORKER) + ' -InputPath synthetic' + extension + ' -OutputPath ' + quote(output) +
-                       ' -OwnerPath ' + quote(tmp_path / 'owner.json') +
-                       ' -ProgId ' + progid + ' -ProcessName ' + process + '\n', 'utf-8-sig')
-    run = subprocess.run([office.powershell_host(), '-NoProfile', '-NonInteractive', '-STA', '-File', str(wrapper)],
-                         capture_output=True, timeout=20, creationflags=subprocess.CREATE_NO_WINDOW)
-    assert run.returncode == 0, run.stderr.decode(errors='replace')
-    result = json.loads(output.read_text('utf-8-sig'))
+def test_worker_refuses_existing_wps_before_com_or_security_changes(tmp_path, monkeypatch, extension, progid, process):
+    from types import SimpleNamespace
+    from app import office_worker
+    com = SimpleNamespace(COINIT_APARTMENTTHREADED=2, CoInitializeEx=lambda _: None, CoUninitialize=lambda: None,
+                          CoCreateInstance=lambda *_: pytest.fail('Existing WPS must not be touched'))
+    monkeypatch.setattr(office_worker, 'com_runtime', lambda: (com, None))
+    monkeypatch.setattr(office_worker, 'processes', lambda _name: [{'pid': 12345}])
+    result = office_worker.extract(tmp_path / ('synthetic' + extension), tmp_path / 'owner.json', progid, process)
     assert result['code'] == 'OFFICE_BUSY' and result['rows'] == []
     assert not (tmp_path / 'owner.json').exists()
 
 
-def test_execution_policy_rejection_is_not_misreported_as_office_installation_failure(tmp_path, monkeypatch):
+def test_native_worker_failure_never_changes_or_retries_script_policy(tmp_path, monkeypatch):
     monkeypatch.setattr(office, 'registered_application', lambda _kind:
                         dict(progid='KWPS.Application', process='wps', application='WPS 文字'))
     monkeypatch.setattr(office.subprocess, 'run', lambda command, **_kw:
                         subprocess.CompletedProcess(command, 1, stderr=b'SecurityError UnauthorizedAccess synthetic-private-path'))
     result = office.extract_office('synthetic.docx', b'synthetic-only', tmp_path)
-    assert result['code'] == 'OFFICE_WORKER_POLICY_BLOCKED'
+    assert result['code'] == 'OFFICE_NO_RESULT'
     assert result['failure_stage'] == 'worker_execution' and result['rows'] == []
-    assert '尚未打开资料' in result['reason']
     assert 'synthetic-private-path' not in json.dumps(result)

@@ -75,7 +75,7 @@ def test_package_rejects_build_that_differs_from_source(tmp_path):
 def test_required_files_and_installer_guard_order():
     paths = {path.as_posix() for path in source_paths(ROOT)}
     assert {'scripts/install.ps1', 'scripts/start.ps1', 'scripts/stop.ps1',
-            'scripts/check_active_tasks.py', 'app/office_worker.ps1'} <= paths
+            'scripts/check_active_tasks.py', 'app/office_worker.py', 'app/office_process.py'} <= paths
     install = (ROOT / 'scripts' / 'install.ps1').read_text('utf-8-sig')
     assert install.index('Assert-WorkbenchIdle\n') < install.index('-m pip install')
     assert install.index('npm.cmd run build -- --outDir $verifiedDist') < install.index('Move-Item -LiteralPath $verifiedDist')

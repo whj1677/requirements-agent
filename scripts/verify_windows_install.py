@@ -605,7 +605,7 @@ def install_command(installer, install, log, shortcuts=False):
             '/CURRENTUSER', *icons, '/DIR=' + str(install), '/LOG=' + str(log)]
 
 
-def verify_packaged_smoke(executable, environment, private, install, processes, name):
+def verify_packaged_smoke(executable, environment, private, install, processes, name, native_com=False):
     result_file = private / (name + '-offline-smoke.json')
     check = OwnedProcess([str(executable), '--smoke-test', '--output', str(result_file)],
                          environment, private, install)
@@ -614,6 +614,8 @@ def verify_packaged_smoke(executable, environment, private, install, processes, 
     value = json.loads(result_file.read_text('utf-8'))
     expected_checks = {'docx_subprocess', 'xlsx_subprocess', 'pptx_subprocess',
                        'image_subprocess', 'bundled_chromium', 'session', 'frontend', 'projects'}
+    if native_com:
+        expected_checks.add('windows_com_runtime')
     require(value.get('status') == 'OFFLINE_SMOKE_VERIFIED' and value.get('model_calls') == 0 and
             isinstance(value.get('checks'), dict) and
             all(value['checks'].get(name) is True for name in expected_checks),
@@ -657,7 +659,7 @@ def verify(installer, output, upgrade_from=None, shortcuts=False):
                       installed_exe_sha256=sha256(executable), installed_file_count=len(manifest['files']))
         report['checks']['silent_install_and_file_hashes'] = True
 
-        verify_packaged_smoke(executable, environment, private, install, processes, 'initial')
+        verify_packaged_smoke(executable, environment, private, install, processes, 'initial', not bool(upgrade_from))
         report['checks']['packaged_offline_smoke'] = True
 
         expected_instance = instance_identity(executable, home)
@@ -707,7 +709,8 @@ def verify(installer, output, upgrade_from=None, shortcuts=False):
                       upgrade_mode='cross_version_upgrade' if manifest['version'] != initial_version else 'same_version_reinstall')
         require(not upgrade_from or manifest['version'] != initial_version, 'UPGRADE_VERSION_UNCHANGED')
         if upgrade_from:
-            verify_packaged_smoke(executable, environment, private, install, processes, 'target')
+            verify_packaged_smoke(executable, environment, private, install, processes, 'target', True)
+        report['checks']['packaged_native_com_runtime'] = True
         expected_instance = instance_identity(executable, home)
         if shortcuts:
             report['shortcut_checks']['target'] = {}
