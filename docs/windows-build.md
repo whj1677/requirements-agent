@@ -4,7 +4,7 @@
 
 ## 当前构建与验收（2026-10-30）
 
-- 阶段：1.2.9 安装验收见 [历史记录](windows-installer-20261029.md)；1.2.11 取消读取链对 PowerShell 的依赖；1.2.12 修复 32 位 WPS 注册视图及统一进程识别，真实 Word／Excel 已通过，当前 WPS 演示后备读取受宏禁用能力限制，全功能验收仍为部分通过，见 [WPS 实测记录](wps-registration-20261030.md)。
+- 阶段：1.2.9 安装验收见 [历史记录](windows-installer-20261029.md)；1.2.13 包含 WPS 开窗读取、聊天区布局与固定目录覆盖升级，当前 WPS 演示后备读取仍受宏禁用能力限制，全功能验收为部分通过，详见 [本轮验证记录](wps-open-20261030.md)。
 - 目标：交付无需设备许可证、包含最新已修复工作台的自包含 Windows 试用安装器。
 - 输入：已审核的精确源码提交、锁定依赖、已有 Windows 构建与安装验证流程。
 - 交付物：`app/version.py` 指定版本的安装器、SHA-256、清单、实际验证记录和随包指南。
@@ -18,11 +18,11 @@
 
 1. 将相互依赖的实现、测试、构建脚本及文档提交。
 2. 从 Actions 的 **Windows customer distribution** 选择已审核分支手动运行，实际检出提交作为版本事实源。
-3. 构建前执行桌面运行、启动/导入和打包边界测试；构建后执行新版本全新安装，以及安装验证已通过的 1.2.11 到新版本的跨版本升级。两轮均核对快捷方式、离线运行、数据保留和卸载；新版本另核对随包 COM 运行组件与不打开文档的接口注册诊断。
+3. 构建前执行桌面运行、启动/导入和打包边界测试；构建后执行新版本全新安装，以及安装验证已通过的 1.2.12 到新版本的运行中跨版本升级。两轮均核对快捷方式、旧运行资源清理、离线运行、数据保留和卸载；跨版本升级另要求原进程退出，新版本核对随包 COM 运行组件与不打开文档的接口注册诊断。
 4. 下载 `requirements-agent-windows-<提交SHA>` 工件，核对安装器 SHA-256、`source_commit`、`working_tree_dirty=false`、`native_file_bytes_verified=true`、`device_license_required=false` 和发行标识 `windows-x64-direct`。
 5. 构建清单的 `BUILT_NOT_ACCEPTED` 仅说明构建完成；实际结论分别以 `installation-verification/installation-verification.json` 和 `upgrade-verification/installation-verification.json` 为准。
 
-全新安装验证命令：`python scripts/verify_windows_install.py --installer <新版安装器> --shortcuts --output <新目录>`。跨版本验证另用新的输出目录，增加 `--upgrade-from <已核验的1.2.11安装器>`。没有指定旧安装器时，仅能称为同版本原位重装。
+全新安装验证命令：`python scripts/verify_windows_install.py --installer <新版安装器> --shortcuts --output <新目录>`。跨版本验证另用新的输出目录，增加 `--upgrade-from <已核验的1.2.12安装器> --running-upgrade`。没有指定旧安装器时，仅能称为同版本原位重装。
 
 验证器使用隔离用户数据目录、仅含 Windows 系统目录的 PATH，不依赖主机 Python/Node/浏览器缓存。执行内置 DOCX/XLSX/PPTX/图片读取与 Chromium smoke，实际创建并打开桌面和开始菜单快捷方式，重复打开检查实例复用；通过业务 API 创建合成项目、附件和模型配置，升级后读取，并在卸载后核对文件保留。合成 Key 仅检查保存与重载，不调用模型。旧许可证哨兵仅验证保留，不具备授权作用。
 
@@ -79,9 +79,9 @@ python scripts/build_windows.py --output C:\approved-build\release-current `
 ## 安装版验收边界
 
 - 新用户直接启动；缺失或损坏旧许可证不影响使用。
-- 在相同 Windows 用户下升级、卸载和重装保留项目、用户配置和旧许可证文件；未保存输入和活动任务受到退出保护。
+- 在相同 Windows 用户下升级、卸载和重装保留项目、用户配置和旧许可证文件。安装时由 Windows Restart Manager 关闭原目录旧进程，必要时强制结束；升级前应保存未发送输入，活动任务可能中断。卸载仍要求正常停止应用。
 - 从实际 EXE 核对独立解析进程、内置 Chromium、固定 8765 与前端资源；不借用开发环境。
 - 清单逐文件哈希、Windows 原生字节检查与干净源码提交一致，不将未跟踪源码混入发布证据。
 - 客户自己的 API Key、接收端绑定与材料发送确认继续有效。
 
-Office 只读后备仍依赖客户获准使用的 Microsoft Office 与企业策略。第二台物理电脑、客户受保护材料及真实模型 MRD/PRD 质量需分别记录，不能从安装成功推断。
+Office 只读后备仍依赖客户获准使用的 Microsoft Office／WPS 与企业策略。第二台物理电脑、客户受保护材料及真实模型 MRD/PRD 质量需分别记录，不能从安装成功推断。
