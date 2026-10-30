@@ -154,7 +154,7 @@ def test_real_gateway_shutdown_waits_for_active_request_but_never_retries_bad_cs
         await anyio.to_thread.run_sync(release.wait)
         return {'done': True}
 
-    stopped, waited, ports = [], [], []
+    stopped, waited, ports, runtimes = [], [], [], []
     gateway = DesktopGateway(business_factory=lambda: business, shutdown=lambda: stopped.append(True),
                              instance_id='owned-test-instance')
     process = SimpleNamespace(wait=lambda timeout: waited.append(timeout) or 0,
@@ -170,6 +170,7 @@ def test_real_gateway_shutdown_waits_for_active_request_but_never_retries_bad_cs
             return response.status_code, response.json()
         monkeypatch.setattr(verifier, 'request_json', request_json)
         monkeypatch.setattr(verifier, 'wait_for_port_release', lambda: ports.append(True))
+        monkeypatch.setattr(verifier, 'wait_for_runtime_release', lambda: runtimes.append(True))
         with ThreadPoolExecutor(max_workers=1) as executor:
             pending = executor.submit(client.get, '/held-request')
             try:
@@ -185,18 +186,44 @@ def test_real_gateway_shutdown_waits_for_active_request_but_never_retries_bad_cs
                     with pytest.raises(verifier.VerificationFailure, match='GRACEFUL_SHUTDOWN_REJECTED'):
                         verifier.shutdown_owned(process, 'owned-test-instance')
                     assert process.shutdown_attempts == [{'http_status': 403, 'code': 'CSRF_DENIED'}]
-                    assert not stopped and not waited and not ports
+                    assert not stopped and not waited and not ports and not runtimes
                 else:
                     verifier.shutdown_owned(process, 'owned-test-instance')
                     assert process.shutdown_attempts == [{'http_status': 409, 'code': 'WORKBENCH_BUSY'},
                                                          {'http_status': 200, 'code': None}]
                     assert stopped == [True] and waited == [60] and ports == [True]
+                    assert runtimes == [True]
                     assert calls == [('/desktop/api/instance', 200), ('/desktop/api/status', 200),
                                      ('/desktop/api/shutdown', 409), ('/desktop/api/instance', 200),
                                      ('/desktop/api/status', 200), ('/desktop/api/shutdown', 200)]
             finally:
                 release.set()
                 pending.result(timeout=3)
+
+
+@pytest.mark.parametrize('state', ['releasing', 'busy', 'denied'])
+def test_runtime_release_requires_absent_mutexes_without_terminating_processes(monkeypatch, state):
+    import ctypes
+    from types import SimpleNamespace
+    values = iter([123, None, None, None])
+    closed, slept = [], []
+    def open_mutex(*_):
+        ctypes.set_last_error(5 if state == 'denied' else 2)
+        return next(values) if state == 'releasing' else (123 if state == 'busy' else None)
+    kernel = SimpleNamespace(OpenMutexW=open_mutex, CloseHandle=lambda handle: closed.append(handle))
+    monkeypatch.setattr(verifier, 'kernel_api', lambda: kernel)
+    ticks = iter([0, 1])
+    monkeypatch.setattr(verifier, 'time', SimpleNamespace(
+        monotonic=(lambda: next(ticks)) if state == 'busy' else lambda: 0,
+        sleep=lambda seconds: slept.append(seconds)))
+    if state == 'releasing':
+        verifier.wait_for_runtime_release(timeout=.5)
+        assert closed == [123] and slept == [.1]
+    else:
+        code = 'RUNTIME_MUTEX_NOT_RELEASED' if state == 'busy' else 'RUNTIME_MUTEX_CHECK_FAILED'
+        with pytest.raises(verifier.VerificationFailure, match=code):
+            verifier.wait_for_runtime_release(timeout=.5)
+        assert not slept
 
 
 @pytest.mark.parametrize('scenario', ['persistent_busy', 'other_conflict', 'server_error', 'changed_instance'])
@@ -603,9 +630,11 @@ def test_shortcut_timeout_keeps_stage_diagnostics_and_still_cleans_owned_wrapper
     owned = verifier.OwnedProcess.__new__(verifier.OwnedProcess)
     owned.process = SimpleNamespace(wait=wait, poll=lambda: state['exit'])
     owned.shortcut_trace = trace
+    owned.executable = Path('synthetic-wrapper.exe')
     owned.terminate_owned = lambda: state.update(exit=1)
     with pytest.raises(verifier.VerificationFailure, match='OWNED_PROCESS_TIMEOUT') as error:
         owned.wait(60)
+    assert error.value.timed_out_process == {'executable': 'synthetic-wrapper.exe', 'seconds': 60}
     details = json.loads(error.value.__notes__[0])['shortcut_launch']
     assert details['stages'][-1] == {'phase': 'wait_for_target', 'elapsed_ms': 253}
     assert details['target_image'] == 'python' and details['target_pid'] == '123'

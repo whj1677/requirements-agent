@@ -102,5 +102,5 @@ function InitializeUninstall(): Boolean;
 begin
   Result := ExistingApplicationIsIdle();
   if not Result then
-    MsgBox('请保存输入并正常停止需求 Agent 后再卸载。用户数据与配置将保留在本机用户目录。', mbError, MB_OK);
+    SuppressibleMsgBox('请保存输入并正常停止需求 Agent 后再卸载。用户数据与配置将保留在本机用户目录。', mbError, MB_OK, IDOK);
 end;

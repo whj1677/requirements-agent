@@ -205,6 +205,7 @@ class OwnedProcess:
             diagnostics = shortcut_diagnostics(self) if hasattr(self, 'shortcut_trace') else None
             self.terminate_owned()
             failure = VerificationFailure('OWNED_PROCESS_TIMEOUT')
+            failure.timed_out_process = {'executable': self.executable.name, 'seconds': timeout}
             if diagnostics is not None:
                 diagnostics['wrapper_exit_code_after_cleanup'] = self.process.poll()
                 failure.add_note(json.dumps({'shortcut_launch': diagnostics}))
@@ -361,6 +362,28 @@ def shutdown_owned(process, expected):
         time.sleep(0.2)
     require(process.wait(60) == 0, 'GRACEFUL_SHUTDOWN_EXIT_FAILED')
     wait_for_port_release()
+    wait_for_runtime_release()
+
+
+def wait_for_runtime_release(timeout=60):
+    """A shortcut launcher can exit before its service releases the runtime mutex."""
+    kernel = kernel_api()
+    kernel.OpenMutexW.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.LPCWSTR]
+    kernel.OpenMutexW.restype = wintypes.HANDLE
+    deadline = time.monotonic() + timeout
+    while True:
+        busy = False
+        for name in ('Local\\RequirementsAgent-Desktop-Runtime-8765', 'Local\\RequirementsAgent-Desktop-Launch-8765'):
+            handle = kernel.OpenMutexW(0x00100000, False, name)
+            if handle:
+                kernel.CloseHandle(handle)
+                busy = True
+            else:
+                require(ctypes.get_last_error() == 2, 'RUNTIME_MUTEX_CHECK_FAILED')
+        if not busy:
+            return
+        require(time.monotonic() < deadline, 'RUNTIME_MUTEX_NOT_RELEASED')
+        time.sleep(.1)
 
 
 def wait_for_port_release(timeout=10):
@@ -782,6 +805,8 @@ def verify(installer, output, upgrade_from=None, shortcuts=False):
     except Exception as error:
         report['status'] = 'INSTALLATION_VERIFICATION_FAILED'
         report['failure_code'] = str(error) if isinstance(error, VerificationFailure) else type(error).__name__
+        if getattr(error, 'timed_out_process', None):
+            report['timed_out_process'] = error.timed_out_process
     finally:
         cleanup_errors = (['CREATED_PROCESS_INITIALIZATION_CLEANUP_FAILED']
                           if report.get('failure_code') == 'CREATED_PROCESS_INITIALIZATION_CLEANUP_FAILED' else [])
