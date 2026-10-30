@@ -7,6 +7,31 @@ from pathlib import Path
 ALLOWED = {'winword', 'excel', 'powerpnt', 'wps', 'et', 'wpp'}
 
 
+def window_process_id(window):
+    user = ctypes.WinDLL('user32', use_last_error=True)
+    user.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+    pid = wintypes.DWORD()
+    if not user.GetWindowThreadProcessId(window, ctypes.byref(pid)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    return pid.value
+
+
+def visible_process_ids():
+    """Identify user-visible windows without reading their titles or document contents."""
+    user = ctypes.WinDLL('user32', use_last_error=True)
+    callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    user.EnumWindows.argtypes = [callback_type, wintypes.LPARAM]
+    user.IsWindowVisible.argtypes = [wintypes.HWND]
+    found = set()
+    def visit(window, _parameter):
+        if user.IsWindowVisible(window):
+            found.add(window_process_id(window))
+        return True
+    if not user.EnumWindows(callback_type(visit), 0):
+        raise ctypes.WinError(ctypes.get_last_error())
+    return found
+
+
 def kernel_api():
     kernel = ctypes.WinDLL('kernel32', use_last_error=True)
     kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
@@ -55,7 +80,7 @@ def processes(name):
                         raise ctypes.WinError(ctypes.get_last_error())
                 else:
                     try:
-                        found.append(handle_identity(kernel, handle, entry.pid))
+                        found.append(dict(handle_identity(kernel, handle, entry.pid), parent_pid=entry.parent))
                     finally:
                         kernel.CloseHandle(handle)
             more = kernel.Process32NextW(snapshot, ctypes.byref(entry))
@@ -66,7 +91,12 @@ def processes(name):
 
 def cleanup_owned(owner_path):
     """A held handle, image and creation stamp must match before termination."""
-    owner = json.loads(Path(owner_path).read_text('utf-8'))
+    value = json.loads(Path(owner_path).read_text('utf-8'))
+    owners = value if isinstance(value, list) else [value]
+    return all([cleanup_identity(owner) for owner in owners])
+
+
+def cleanup_identity(owner):
     if owner['name'] not in ALLOWED:
         return False
     kernel = kernel_api()
@@ -77,7 +107,7 @@ def cleanup_owned(owner_path):
         if kernel.WaitForSingleObject(handle, 1000) == 0:
             return True
         actual = handle_identity(kernel, handle, owner['pid'])
-        if actual != owner:
+        if actual != {key: owner[key] for key in actual}:
             return False
         if not kernel.TerminateProcess(handle, 0):
             return kernel.WaitForSingleObject(handle, 0) == 0

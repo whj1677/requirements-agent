@@ -21,15 +21,21 @@ pytestmark = pytest.mark.skipif(os.name != 'nt', reason='Windows registry and CO
 def test_registered_executable_selects_native_wps_or_microsoft_without_launching(monkeypatch, kind, progid, process, label):
     import winreg
     from contextlib import nullcontext
-    registry = {progid + r'\CLSID': 'synthetic-class',
-                r'CLSID\synthetic-class\LocalServer32': '"C:\\Synthetic Office\\' + process + '.exe" /Automation'}
-    def open_key(_root, path):
+    clsid = '{00000000-1111-2222-3333-444444444444}'
+    registry = {progid + r'\CLSID': clsid,
+                'CLSID\\' + clsid + r'\LocalServer32': '"C:\\Synthetic Office\\' + process + '.exe" /Automation'}
+    def open_key(_root, path, _reserved=0, _access=winreg.KEY_READ):
         if path not in registry:
             raise FileNotFoundError(path)
         return nullcontext(path)
     monkeypatch.setattr(winreg, 'OpenKey', open_key)
-    monkeypatch.setattr(winreg, 'QueryValueEx', lambda key, _name: (registry[key], winreg.REG_SZ))
-    assert office.registered_application(kind) == dict(progid=progid, process=process.lower(), application=label)
+    def query(key, name):
+        if name:
+            raise FileNotFoundError(name)
+        return registry[key], winreg.REG_SZ
+    monkeypatch.setattr(winreg, 'QueryValueEx', query)
+    assert office.registered_application(kind) == dict(progid=progid, process=process.lower(), application=label,
+                                                     clsid=clsid, registry_view=64)
 
 
 def test_missing_registration_never_launches_a_worker(tmp_path, monkeypatch):
@@ -79,6 +85,7 @@ def test_worker_refuses_existing_wps_before_com_or_security_changes(tmp_path, mo
                           CoCreateInstance=lambda *_: pytest.fail('Existing WPS must not be touched'))
     monkeypatch.setattr(office_worker, 'com_runtime', lambda: (com, None))
     monkeypatch.setattr(office_worker, 'processes', lambda _name: [{'pid': 12345}])
+    monkeypatch.setattr(office_worker, 'visible_process_ids', lambda: {12345})
     result = office_worker.extract(tmp_path / ('synthetic' + extension), tmp_path / 'owner.json', progid, process)
     assert result['code'] == 'OFFICE_BUSY' and result['rows'] == []
     assert not (tmp_path / 'owner.json').exists()
@@ -93,3 +100,31 @@ def test_native_worker_failure_never_changes_or_retries_script_policy(tmp_path, 
     assert result['code'] == 'OFFICE_NO_RESULT'
     assert result['failure_stage'] == 'worker_execution' and result['rows'] == []
     assert 'synthetic-private-path' not in json.dumps(result)
+
+
+@pytest.mark.parametrize('one_group', [True, False])
+def test_wps_background_and_new_process_group_are_distinguished(tmp_path, monkeypatch, one_group):
+    from types import SimpleNamespace
+    from app import office_worker
+    events = []
+    document = SimpleNamespace(ReadOnly=False, Close=lambda *_: events.append('close'))
+    app = SimpleNamespace(Documents=SimpleNamespace(Count=0, Open=lambda *_: document),
+                          Options=SimpleNamespace(UpdateLinksAtOpen=True), Quit=lambda *_: events.append('quit'))
+    com = SimpleNamespace(COINIT_APARTMENTTHREADED=2, CLSCTX_LOCAL_SERVER=4, IID_IDispatch='dispatch',
+                          CoInitializeEx=lambda _: None, CoUninitialize=lambda: None, CoCreateInstance=lambda *_: app)
+    monkeypatch.setattr(office_worker, 'com_runtime', lambda: (com, SimpleNamespace(Dispatch=lambda value: value)))
+    background = dict(pid=10, started='1', parent_pid=1)
+    created = [dict(pid=20, started='2', parent_pid=1),
+               dict(pid=21, started='3', parent_pid=20 if one_group else 1)]
+    snapshots = iter([[background], [background, *created]])
+    monkeypatch.setattr(office_worker, 'processes', lambda _: next(snapshots))
+    monkeypatch.setattr(office_worker, 'visible_process_ids', lambda: set())
+    owner = tmp_path / 'owner.json'
+    result = office_worker.extract(tmp_path / 'synthetic.docx', owner, 'KWPS.Application', 'wps')
+    if one_group:
+        assert result['code'] == 'OFFICE_NOT_READONLY'
+        assert [p['pid'] for p in json.loads(owner.read_text('utf-8'))] == [20, 21]
+        assert events == ['close', 'quit']
+    else:
+        assert result['code'] == 'OFFICE_BUSY' and not owner.exists()
+        assert events == [] and not hasattr(app, 'AutomationSecurity')

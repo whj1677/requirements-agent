@@ -620,6 +620,18 @@ def verify_packaged_smoke(executable, environment, private, install, processes, 
             isinstance(value.get('checks'), dict) and
             all(value['checks'].get(name) is True for name in expected_checks),
             'OFFLINE_SMOKE_WRONG_RESULT')
+    if native_com:
+        diagnostic_file = private / (name + '-office-registration.json')
+        diagnostic = OwnedProcess([str(executable), '--office-diagnostics', '--output', str(diagnostic_file)],
+                                  environment, private, install)
+        processes.append(diagnostic)
+        require(diagnostic.wait(30) == 0, 'OFFICE_DIAGNOSTIC_EXIT_FAILED')
+        registration = json.loads(diagnostic_file.read_text('utf-8'))
+        require(registration.get('engine') == 'native-com' and registration.get('process_bits') == 64 and
+                registration.get('documents_opened') == registration.get('model_calls') == 0 and
+                registration.get('registry_modified') is False and
+                set(registration.get('applications', {})) == {'Word', 'Excel', 'PowerPoint'},
+                'OFFICE_DIAGNOSTIC_WRONG_RESULT')
 
 
 def verify(installer, output, upgrade_from=None, shortcuts=False):
@@ -711,6 +723,7 @@ def verify(installer, output, upgrade_from=None, shortcuts=False):
         if upgrade_from:
             verify_packaged_smoke(executable, environment, private, install, processes, 'target', True)
         report['checks']['packaged_native_com_runtime'] = True
+        report['checks']['packaged_office_registration_diagnostics'] = True
         expected_instance = instance_identity(executable, home)
         if shortcuts:
             report['shortcut_checks']['target'] = {}

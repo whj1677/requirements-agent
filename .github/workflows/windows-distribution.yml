@@ -114,7 +114,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $junit = Join-Path $env:RA_BUILD_LOGS 'boundary-tests.xml'
-          python -m pytest tests/test_desktop_distribution.py tests/test_windows_packaging.py tests/test_windows_install_verifier.py tests/test_app_lifecycle.py tests/test_architecture_boundaries.py tests/test_office_applications.py tests/test_native_office.py -q `
+          python -m pytest tests/test_desktop_distribution.py tests/test_windows_packaging.py tests/test_windows_install_verifier.py tests/test_app_lifecycle.py tests/test_architecture_boundaries.py tests/test_office_applications.py tests/test_office_registration.py tests/test_native_office.py -q `
             "--junitxml=$junit" 2>&1 |
             Tee-Object -FilePath (Join-Path $env:RA_BUILD_LOGS 'boundary-tests.log')
           if ($LASTEXITCODE -ne 0) { throw 'Offline distribution boundary checks failed' }
@@ -143,15 +143,15 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $previous = Join-Path $env:RA_BUILD_BASE 'previous-release'
-          gh run download 40993794015 --repo $env:GITHUB_REPOSITORY `
-            --name 'requirements-agent-windows-2c93111da4787a0b093cc55268e9ad9a531bfdda' --dir $previous
-          if ($LASTEXITCODE -ne 0) { throw 'Verified 1.2.10 upgrade baseline could not be downloaded' }
-          $installers = @(Get-ChildItem -LiteralPath $previous -Recurse -Filter 'RequirementsAgent-1.2.10-windows-x64-setup.exe')
+          gh run download 40998897742 --repo $env:GITHUB_REPOSITORY `
+            --name 'requirements-agent-windows-753b97ab8103f8ab39621bc069da955531589aa3' --dir $previous
+          if ($LASTEXITCODE -ne 0) { throw 'Verified 1.2.11 upgrade baseline could not be downloaded' }
+          $installers = @(Get-ChildItem -LiteralPath $previous -Recurse -Filter 'RequirementsAgent-1.2.11-windows-x64-setup.exe')
           if ($installers.Count -ne 1) { throw 'Previous installer is missing or ambiguous' }
           $installer = $installers[0].FullName
-          $expected = '70b90bf88fe5e1796838f19f4cd3cccada9a3f0711594dbe91487f6df1d598fa'
+          $expected = 'b12995a3f10b5df922707b3e87d568befb55e9499e85bc6426392d4cdd542a3f'
           if ((Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expected) {
-            throw 'Previous installer does not match the accepted 1.2.10 SHA-256'
+            throw 'Previous installer does not match the accepted 1.2.11 SHA-256'
           }
           "RA_PREVIOUS_INSTALLER=$installer" >> $env:GITHUB_ENV
 
@@ -165,7 +165,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Real installation or direct runtime verification failed' }
           'Fresh installation and shortcuts: VERIFIED. Real-model semantic evaluation remains separate.' >> $env:GITHUB_STEP_SUMMARY
 
-      - name: Verify 1.2.10 to current upgrade and data preservation
+      - name: Verify 1.2.11 to current upgrade and data preservation
         run: |
           $ErrorActionPreference = 'Stop'
           $verification = Join-Path $env:RA_BUILD_BASE 'upgrade-verification'
@@ -173,7 +173,7 @@ jobs:
             --upgrade-from $env:RA_PREVIOUS_INSTALLER --shortcuts --output $verification 2>&1 |
             Tee-Object -FilePath (Join-Path $env:RA_BUILD_LOGS 'upgrade-verification.log')
           if ($LASTEXITCODE -ne 0) { throw 'Cross-version upgrade or data preservation verification failed' }
-          'Upgrade from verified 1.2.10 and uninstall data preservation: VERIFIED.' >> $env:GITHUB_STEP_SUMMARY
+          'Upgrade from verified 1.2.11 and uninstall data preservation: VERIFIED.' >> $env:GITHUB_STEP_SUMMARY
 
       - name: Upload installer and release manifests
         if: success()

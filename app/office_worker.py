@@ -6,7 +6,7 @@ import io
 import json
 from pathlib import Path
 
-from .office_process import processes
+from .office_process import processes, visible_process_ids
 
 
 class ReadFailure(RuntimeError):
@@ -21,12 +21,12 @@ def com_runtime():
     return pythoncom, win32com.client.dynamic
 
 
-def extract(input_path, owner_path, progid, process):
+def extract(input_path, owner_path, progid, process, clsid=None):
     from .office import APPLICATIONS
     kind = {'.doc': 'Word', '.docx': 'Word', '.xls': 'Excel', '.xlsx': 'Excel',
             '.ppt': 'PowerPoint', '.pptx': 'PowerPoint'}[input_path.suffix.lower()]
     assert progid in {row[0] for row in APPLICATIONS[kind]}
-    assert process.casefold() in {row[1].casefold() for row in APPLICATIONS[kind]}
+    assert process.casefold() in {row[1].casefold() for row in APPLICATIONS[kind]} | {'wps'}
     rows, images, limits = [], [], []
     char_count = 0
     app = document = prior_links = None
@@ -66,20 +66,25 @@ def extract(input_path, owner_path, progid, process):
         initialized = True
         stage = 'application_start'
         before = processes(process)
-        if before and (kind == 'PowerPoint' or process.casefold() in ('wps', 'et', 'wpp')):
+        wps = process.casefold() in ('wps', 'et', 'wpp')
+        visible = visible_process_ids() if before and wps else set()
+        if before and ((wps and any(p['pid'] in visible for p in before)) or (not wps and kind == 'PowerPoint')):
             raise ReadFailure('OFFICE_BUSY', '对应的办公软件正在使用中；请先保存并自行关闭后重试本机读取。')
-        app = dynamic.Dispatch(pythoncom.CoCreateInstance(progid, None, pythoncom.CLSCTX_LOCAL_SERVER, pythoncom.IID_IDispatch))
+        # Use the already discovered class, including registrations in the other bitness view.
+        app = dynamic.Dispatch(pythoncom.CoCreateInstance(clsid or progid, None, pythoncom.CLSCTX_LOCAL_SERVER, pythoncom.IID_IDispatch))
         earlier = {(p['pid'], p['started']) for p in before}
         created = [p for p in processes(process) if (p['pid'], p['started']) not in earlier]
         collection = getattr(app, {'Word': 'Documents', 'Excel': 'Workbooks', 'PowerPoint': 'Presentations'}[kind])
-        if len(created) != 1 or collection.Count != 0:
+        new_ids = {p['pid'] for p in created}
+        roots = [p for p in created if p.get('parent_pid') not in new_ids]
+        if len(roots) != 1 or collection.Count != 0:
             raise ReadFailure('OFFICE_BUSY', '未能确认空闲的新办公软件实例；未接管用户文档。')
-        owner_path.write_text(json.dumps(created[0]), 'utf-8')
+        owner_path.write_text(json.dumps(created), 'utf-8')
         owned = True
         stage = 'readonly_security'
         app.AutomationSecurity = 3
         if app.AutomationSecurity != 3:
-            raise ReadFailure('OFFICE_SAFE_MODE_UNSUPPORTED', '本机办公软件未提供所需的只读安全设置，未打开资料。')
+            raise ReadFailure('OFFICE_SAFE_MODE_UNSUPPORTED', '本机办公软件无法确认已禁用宏，未打开资料；这不是缺少读取接口，也不表示文件损坏。')
         stage = 'document_open_or_extract'
         if kind == 'Word':
             app.Visible, app.DisplayAlerts = False, 0
@@ -207,6 +212,7 @@ def main(argv=None):
     parser.add_argument('--owner', type=Path)
     parser.add_argument('--progid')
     parser.add_argument('--process')
+    parser.add_argument('--clsid')
     parser.add_argument('--probe-runtime', action='store_true')
     args = parser.parse_args(argv)
     if args.probe_runtime:
@@ -215,7 +221,7 @@ def main(argv=None):
         pythoncom.CoUninitialize()
         result = dict(status='COM_RUNTIME_READY', engine='native-com', powershell_used=False)
     else:
-        result = extract(args.input, args.owner, args.progid, args.process)
+        result = extract(args.input, args.owner, args.progid, args.process, args.clsid)
     args.output.write_text(json.dumps(result, ensure_ascii=False), 'utf-8')
     return 0
 

@@ -247,6 +247,7 @@ def main(argv=None):
     modes.add_argument('--parse-worker', metavar='EXT')
     modes.add_argument('--smoke-test', action='store_true')
     modes.add_argument('--check-idle', action='store_true')
+    modes.add_argument('--office-diagnostics', action='store_true')
     parser.add_argument('--output')
     args = parser.parse_args(arguments)
     if args.check_idle:
@@ -257,6 +258,10 @@ def main(argv=None):
         except Exception:
             return 2
     try:
+        if args.office_diagnostics:
+            from .office import registration_diagnostics
+            report(registration_diagnostics(), args.output)
+            return 0
         if args.parse_worker:
             return parser_worker(args.parse_worker)
         if args.serve:
