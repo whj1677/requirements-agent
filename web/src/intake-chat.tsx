@@ -164,7 +164,7 @@ export function IntakeChat({p,model,busy,blocked,tasks,status,beforeSend,onPrepa
   }
   function removeAttachment(id:string){const removed=attachmentRef.current.find(a=>a.id===id);if(!removed)return;if(removed.preview?.startsWith('blob:'))URL.revokeObjectURL(removed.preview);const next=attachmentRef.current.filter(a=>a.id!==id);setPendingAttachments(next);
     if(text===IMAGE_MESSAGE||text===ATTACHMENT_MESSAGE){const message=next.length?(next.every(a=>a.type.startsWith('image/'))?IMAGE_MESSAGE:ATTACHMENT_MESSAGE):'';setText(message);if(message)session.setItem(draftKey,message);else session.removeItem(draftKey);}}
-  function readStatus(status?:string){return ({read:'已读取',partial:'部分读取',failed:'读取失败',office_required:'需本机 Office 处理',requires_office:'需本机 Office 处理',permission_denied:'权限受限',awaiting_vision:'图片待识别',reading:'读取中'} as Record<string,string>)[status||'']||'读取状态待核对';}
+  function readStatus(status?:string){return ({read:'已读取',partial:'部分读取',failed:'读取失败',office_required:'需本机办公软件处理',requires_office:'需本机办公软件处理',permission_denied:'权限受限',awaiting_vision:'图片待识别',reading:'读取中'} as Record<string,string>)[status||'']||'读取状态待核对';}
   function attachmentStatus(a:PendingAttachment){return a.uploading?'正在保存到项目':a.sourceId?readStatus(p.sources.find(s=>s.id===a.sourceId)?.parse_status||a.parseStatus):'待发送';}
   function historyAttachment(sid:string){
     const source=p.sources.find(s=>s.id===sid);

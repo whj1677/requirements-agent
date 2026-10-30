@@ -114,7 +114,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $junit = Join-Path $env:RA_BUILD_LOGS 'boundary-tests.xml'
-          python -m pytest tests/test_desktop_distribution.py tests/test_windows_packaging.py tests/test_windows_install_verifier.py tests/test_app_lifecycle.py tests/test_architecture_boundaries.py -q `
+          python -m pytest tests/test_desktop_distribution.py tests/test_windows_packaging.py tests/test_windows_install_verifier.py tests/test_app_lifecycle.py tests/test_architecture_boundaries.py tests/test_office_applications.py -q `
             "--junitxml=$junit" 2>&1 |
             Tee-Object -FilePath (Join-Path $env:RA_BUILD_LOGS 'boundary-tests.log')
           if ($LASTEXITCODE -ne 0) { throw 'Offline distribution boundary checks failed' }

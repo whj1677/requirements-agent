@@ -1,4 +1,5 @@
-﻿param([string]$InputPath, [string]$OutputPath, [string]$OwnerPath, [string]$CleanupOwner)
+﻿param([string]$InputPath, [string]$OutputPath, [string]$OwnerPath, [string]$CleanupOwner,
+      [string]$ProgId, [string]$ProcessName)
 # Open only a test-owned document in a new instance; never change Trust Center settings.
 $ErrorActionPreference = 'Stop'
 if ($CleanupOwner) {
@@ -6,7 +7,7 @@ if ($CleanupOwner) {
     $process = Get-Process -Id $owner.pid -ErrorAction SilentlyContinue
     if ($process -and $process.ProcessName -eq $owner.name -and
         $process.StartTime.ToUniversalTime().Ticks.ToString() -eq $owner.started -and
-        $owner.name -in @('WINWORD','EXCEL','POWERPNT')) { Stop-Process -Id $process.Id }
+        $owner.name -in @('WINWORD','EXCEL','POWERPNT','wps','et','wpp')) { Stop-Process -Id $process.Id }
     exit
 }
 $rows = [Collections.Generic.List[object]]::new()
@@ -14,7 +15,7 @@ $limits = [Collections.Generic.List[string]]::new()
 $images = [Collections.Generic.List[object]]::new()
 $charCount = 0
 $app = $null; $document = $null; $owned = $false; $priorLinks = $null
-$result = @{status='office_required'; reason='当前本机 Office 无法提取内容；请确认登录、激活和文件读取权限。'; rows=@(); code='OFFICE_OPEN_FAILED'}
+$result = @{status='office_required'; reason='当前本机办公软件无法提取内容；具体失败阶段见读取记录。'; rows=@(); code='OFFICE_OPEN_FAILED'; failure_stage='application_start'}
 function Add-Text([string]$location, [string]$value) {
     $value = $value.Trim([char]13,[char]7,[char]10,[char]0,' ')
     if (-not $value) { return }
@@ -39,11 +40,17 @@ function Read-SlideShapes($shapes, [string]$where) {
 try {
     $extension=[IO.Path]::GetExtension($InputPath).ToLowerInvariant()
     $kind=switch ($extension) { {$_ -in '.doc','.docx'} {'Word'} {$_ -in '.xls','.xlsx'} {'Excel'} {$_ -in '.ppt','.pptx'} {'PowerPoint'} default {throw 'UNSUPPORTED'} }
-    $processName=@{Word='WINWORD';Excel='EXCEL';PowerPoint='POWERPNT'}[$kind]
+    $allowedIds=@{Word=@('Word.Application','KWPS.Application');Excel=@('Excel.Application','KET.Application');PowerPoint=@('PowerPoint.Application','KWPP.Application')}[$kind]
+    $allowedProcesses=@{Word=@('WINWORD','wps');Excel=@('EXCEL','et');PowerPoint=@('POWERPNT','wpp')}[$kind]
+    if (-not $ProgId) { $ProgId="$kind.Application" }
+    if (-not $ProcessName) { $ProcessName=@{Word='WINWORD';Excel='EXCEL';PowerPoint='POWERPNT'}[$kind] }
+    if ($ProgId -notin $allowedIds -or $ProcessName -notin $allowedProcesses) { throw 'UNSUPPORTED' }
     $before=@(Get-Process -Name $processName -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id)
     # PowerPoint can reuse the user's singleton. Do not touch it, including its security settings.
-    if ($kind -eq 'PowerPoint' -and $before.Count) { $result.reason='PowerPoint 正在使用中；请保存并自行关闭 PowerPoint 后重试本机读取。'; throw 'OFFICE_BUSY' }
-    $app=New-Object -ComObject "$kind.Application"
+    if (($kind -eq 'PowerPoint' -or $ProcessName -in @('wps','et','wpp')) -and $before.Count) {
+        $result.reason='对应的办公软件正在使用中；请先保存并自行关闭后重试本机读取。'; throw 'OFFICE_BUSY'
+    }
+    $app=New-Object -ComObject $ProgId
     $newProcesses=@(Get-Process -Name $processName -ErrorAction SilentlyContinue | Where-Object { $before -notcontains $_.Id })
     if ($newProcesses.Count -ne 1) { throw 'OFFICE_BUSY' }
     $appPid=$newProcesses[0].Id
@@ -52,7 +59,10 @@ try {
     $owned=$true
     $process=Get-Process -Id $appPid
     @{pid=$appPid; name=$process.ProcessName; started=$process.StartTime.ToUniversalTime().Ticks.ToString()} | ConvertTo-Json | Set-Content -LiteralPath $OwnerPath -Encoding UTF8
+    $result.failure_stage='readonly_security'
     $app.AutomationSecurity=3
+    if ($app.AutomationSecurity -ne 3) { throw 'OFFICE_SAFE_MODE_UNSUPPORTED' }
+    $result.failure_stage='document_open_or_extract'
     switch ($kind) {
         'Word' {
             $app.Visible=$false; $app.DisplayAlerts=0
@@ -125,7 +135,8 @@ try {
     }
     if ($rows.Count -or $images.Count) {
         if (-not $rows.Count) { Add-Text '读取限制' '未取得正文文字；已提取的图片尚未视觉分析。' }
-        $result=@{status='partial'; reason=($limits | Select-Object -Unique) -join '；'; rows=@($rows.ToArray()); images=@($images.ToArray()); code='OFFICE_EXTRACTED'; office=$kind; method='local-office'; text_extraction='extracted'; structure_extraction='partial'; visual_review='not_run'; manual_open='not_verified'}
+        $limits.Add('自动提取文字尚未与人工可见正文核对；若内容不符或疑似乱码，不应作为需求依据')
+        $result=@{status='partial'; reason=($limits | Select-Object -Unique) -join '；'; rows=@($rows.ToArray()); images=@($images.ToArray()); code='OFFICE_EXTRACTED'; office=$kind; method='local-office'; text_extraction='extracted'; structure_extraction='partial'; visual_review='not_run'; manual_open='not_verified'; content_match='not_verified'}
     } else { $result.reason='本机 Office 已打开文件，但没有取得可用正文或表格；图片等对象尚未识别。'; $result.code='OFFICE_EMPTY' }
 } catch {
     $code=$_.Exception.HResult
@@ -133,7 +144,8 @@ try {
         $result.status='permission_denied'; $result.code='OFFICE_PERMISSION_DENIED'; $result.reason='本机 Office 或企业策略拒绝提取；请由有权限的人员检查。原件保留。'
     } elseif ($_.Exception.Message -match 'OFFICE_BUSY') { $result.code='OFFICE_BUSY' }
     elseif ($_.Exception.Message -match 'OFFICE_CONTENT_LIMIT') { $result.code='OFFICE_CONTENT_LIMIT'; $result.reason='内容超过本机提取上限，未标记为已读取；请拆分材料。' }
-    elseif ($code -eq -2147221164) { $result.code='OFFICE_UNAVAILABLE'; $result.reason='未安装或未注册对应的 Microsoft Office 应用，当前读取方式无法解析。' }
+    elseif ($code -eq -2147221164) { $result.code='OFFICE_UNAVAILABLE'; $result.reason='对应的办公软件自动化接口无法创建，当前读取方式不可用。' }
+    elseif ($_.Exception.Message -match 'OFFICE_SAFE_MODE_UNSUPPORTED') { $result.code='OFFICE_SAFE_MODE_UNSUPPORTED'; $result.reason='本机办公软件未提供所需的只读安全设置，未打开资料。' }
     # Do not export COM exception text, document content, user identity or credentials.
     $result.hresult=$code
     $result.operation_line=$_.InvocationInfo.ScriptLineNumber
