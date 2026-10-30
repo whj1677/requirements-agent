@@ -71,11 +71,12 @@ def extract(input_path, owner_path, progid, process, clsid=None):
         # Use the already discovered class, including registrations in the other bitness view.
         app = dynamic.Dispatch(pythoncom.CoCreateInstance(clsid or progid, None, pythoncom.CLSCTX_LOCAL_SERVER, pythoncom.IID_IDispatch))
         earlier = {(p['pid'], p['started']) for p in before}
-        created = [p for p in processes(process) if (p['pid'], p['started']) not in earlier]
         collection = getattr(app, {'Word': 'Documents', 'Excel': 'Workbooks', 'PowerPoint': 'Presentations'}[kind])
+        document_count = collection.Count
+        created = [p for p in processes(process) if (p['pid'], p['started']) not in earlier]
         new_ids = {p['pid'] for p in created}
         roots = [p for p in created if p.get('parent_pid') not in new_ids]
-        if len(roots) != 1 or collection.Count != 0:
+        if len(roots) != 1 or document_count != 0:
             raise ReadFailure('OFFICE_BUSY', '未能创建独立且空闲的办公软件读取实例；未接管用户文档，请稍后重试。')
         owner_path.write_text(json.dumps(created), 'utf-8')
         owned = True

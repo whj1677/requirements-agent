@@ -715,7 +715,7 @@ def test_synthetic_project_attachment_config_and_protected_key_survive_reopen(tm
 
 
 @pytest.mark.parametrize('scenario', ['reinstall', 'upgrade', 'changed-data', 'same-version-source',
-                                     'shortcuts', 'leftover-shortcut'])
+                                     'shortcuts', 'leftover-shortcut', 'leftover-runtime'])
 def test_installation_flow_distinguishes_reinstall_from_upgrade_and_detects_data_loss(tmp_path, monkeypatch,
                                                                                    scenario):
     import copy
@@ -744,6 +744,9 @@ def test_installation_flow_distinguishes_reinstall_from_upgrade_and_detects_data
                 state['upgraded'] = state['seeded']
                 state['version'] = '1.2.8' if Path(command[0]) == previous and not same_version else '1.2.9'
                 install.mkdir(exist_ok=True)
+                (install / '_internal').mkdir(exist_ok=True)
+                if state['upgraded'] and scenario != 'leftover-runtime':
+                    (install / '_internal/obsolete-runtime-ci.sentinel').unlink(missing_ok=True)
                 (install / 'RequirementsAgent.exe').write_bytes(state['version'].encode())
                 (install / 'unins000.exe').write_bytes(b'synthetic-uninstaller')
                 if shortcuts:
@@ -814,6 +817,10 @@ def test_installation_flow_distinguishes_reinstall_from_upgrade_and_detects_data
         return process.wait(20)
     monkeypatch.setattr(verifier, 'shutdown_owned', shutdown)
     report = verifier.verify(target, output, upgrade_from=previous if cross_version else None, shortcuts=shortcuts)
+    if scenario == 'leftover-runtime':
+        assert report['status'] == 'INSTALLATION_VERIFICATION_FAILED'
+        assert report['failure_code'] == 'UPGRADE_LEFT_OBSOLETE_RUNTIME'
+        return
     assert Path(state['commands'][0][0]) == (previous if cross_version else target)
     assert report['initial_version'] == ('1.2.8' if cross_version and not same_version else '1.2.9')
     assert report['target_version'] == '1.2.9'

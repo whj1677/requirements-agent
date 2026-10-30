@@ -709,11 +709,15 @@ def verify(installer, output, upgrade_from=None, shortcuts=False):
             marker.parent.mkdir(parents=True, exist_ok=True)
             marker.write_bytes(sentinel)
         owned_registration(install)
+        obsolete_runtime = install / '_internal/obsolete-runtime-ci.sentinel'
+        obsolete_runtime.write_bytes(b'OWNED_OLD_RUNTIME_VERIFICATION_ONLY')
         upgrade = OwnedProcess(install_command(installer, install, private / 'upgrade.log', shortcuts),
                                environment, private, install)
         processes.append(upgrade)
         require(upgrade.wait(240) == 0, 'UPGRADE_INSTALLER_EXIT_FAILED')
         owned_registration(install)
+        require(not obsolete_runtime.exists(), 'UPGRADE_LEFT_OBSOLETE_RUNTIME')
+        report['checks']['in_place_upgrade_removes_obsolete_runtime'] = True
         manifest = verify_installed_files(install)
         report.update(version=manifest['version'], target_version=manifest['version'],
                       source_commit=manifest['source_commit'], installed_exe_sha256=sha256(executable),

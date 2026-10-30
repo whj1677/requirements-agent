@@ -131,3 +131,25 @@ def test_wps_background_and_new_process_group_are_distinguished(tmp_path, monkey
     else:
         assert result['code'] == 'OFFICE_BUSY' and not owner.exists()
         assert events == [] and not hasattr(app, 'AutomationSecurity')
+
+
+def test_wps_deferred_component_start_is_observed_after_collection_query(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from app import office_worker
+    ready = False
+    class Documents:
+        @property
+        def Count(self):
+            nonlocal ready
+            ready = True
+            return 0
+        def Open(self, *_):
+            return SimpleNamespace(ReadOnly=False, Close=lambda *_: None)
+    app = SimpleNamespace(Documents=Documents(), Options=SimpleNamespace(UpdateLinksAtOpen=True), Quit=lambda *_: None)
+    com = SimpleNamespace(COINIT_APARTMENTTHREADED=2, CLSCTX_LOCAL_SERVER=4, IID_IDispatch='dispatch',
+        CoInitializeEx=lambda _: None, CoUninitialize=lambda: None, CoCreateInstance=lambda *_: app)
+    monkeypatch.setattr(office_worker, 'com_runtime', lambda: (com, SimpleNamespace(Dispatch=lambda value: value)))
+    monkeypatch.setattr(office_worker, 'processes', lambda _: [dict(pid=20, started='2', parent_pid=1)] if ready else [])
+    result = office_worker.extract(tmp_path/'synthetic.docx', tmp_path/'owner.json', 'KWPS.Application', 'wps')
+    assert result['code'] == 'OFFICE_NOT_READONLY'
+    assert (tmp_path/'owner.json').is_file()

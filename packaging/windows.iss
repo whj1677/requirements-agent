@@ -46,6 +46,7 @@ Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs 
 
 [InstallDelete]
 ; Remove only obsolete program resources during upgrade, never the user profile.
+Type: filesandordirs; Name: "{app}\_internal"; Check: IsManagedUpgrade
 Type: filesandordirs; Name: "{app}\_internal\app\license_runtime"
 Type: filesandordirs; Name: "{app}\_internal\web\activation"
 
@@ -58,6 +59,19 @@ Name: "{autodesktop}\需求 Agent"; Filename: "{app}\RequirementsAgent.exe"; Wor
 Filename: "{app}\RequirementsAgent.exe"; Description: "打开需求 Agent"; Flags: nowait postinstall skipifsilent
 
 [Code]
+function IsManagedUpgrade(): Boolean;
+var
+  PreviousPath: String;
+begin
+  Result := RegQueryStringValue(HKCU64,
+    'Software\Microsoft\Windows\CurrentVersion\Uninstall\{F72D927C-410A-4C24-8435-BB4D13C7D1B8}_is1',
+    'Inno Setup: App Path', PreviousPath);
+  if Result then
+    Result := (CompareText(AddBackslash(PreviousPath), AddBackslash(ExpandConstant('{app}'))) = 0)
+      and FileExists(ExpandConstant('{app}\RequirementsAgent.exe'))
+      and FileExists(ExpandConstant('{app}\release-manifest.json'));
+end;
+
 function ExistingApplicationIsIdle(): Boolean;
 var
   ApplicationPath: String;
