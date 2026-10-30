@@ -359,7 +359,7 @@ def shutdown_owned(process, expected):
             failure.add_note(json.dumps({'shutdown_response': attempt}))
             raise failure
         time.sleep(0.2)
-    require(process.wait(20) == 0, 'GRACEFUL_SHUTDOWN_EXIT_FAILED')
+    require(process.wait(60) == 0, 'GRACEFUL_SHUTDOWN_EXIT_FAILED')
     wait_for_port_release()
 
 

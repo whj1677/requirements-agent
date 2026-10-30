@@ -291,3 +291,16 @@ button,a,input,textarea,select,summary {outline-offset:3px}
  .layout .refinement-view-switch button {min-height:30px;padding-top:4px;padding-bottom:4px}
  .layout .chat-input-zone textarea {height:72px;min-height:72px}
 }
+
+/* Give an existing conversation more reading space without reducing text size. */
+.layout .assistant-grid:has(.intake-chat[data-has-history=true]) .connected-mode {margin-top:0;margin-bottom:8px;padding-bottom:6px}
+.layout .connected-mode .entry-alternative {margin:0;padding:0;border:0}
+.layout .intake-chat[data-has-history=true] .chat-compose-dock:has(.chat-send) {display:grid;grid-template-columns:minmax(0,1fr) max-content;align-items:end;gap:10px}
+.layout .intake-chat[data-has-history=true] .chat-compose-dock:has(.chat-send) .chat-composer-actions {flex-direction:column;align-items:stretch;gap:8px;margin:0;padding:0}
+.layout .intake-chat[data-has-history=true] .chat-compose-dock:has(.chat-send) .chat-composer-actions button {white-space:nowrap}
+.layout .intake-chat[data-has-history=true] .chat-compose-dock:has(.chat-send) textarea {height:80px;min-height:80px}
+.layout .intake-chat .chat-secondary-actions:not([hidden]) {display:flex;align-items:center;flex-wrap:wrap;gap:8px 10px}
+.layout .intake-chat .chat-secondary-actions>.benchmark-intake {margin:0;padding:0;border:0;background:transparent}
+.layout .intake-chat .chat-secondary-actions>.chat-next {margin:0;padding:0;border:0}
+.layout .intake-chat .chat-secondary-actions>.notice {flex-basis:100%}
+.layout .intake-chat .chat-secondary-actions:has(.benchmark-intake>button[aria-expanded=true]) {display:block;max-height:min(240px,30dvh);overflow:auto;flex:0 1 auto}

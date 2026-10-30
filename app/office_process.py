@@ -81,7 +81,13 @@ def cleanup_identity(owner):
     try:
         if kernel.WaitForSingleObject(handle, 1000) == 0:
             return True
-        actual = handle_identity(kernel, handle, owner['pid'])
+        try:
+            actual = handle_identity(kernel, handle, owner['pid'])
+        except OSError:
+            # WPS may finish exiting between the wait and the identity query.
+            if kernel.WaitForSingleObject(handle, 1000) == 0:
+                return True
+            raise
         if actual != {key: owner[key] for key in actual}:
             return False
         if not kernel.TerminateProcess(handle, 0):

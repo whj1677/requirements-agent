@@ -84,6 +84,24 @@ def test_cleanup_requires_matching_owned_handle_creation_stamp_and_image(tmp_pat
             process.wait(timeout=5)
 
 
+@pytest.mark.parametrize('exits', [True, False])
+def test_cleanup_identity_query_failure_only_succeeds_after_observed_exit(monkeypatch, exits):
+    waits = iter([258, 0 if exits else 258])
+    kernel = SimpleNamespace(OpenProcess=lambda *_: 123,
+        WaitForSingleObject=lambda *_: next(waits), CloseHandle=lambda *_: None,
+        TerminateProcess=lambda *_: pytest.fail('Never terminate when identity could not be verified'))
+    monkeypatch.setattr(office_process, 'kernel_api', lambda: kernel)
+    def denied(*_):
+        raise PermissionError('Synthetic process is exiting or inaccessible')
+    monkeypatch.setattr(office_process, 'handle_identity', denied)
+    owner = dict(pid=12345, name='wps', image='synthetic', started='1')
+    if exits:
+        assert office_process.cleanup_identity(owner) is True
+    else:
+        with pytest.raises(PermissionError):
+            office_process.cleanup_identity(owner)
+
+
 @pytest.mark.skipif(os.environ.get('RA_TEST_LOCAL_OFFICE') != '1', reason='Explicit opt-in: synthetic Word image')
 def test_native_word_retains_inline_image_extraction_and_original_bytes(tmp_path, monkeypatch):
     from docx import Document

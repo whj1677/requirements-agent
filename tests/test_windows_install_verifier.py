@@ -1,5 +1,6 @@
 """Safety boundaries of the installer verifier; no installer runs in these tests."""
 import json
+import time
 import os
 from pathlib import Path
 import sys
@@ -189,7 +190,7 @@ def test_real_gateway_shutdown_waits_for_active_request_but_never_retries_bad_cs
                     verifier.shutdown_owned(process, 'owned-test-instance')
                     assert process.shutdown_attempts == [{'http_status': 409, 'code': 'WORKBENCH_BUSY'},
                                                          {'http_status': 200, 'code': None}]
-                    assert stopped == [True] and waited == [20] and ports == [True]
+                    assert stopped == [True] and waited == [60] and ports == [True]
                     assert calls == [('/desktop/api/instance', 200), ('/desktop/api/status', 200),
                                      ('/desktop/api/shutdown', 409), ('/desktop/api/instance', 200),
                                      ('/desktop/api/status', 200), ('/desktop/api/shutdown', 200)]
@@ -535,7 +536,15 @@ def test_real_shell_metadata_reads_existing_unicode_links_without_creating_missi
                             "$link.TargetPath=$v.target; $link.WorkingDirectory=$v.cwd; $link.Save(); "
                             "@{created=$true} | ConvertTo-Json",
                             {'link': str(temporary_link), 'target': str(target), 'cwd': str(install)})
-        temporary_link.rename(path)
+        # Shell/endpoint scanning may briefly retain the just-created test link.
+        for attempt in range(40):
+            try:
+                temporary_link.rename(path)
+                break
+            except PermissionError as error:
+                if error.winerror != 32 or attempt == 39:
+                    raise
+                time.sleep(.05)
     diagnostics = {}
     verifier.verify_shortcuts(links, install, diagnostics)
     assert all(row['found']['target'] == row['expected_target'] for row in diagnostics.values())
