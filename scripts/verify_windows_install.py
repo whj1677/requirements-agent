@@ -657,7 +657,7 @@ def verify_packaged_smoke(executable, environment, private, install, processes, 
                 'OFFICE_DIAGNOSTIC_WRONG_RESULT')
 
 
-def verify(installer, output, upgrade_from=None, shortcuts=False):
+def verify(installer, output, upgrade_from=None, shortcuts=False, running_upgrade=False):
     initial_installer = Path(upgrade_from).resolve() if upgrade_from else Path(installer).resolve()
     require(initial_installer.is_file() and initial_installer.suffix.lower() == '.exe', 'INITIAL_INSTALLER_NOT_FOUND')
     links = shortcut_paths() if shortcuts else {}
@@ -734,10 +734,22 @@ def verify(installer, output, upgrade_from=None, shortcuts=False):
         owned_registration(install)
         obsolete_runtime = install / '_internal/obsolete-runtime-ci.sentinel'
         obsolete_runtime.write_bytes(b'OWNED_OLD_RUNTIME_VERIFICATION_ONLY')
+        live_upgrade_service = None
+        if running_upgrade:
+            live_upgrade_service = OwnedProcess([str(executable), '--serve'], environment, private, install)
+            processes.append(live_upgrade_service)
+            wait_for_instance(live_upgrade_service, expected_instance)
         upgrade = OwnedProcess(install_command(installer, install, private / 'upgrade.log', shortcuts),
                                environment, private, install)
         processes.append(upgrade)
         require(upgrade.wait(240) == 0, 'UPGRADE_INSTALLER_EXIT_FAILED')
+        if live_upgrade_service is not None:
+            old_exit = live_upgrade_service.process.poll()
+            require(old_exit is not None, 'UPGRADE_LEFT_OLD_PROCESS_RUNNING')
+            report['checks']['running_upgrade_closes_existing_process'] = True
+            report['running_upgrade_old_exit_code'] = old_exit
+            wait_for_runtime_release()
+            wait_for_port_release()
         owned_registration(install)
         require(not obsolete_runtime.exists(), 'UPGRADE_LEFT_OBSOLETE_RUNTIME')
         report['checks']['in_place_upgrade_removes_obsolete_runtime'] = True
@@ -868,10 +880,12 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--upgrade-from', type=Path, help='Install this older release before upgrading to --installer')
     parser.add_argument('--shortcuts', action='store_true', help='Verify real desktop/menu shortcuts on a clean CI or Windows user account')
+    parser.add_argument('--running-upgrade', action='store_true', help='Keep an owned old workbench running when the upgrade starts')
     args = parser.parse_args()
     require(os.name == 'nt', 'WINDOWS_REQUIRED')
     try:
-        report = verify(args.installer, args.output, upgrade_from=args.upgrade_from, shortcuts=args.shortcuts)
+        report = verify(args.installer, args.output, upgrade_from=args.upgrade_from, shortcuts=args.shortcuts,
+                        running_upgrade=args.running_upgrade)
     except Exception as error:
         code = str(error) if isinstance(error, VerificationFailure) else type(error).__name__
         print(json.dumps({'status': 'INSTALLATION_VERIFICATION_NOT_STARTED', 'failure_code': code}))

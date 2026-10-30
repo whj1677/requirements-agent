@@ -170,7 +170,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $verification = Join-Path $env:RA_BUILD_BASE 'upgrade-verification'
           python scripts/verify_windows_install.py --installer $env:RA_BUILD_INSTALLER `
-            --upgrade-from $env:RA_PREVIOUS_INSTALLER --shortcuts --output $verification 2>&1 |
+            --upgrade-from $env:RA_PREVIOUS_INSTALLER --shortcuts --running-upgrade --output $verification 2>&1 |
             Tee-Object -FilePath (Join-Path $env:RA_BUILD_LOGS 'upgrade-verification.log')
           if ($LASTEXITCODE -ne 0) { throw 'Cross-version upgrade or data preservation verification failed' }
           'Upgrade from verified 1.2.12 and uninstall data preservation: VERIFIED.' >> $env:GITHUB_STEP_SUMMARY

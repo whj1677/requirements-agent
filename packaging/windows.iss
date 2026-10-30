@@ -27,7 +27,8 @@ SolidCompression=yes
 OutputDir={#ReleaseDir}
 OutputBaseFilename=RequirementsAgent-{#AppVersion}-windows-x64-setup
 UninstallDisplayIcon={app}\RequirementsAgent.exe
-CloseApplications=no
+CloseApplications=force
+CloseApplicationsFilter=RequirementsAgent.exe
 RestartApplications=no
 SetupLogging=yes
 UsePreviousAppDir=yes
@@ -89,13 +90,6 @@ begin
               ewWaitUntilTerminated, ExitCode) then
     Exit;
   Result := ExitCode = 0;
-end;
-
-function PrepareToInstall(var NeedsRestart: Boolean): String;
-begin
-  Result := '';
-  if not ExistingApplicationIsIdle() then
-    Result := '需求 Agent 正在运行或有未结束的任务。请保存输入、备份并正常停止后再安装。安装器不会结束进程或修改用户数据。';
 end;
 
 function InitializeUninstall(): Boolean;
