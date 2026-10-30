@@ -6,7 +6,7 @@ import io
 import json
 from pathlib import Path
 
-from .office_process import processes, visible_process_ids
+from .office_process import processes
 
 
 class ReadFailure(RuntimeError):
@@ -66,9 +66,7 @@ def extract(input_path, owner_path, progid, process, clsid=None):
         initialized = True
         stage = 'application_start'
         before = processes(process)
-        wps = process.casefold() in ('wps', 'et', 'wpp')
-        visible = visible_process_ids() if before and wps else set()
-        if before and ((wps and any(p['pid'] in visible for p in before)) or (not wps and kind == 'PowerPoint')):
+        if before and process.casefold() == 'powerpnt':
             raise ReadFailure('OFFICE_BUSY', '对应的办公软件正在使用中；请先保存并自行关闭后重试本机读取。')
         # Use the already discovered class, including registrations in the other bitness view.
         app = dynamic.Dispatch(pythoncom.CoCreateInstance(clsid or progid, None, pythoncom.CLSCTX_LOCAL_SERVER, pythoncom.IID_IDispatch))
@@ -78,7 +76,7 @@ def extract(input_path, owner_path, progid, process, clsid=None):
         new_ids = {p['pid'] for p in created}
         roots = [p for p in created if p.get('parent_pid') not in new_ids]
         if len(roots) != 1 or collection.Count != 0:
-            raise ReadFailure('OFFICE_BUSY', '未能确认空闲的新办公软件实例；未接管用户文档。')
+            raise ReadFailure('OFFICE_BUSY', '未能创建独立且空闲的办公软件读取实例；未接管用户文档，请稍后重试。')
         owner_path.write_text(json.dumps(created), 'utf-8')
         owned = True
         stage = 'readonly_security'

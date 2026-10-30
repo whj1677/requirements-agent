@@ -78,17 +78,21 @@ def test_wps_worker_arguments_and_recorded_provider_are_explicit(tmp_path, monke
 @pytest.mark.parametrize('extension,progid,process', [
     ('.docx', 'KWPS.Application', 'wps'), ('.xlsx', 'KET.Application', 'et'), ('.pptx', 'KWPP.Application', 'wpp'),
 ])
-def test_worker_refuses_existing_wps_before_com_or_security_changes(tmp_path, monkeypatch, extension, progid, process):
+def test_worker_refuses_reused_wps_before_security_or_document_changes(tmp_path, monkeypatch, extension, progid, process):
     from types import SimpleNamespace
     from app import office_worker
-    com = SimpleNamespace(COINIT_APARTMENTTHREADED=2, CoInitializeEx=lambda _: None, CoUninitialize=lambda: None,
-                          CoCreateInstance=lambda *_: pytest.fail('Existing WPS must not be touched'))
-    monkeypatch.setattr(office_worker, 'com_runtime', lambda: (com, None))
-    monkeypatch.setattr(office_worker, 'processes', lambda _name: [{'pid': 12345}])
-    monkeypatch.setattr(office_worker, 'visible_process_ids', lambda: {12345})
+    collection = SimpleNamespace(Count=1)
+    collection_name = {'.docx': 'Documents', '.xlsx': 'Workbooks', '.pptx': 'Presentations'}[extension]
+    app = SimpleNamespace(**{collection_name: collection})
+    com = SimpleNamespace(COINIT_APARTMENTTHREADED=2, CLSCTX_LOCAL_SERVER=4, IID_IDispatch='dispatch',
+                          CoInitializeEx=lambda _: None, CoUninitialize=lambda: None,
+                          CoCreateInstance=lambda *_: app)
+    monkeypatch.setattr(office_worker, 'com_runtime', lambda: (com, SimpleNamespace(Dispatch=lambda value: value)))
+    monkeypatch.setattr(office_worker, 'processes', lambda _name: [{'pid': 12345, 'started': '1'}])
     result = office_worker.extract(tmp_path / ('synthetic' + extension), tmp_path / 'owner.json', progid, process)
     assert result['code'] == 'OFFICE_BUSY' and result['rows'] == []
     assert not (tmp_path / 'owner.json').exists()
+    assert not hasattr(app, 'AutomationSecurity')
 
 
 def test_native_worker_failure_never_changes_or_retries_script_policy(tmp_path, monkeypatch):
@@ -118,7 +122,6 @@ def test_wps_background_and_new_process_group_are_distinguished(tmp_path, monkey
                dict(pid=21, started='3', parent_pid=20 if one_group else 1)]
     snapshots = iter([[background], [background, *created]])
     monkeypatch.setattr(office_worker, 'processes', lambda _: next(snapshots))
-    monkeypatch.setattr(office_worker, 'visible_process_ids', lambda: set())
     owner = tmp_path / 'owner.json'
     result = office_worker.extract(tmp_path / 'synthetic.docx', owner, 'KWPS.Application', 'wps')
     if one_group:
