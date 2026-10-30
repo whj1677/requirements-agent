@@ -143,15 +143,15 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $previous = Join-Path $env:RA_BUILD_BASE 'previous-release'
-          gh run download 40616644463 --repo $env:GITHUB_REPOSITORY `
-            --name 'requirements-agent-windows-72c9189f02818cb1db5d25e663982b88615bbc16' --dir $previous
-          if ($LASTEXITCODE -ne 0) { throw 'Verified 1.2.8 upgrade baseline could not be downloaded' }
-          $installers = @(Get-ChildItem -LiteralPath $previous -Recurse -Filter 'RequirementsAgent-1.2.8-windows-x64-setup.exe')
+          gh run download 40850357056 --repo $env:GITHUB_REPOSITORY `
+            --name 'requirements-agent-windows-5a9cac498cb62f4574ea2e8d6ad518a04c720159' --dir $previous
+          if ($LASTEXITCODE -ne 0) { throw 'Verified 1.2.9 upgrade baseline could not be downloaded' }
+          $installers = @(Get-ChildItem -LiteralPath $previous -Recurse -Filter 'RequirementsAgent-1.2.9-windows-x64-setup.exe')
           if ($installers.Count -ne 1) { throw 'Previous installer is missing or ambiguous' }
           $installer = $installers[0].FullName
-          $expected = '4e4a0d298f3bf31fbffac64f082ab81ae7a0c219c17821c776c39463fcb2be35'
+          $expected = '4dcc2ae9b3b02aafb13e3a80f11469f748eb5f7717c3049d00f9e1c39f348370'
           if ((Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expected) {
-            throw 'Previous installer does not match the accepted 1.2.8 SHA-256'
+            throw 'Previous installer does not match the accepted 1.2.9 SHA-256'
           }
           "RA_PREVIOUS_INSTALLER=$installer" >> $env:GITHUB_ENV
 
@@ -165,7 +165,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Real installation or direct runtime verification failed' }
           'Fresh installation and shortcuts: VERIFIED. Real-model semantic evaluation remains separate.' >> $env:GITHUB_STEP_SUMMARY
 
-      - name: Verify 1.2.8 to current upgrade and data preservation
+      - name: Verify 1.2.9 to current upgrade and data preservation
         run: |
           $ErrorActionPreference = 'Stop'
           $verification = Join-Path $env:RA_BUILD_BASE 'upgrade-verification'
@@ -173,7 +173,7 @@ jobs:
             --upgrade-from $env:RA_PREVIOUS_INSTALLER --shortcuts --output $verification 2>&1 |
             Tee-Object -FilePath (Join-Path $env:RA_BUILD_LOGS 'upgrade-verification.log')
           if ($LASTEXITCODE -ne 0) { throw 'Cross-version upgrade or data preservation verification failed' }
-          'Upgrade from verified 1.2.8 and uninstall data preservation: VERIFIED.' >> $env:GITHUB_STEP_SUMMARY
+          'Upgrade from verified 1.2.9 and uninstall data preservation: VERIFIED.' >> $env:GITHUB_STEP_SUMMARY
 
       - name: Upload installer and release manifests
         if: success()

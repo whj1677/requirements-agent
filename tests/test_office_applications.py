@@ -41,25 +41,38 @@ def test_missing_registration_never_launches_a_worker(tmp_path, monkeypatch):
     assert not result['rows'] and not list(tmp_path.iterdir())
 
 
-def test_wps_worker_arguments_and_recorded_provider_are_explicit(tmp_path, monkeypatch):
-    monkeypatch.setattr(office, 'registered_application', lambda _kind:
-                        dict(progid='KWPS.Application', process='wps', application='WPS 文字'))
+@pytest.mark.parametrize('extension,kind,progid,process,label', [
+    ('.doc', 'Word', 'KWPS.Application', 'wps', 'WPS 文字'),
+    ('.docx', 'Word', 'KWPS.Application', 'wps', 'WPS 文字'),
+    ('.xls', 'Excel', 'KET.Application', 'et', 'WPS 表格'),
+    ('.xlsx', 'Excel', 'KET.Application', 'et', 'WPS 表格'),
+    ('.ppt', 'PowerPoint', 'KWPP.Application', 'wpp', 'WPS 演示'),
+    ('.pptx', 'PowerPoint', 'KWPP.Application', 'wpp', 'WPS 演示'),
+])
+def test_wps_worker_arguments_and_recorded_provider_are_explicit(tmp_path, monkeypatch, extension, kind, progid, process, label):
+    def select(selected):
+        assert selected == kind
+        return dict(progid=progid, process=process, application=label)
+    monkeypatch.setattr(office, 'registered_application', select)
     def run(command, **_kwargs):
         assert '-STA' in command and '-ExecutionPolicy' not in command
-        assert command[command.index('-ProgId') + 1] == 'KWPS.Application'
-        assert command[command.index('-ProcessName') + 1] == 'wps'
+        assert command[command.index('-ProgId') + 1] == progid
+        assert command[command.index('-ProcessName') + 1] == process
         Path(command[command.index('-OutputPath') + 1]).write_text(json.dumps(dict(
             status='partial', rows=[['正文段落 1', '合成资料']], reason='人工正文未核对',
             content_match='not_verified')), 'utf-8')
         return subprocess.CompletedProcess(command, 0)
     monkeypatch.setattr(office.subprocess, 'run', run)
-    result = office.extract_office('synthetic.docx', b'synthetic-only', tmp_path)
-    assert result['application'] == 'WPS 文字' and result['automation_progid'] == 'KWPS.Application'
-    assert result['process_name'] == 'wps' and result['content_match'] == 'not_verified'
+    result = office.extract_office('synthetic' + extension, b'synthetic-only', tmp_path)
+    assert result['application'] == label and result['automation_progid'] == progid
+    assert result['process_name'] == process and result['content_match'] == 'not_verified'
     assert not list(tmp_path.iterdir())
 
 
-def test_worker_refuses_existing_wps_before_com_or_security_changes(tmp_path):
+@pytest.mark.parametrize('extension,progid,process', [
+    ('.docx', 'KWPS.Application', 'wps'), ('.xlsx', 'KET.Application', 'et'), ('.pptx', 'KWPP.Application', 'wpp'),
+])
+def test_worker_refuses_existing_wps_before_com_or_security_changes(tmp_path, extension, progid, process):
     output = tmp_path / 'result.json'
     # Replace the process query in this subprocess with a synthetic busy app.
     # New-Object must never run, so no real COM application is created.
@@ -67,9 +80,9 @@ def test_worker_refuses_existing_wps_before_com_or_security_changes(tmp_path):
     quote = lambda path: "'" + str(path).replace("'", "''") + "'"
     wrapper.write_text("function Get-Process { [pscustomobject]@{Id=12345} }\n"
                        "function New-Object { throw 'COM_MUST_NOT_START' }\n"
-                       '& ' + quote(office.WORKER) + ' -InputPath synthetic.docx -OutputPath ' + quote(output) +
+                       '& ' + quote(office.WORKER) + ' -InputPath synthetic' + extension + ' -OutputPath ' + quote(output) +
                        ' -OwnerPath ' + quote(tmp_path / 'owner.json') +
-                       " -ProgId KWPS.Application -ProcessName wps\n", 'utf-8-sig')
+                       ' -ProgId ' + progid + ' -ProcessName ' + process + '\n', 'utf-8-sig')
     run = subprocess.run([office.powershell_host(), '-NoProfile', '-NonInteractive', '-STA', '-File', str(wrapper)],
                          capture_output=True, timeout=20, creationflags=subprocess.CREATE_NO_WINDOW)
     assert run.returncode == 0, run.stderr.decode(errors='replace')

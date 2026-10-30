@@ -253,7 +253,13 @@ async def run(args):
                     await leave.wait_for(state='hidden')
                     assert len(attachment_sources(store, mobile['id'])) == 2 and provider.calls == 4
                     await page.reload(wait_until='networkidle')
-                    await select_project(page,mobile['id'])
+                    # Reload may already restore this project. Opening the
+                    # drawer and reselecting the same option is not a switch.
+                    if await page.get_by_label('切换项目', exact=True).input_value() != mobile['id']:
+                        await select_project(page,mobile['id'])
+                    drawer = page.locator('details.compact-projects')
+                    if await drawer.get_attribute('open') is not None:
+                        await drawer.locator('summary').click()
                     await page.locator('.connected-workspace:visible .connected-steps').get_by_role('button', name='提供信息').click()
                     await page.locator('.connected-workspace:visible').get_by_role('button', name='和助手聊需求').click()
                     await page.locator('.connected-chat .chat-pasted-image').first.wait_for()
