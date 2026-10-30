@@ -4,7 +4,7 @@
 
 ## 当前构建与验收（2026-10-30）
 
-- 阶段：1.2.9 安装验收见 [历史记录](windows-installer-20261029.md)；1.2.10 为 WPS 兼容候选版，实际验证与客户待复验边界见 [WPS 读取记录](wps-reader-20261030.md)。
+- 阶段：1.2.9 安装验收见 [历史记录](windows-installer-20261029.md)；1.2.10 读取受客户脚本策略阻止，1.2.11 原生 COM 候选版取消读取链对 PowerShell 的依赖，结果与客户待复验边界见 [原生读取记录](native-office-reader-20261030.md)。
 - 目标：交付无需设备许可证、包含最新已修复工作台的自包含 Windows 试用安装器。
 - 输入：已审核的精确源码提交、锁定依赖、已有 Windows 构建与安装验证流程。
 - 交付物：`app/version.py` 指定版本的安装器、SHA-256、清单、实际验证记录和随包指南。
@@ -18,11 +18,11 @@
 
 1. 将相互依赖的实现、测试、构建脚本及文档提交。
 2. 从 Actions 的 **Windows customer distribution** 选择已审核分支手动运行，实际检出提交作为版本事实源。
-3. 构建前执行桌面运行、启动/导入和打包边界测试；构建后执行新版本全新安装，以及已验收 1.2.9 到新版本的跨版本升级。两轮均核对快捷方式、离线运行、数据保留和卸载。
+3. 构建前执行桌面运行、启动/导入和打包边界测试；构建后执行新版本全新安装，以及已验收 1.2.10 到新版本的跨版本升级。两轮均核对快捷方式、离线运行、数据保留和卸载；新版本另核对随包 COM 运行组件。
 4. 下载 `requirements-agent-windows-<提交SHA>` 工件，核对安装器 SHA-256、`source_commit`、`working_tree_dirty=false`、`native_file_bytes_verified=true`、`device_license_required=false` 和发行标识 `windows-x64-direct`。
 5. 构建清单的 `BUILT_NOT_ACCEPTED` 仅说明构建完成；实际结论分别以 `installation-verification/installation-verification.json` 和 `upgrade-verification/installation-verification.json` 为准。
 
-全新安装验证命令：`python scripts/verify_windows_install.py --installer <新版安装器> --shortcuts --output <新目录>`。跨版本验证另用新的输出目录，增加 `--upgrade-from <已核验的1.2.9安装器>`。没有指定旧安装器时，仅能称为同版本原位重装。
+全新安装验证命令：`python scripts/verify_windows_install.py --installer <新版安装器> --shortcuts --output <新目录>`。跨版本验证另用新的输出目录，增加 `--upgrade-from <已核验的1.2.10安装器>`。没有指定旧安装器时，仅能称为同版本原位重装。
 
 验证器使用隔离用户数据目录、仅含 Windows 系统目录的 PATH，不依赖主机 Python/Node/浏览器缓存。执行内置 DOCX/XLSX/PPTX/图片读取与 Chromium smoke，实际创建并打开桌面和开始菜单快捷方式，重复打开检查实例复用；通过业务 API 创建合成项目、附件和模型配置，升级后读取，并在卸载后核对文件保留。合成 Key 仅检查保存与重载，不调用模型。旧许可证哨兵仅验证保留，不具备授权作用。
 
