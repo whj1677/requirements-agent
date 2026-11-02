@@ -96,11 +96,6 @@
   }
 }
 
-@media (min-width:761px) and (max-height:680px){
-  .refinement-requirements-view:not([hidden]) .refinement-sheet-heading>div:first-child{display:none}
-  .refinement-requirements-view:not([hidden]) .refinement-sheet-heading{min-height:0;margin-bottom:3px}
-}
-
 @media (min-width:761px) and (max-height:900px){
   .connected-workspace:has(.refinement-requirements-view:not([hidden]) .refinement-sheet[data-focus-mode="true"])>.workspace-stagebar{display:none}
 }

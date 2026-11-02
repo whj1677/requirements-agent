@@ -198,7 +198,7 @@ input,textarea {caret-color:var(--accent-fg)}
 .layout .step-actions button:not(.primary) {box-shadow:none}
 
 /* Requirement review keeps one editing scroller and an always-reachable footer */
-.layout .connected-workspace:has(.refinement-sheet),.layout .connected-workspace:has(.prewrite-batch) {display:flex;flex-direction:column;overflow:hidden;padding-bottom:12px}
+.layout .connected-workspace:has(.refinement-sheet),.layout .connected-workspace:has(.prewrite-batch) {display:flex;flex-direction:column;overflow-x:hidden;overflow-y:auto;padding-bottom:12px}
 .layout .refinement-view-toolbar {flex:none;display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:0 0 10px;padding:0 0 9px;border-bottom:1px solid var(--border-default)}
 .layout .refinement-view-switch {display:flex;align-items:center;gap:5px;min-width:0;flex-wrap:wrap}
 .layout .refinement-view-switch button {border-color:transparent;background:transparent;color:var(--fg-muted);box-shadow:none}
@@ -207,7 +207,8 @@ input,textarea {caret-color:var(--accent-fg)}
 .layout .refinement-view-toolbar .connected-status {margin:0 0 0 auto;font-size:12px}
 .layout .refinement-requirements-view:not([hidden]) {display:flex;flex-direction:column;flex:1;min-height:0}
 .layout .refinement-sheet,.layout .prewrite-review,.layout .prewrite-batch {flex:1;min-height:0;width:100%;max-width:none;color:var(--fg-default)}
-.layout .refinement-sheet-heading {align-items:center;margin:0 0 9px}
+.layout .refinement-sheet-heading {flex:none;align-items:center;margin:0 0 9px}
+.layout .refinement-sheet>.stage-next-step,.layout .refinement-next-step {flex:none}
 .layout .refinement-sheet-heading .sheet-heading-copy {display:flex;align-items:baseline;gap:12px;flex:1;min-width:0}
 .layout .refinement-sheet-heading .sheet-heading-copy h2 {margin:0;font-size:18px;line-height:1.5}
 .layout .sheet-heading-summary {color:var(--fg-muted);font-size:12px}
@@ -217,7 +218,7 @@ input,textarea {caret-color:var(--accent-fg)}
 .layout .sheet-more-actions>summary {min-height:34px;padding:7px 12px;border:1px solid var(--border-default);border-radius:9px;background:var(--paper);cursor:pointer;list-style:none}
 .layout .sheet-more-actions[open] {display:flex;align-items:center;flex-wrap:wrap;gap:6px}
 .layout .sheet-more-actions[open]>summary {background:var(--bg-muted)}
-.layout .sheet-navigation {gap:5px;margin-bottom:8px;padding-bottom:8px;border-color:var(--border-default)}
+.layout .sheet-navigation {flex:none;gap:5px;margin-bottom:8px;padding-bottom:8px;border-color:var(--border-default)}
 .layout .sheet-navigation button {border-color:transparent;background:transparent;color:var(--fg-muted);box-shadow:none;font-size:12px}
 .layout .sheet-navigation button.active {background:var(--accent-muted);color:var(--accent-fg)}
 .layout .sheet-issue-count,.layout .sheet-navigation .sheet-missing-jump {border-color:#ead7b5;background:var(--attention-muted);color:var(--attention-fg)}
@@ -315,9 +316,6 @@ input,textarea {caret-color:var(--accent-fg)}
   .layout .connected-workspace:has(.refinement-sheet) {padding-bottom:6px}
   .layout .refinement-sheet-heading {margin-bottom:6px}
   .layout .refinement-sheet-footer {margin-top:6px;padding-top:7px;padding-bottom:7px}
-}
-@media(max-height:760px) and (min-width:1001px) {
-  .layout .refinement-sheet-scroll {min-height:calc(50dvh + 2px)}
 }
 @media(max-height:590px) and (min-width:761px) {
   .layout .compact-projects>summary {height:36px}
@@ -607,6 +605,7 @@ body {background:var(--bg-default);font-family:"Segoe UI","PingFang SC","Microso
   .layout .workflow-five-steps {grid-template-columns:repeat(5,minmax(150px,1fr))}
 }
 @media(max-width:760px) {
+  .layout .project-bar {height:auto;min-height:50px}
   .layout .connected-steps {gap:8px}
   .layout .workflow-five-steps {padding:5px;border-radius:10px}
   .layout .workflow-five-steps>li {padding:7px 9px}

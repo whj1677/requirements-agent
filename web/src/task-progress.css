@@ -9,6 +9,11 @@
 .ai-progress-compact{border:0;border-radius:0;display:flex;gap:10px;align-items:center;width:100%;padding:12px 16px;text-align:left}.ai-progress-compact>span:nth-child(2){flex:1;min-width:0}.ai-progress-compact strong,.ai-progress-compact small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.ai-progress-compact>span:last-child{flex-shrink:0;font-size:13px;color:var(--accent)}.ai-progress-compact .feedback-spinner{flex-shrink:0;margin:0}.ai-progress-dot{display:block;width:9px;height:9px;border-radius:50%;background:var(--accent);flex-shrink:0}.ai-progress-body select{width:100%}
 body:has(.ai-progress) .request-feedback{right:auto;left:22px;width:min(360px,calc(100vw - 32px))}
 @media(max-width:700px){.ai-progress{right:12px;top:12px;width:calc(100vw - 24px)}.ai-progress-expanded{max-height:calc(100dvh - 24px)}.ai-progress-header{padding:12px}.ai-progress-body{padding:12px}.ai-progress-actions{padding:12px}.ai-progress-actions button{flex:1 1 auto}.ai-progress-compact{padding:10px 12px}}
-@media(max-width:800px){body:has(.ai-progress) .request-feedback{left:12px;right:12px;top:12px;bottom:auto;max-height:136px;overflow:auto;width:auto}body:has(.request-feedback) .ai-progress{top:164px;max-height:calc(100dvh - 180px)}}
+@media(max-width:800px){body:has(.ai-progress) .request-feedback{left:12px;right:12px;top:12px;bottom:auto;max-height:136px;overflow:auto;width:auto}body:has(.request-feedback) .ai-progress-expanded{top:164px;max-height:calc(100dvh - 180px)}#root:has(>.ai-progress:not(.ai-progress-expanded))>.request-feedback{position:static;order:-2;flex:none;margin:12px 12px 16px}}
+#root:has(>.ai-progress:not(.ai-progress-expanded)){display:flex;flex-direction:column;height:100dvh;overflow:hidden}
+#root:has(>.ai-progress:not(.ai-progress-expanded))>.layout{flex:1;min-height:0;height:auto}
+#root:has(>.ai-progress:not(.ai-progress-expanded))>.layout>main,
+#root:has(>.ai-progress:not(.ai-progress-expanded))>.layout>.sidebar{height:auto;min-height:0}
+.ai-progress:not(.ai-progress-expanded){position:static;order:-1;flex:none;width:100%;max-height:none;border:0;border-bottom:1px solid var(--line);border-radius:0;box-shadow:none}
 @media(prefers-reduced-motion:reduce){.ai-progress .feedback-spinner{animation:none}}
 .ai-progress-stage[data-status="failed"], .ai-progress-stage[data-status="paused_budget"] { color:#a45216; }
