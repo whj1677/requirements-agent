@@ -1,11 +1,33 @@
 """Verify source and Windows asset lists, not installer execution or release."""
 import json
 import hashlib
+import shutil
+import subprocess
 from pathlib import Path
 
 from app.core import ROOT, KIT
 from scripts.build_windows import builtin_skill_assets, required_inputs
 from scripts.package_local import source_paths
+
+
+def test_windows_git_checkout_preserves_upstream_bytes(tmp_path):
+    base = KIT / 'prompts/skills'
+    manifest = json.loads((base / 'upstream.json').read_text('utf-8'))
+    originals = [file for skill in manifest['skills'] for file in skill['files']]
+    subprocess.run(['git', 'init', '-q', str(tmp_path)], check=True)
+    subprocess.run(['git', '-C', str(tmp_path), 'config', 'core.autocrlf', 'true'], check=True)
+    shutil.copyfile(ROOT / '.gitattributes', tmp_path / '.gitattributes')
+    for file in originals:
+        target = tmp_path / base.relative_to(ROOT) / file['path']
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(base / file['path'], target)
+    subprocess.run(['git', '-C', str(tmp_path), 'add', '.'], check=True)
+    for file in originals:
+        (tmp_path / base.relative_to(ROOT) / file['path']).unlink()
+    subprocess.run(['git', '-C', str(tmp_path), 'checkout-index', '--all'], check=True)
+    for file in originals:
+        raw = (tmp_path / base.relative_to(ROOT) / file['path']).read_bytes()
+        assert hashlib.sha256(raw).hexdigest() == file['sha256'], file['path']
 
 
 def test_skill_originals_licenses_policy_and_manifest_are_in_both_packages():
