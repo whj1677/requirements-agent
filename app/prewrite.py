@@ -26,13 +26,13 @@ def input_hash(p):
                 'understanding_status','decision_coverage','decision_coverage_review','decision_answer_id')})
         else:
             questions.append({k:v for k,v in q.items() if k not in
-                ('decision_review_proposal_current','decision_coverage_complete')})
+                ('decision_review_proposal_current','decision_coverage_complete','answer_location_suggestions')})
     return digest(dict(version=VERSION,
         items=[dict(id=i['id'],selection_status=i.get('selection_status'),content=item_content(i))
                for i in p.get('items',[])],questions=questions,
         sources=[{k:s.get(k) for k in ('id','sha256','excluded','parse_status','excerpts','purpose')}
                  for s in p.get('sources',[])],
-        context={k:p.get(k) for k in ('product_context','scope_profile','context_field_states',
+        context={k:p.get(k) for k in ('product_context','scope_profile','context_field_states','context_confirmations',
             'requirement_relations','delivery_scope','domain_context','business_context')},
         decision_answers=p.get('decision_answers',[]),business_selection=selection_identity(p),
         responses=p.get('prewrite_responses',[])))
@@ -124,7 +124,7 @@ def normalize_quotes(p,response):
 
 
 def normalize_decisions(p,response):
-    """Required decisions cannot remain nonblocking suggestions.
+    """Normalize exact question spelling without changing its severity.
 
     Match only an exact question, optionally followed by a parenthesized list
     of choices. No keyword or semantic matching creates a new association.
@@ -143,7 +143,7 @@ def normalize_decisions(p,response):
                 matches.append((index,finding))
         if len(matches)!=1:continue
         index,finding=matches[0]
-        if finding.get('severity')=='blocker' and finding['decision_question']==decision:continue
+        if finding.get('severity')!='blocker' or finding['decision_question']==decision:continue
         changes.append(dict(path=f'findings[{index}]',before=dict(severity=finding['severity'],decision_question=finding['decision_question']),
             after=dict(severity='blocker',decision_question=decision)))
         finding.update(severity='blocker',decision_question=decision)
@@ -153,6 +153,11 @@ def normalize_decisions(p,response):
 def validate_result(p,response):
     required={i['id'] for i in delivery_items(p) if i['kind'] in ('requirement','rule','acceptance')}
     result=response['result']
+    for decision in result.get('required_decisions',[]):
+        advisory=[f for f in response.get('findings',[]) if f.get('severity') in ('warning','info')
+            and f.get('decision_question') and decision.startswith(f['decision_question'])]
+        require(not advisory,'PREWRITE_SEVERITY_CONFLICT',
+            '检查将同一事项同时列为可选建议和必须决定，严重度不一致。已保留原检查；请重新检查，不会自动升级建议或绕过门禁。')
     require(required<=set(result.get('reviewed_refs',[])) and result.get('perspectives'),
         'PREWRITE_COVERAGE_REQUIRED','成文检查未覆盖全部本期需求、规则和验收，请重新检查。')
     for f in response.get('findings',[]):
@@ -275,6 +280,27 @@ def _resolution_current(p,card,question):
         or resolution.get('basis')=='reviewed_dispute' and resolution.get('evidence_hash')==_finding_input_hash(p,card))
 
 
+def question_resolution_current(p, question):
+    """Project a reviewed non-business question resolution without inventing an answer."""
+    report = p.get('prewrite_review') or {}
+    resolution = question.get('prewrite_resolution') or {}
+    if (question.get('prewrite_origin') != VERSION or question.get('answer')
+            or resolution.get('basis') != 'reviewed_dispute' or report.get('status') != 'passed'):
+        return False
+    if report.get('input_hash') != input_hash(p):
+        return False
+    cards = [card for card in report.get('findings', [])
+             if card.get('question_id') == question['id'] and card.get('id') == question.get('prewrite_key')]
+    if len(cards) != 1:
+        return False
+    card = cards[0]
+    return bool(card.get('status') == 'resolved' and not card.get('hard_block')
+        and card.get('message') == question.get('why')
+        and set(card.get('related_refs', [])) == set(question.get('related_refs', []))
+        and (not resolution.get('question_hash') or resolution['question_hash'] == digest(question['question']))
+        and resolution.get('run_id') and _resolution_current(p, card, question))
+
+
 def apply_result(p,response,run_id,*,previous_response=None,previous_review=_UNSET):
     validate_result(p,response)
     previous=copy.deepcopy(p.get('prewrite_review') if previous_review is _UNSET else previous_review)
@@ -289,7 +315,6 @@ def apply_result(p,response,run_id,*,previous_response=None,previous_review=_UNS
     rows=structural_findings(p)
     decisions=list(response['result'].get('required_decisions') or [])
     needs_changes=response['result']['assessment']!='ready_for_human_review'
-    model_has_blockers=any(f['severity']=='blocker' for f in response.get('findings',[]))
     seen=set()
     for f in response.get('findings',[]):
         evidence_identity=_evidence_identity(f)
@@ -305,8 +330,9 @@ def apply_result(p,response,run_id,*,previous_response=None,previous_review=_UNS
             finding_type=f['type'],evidence_identity=evidence_identity)
         if f.get('recommended_answer'):
             card['recommended_answer']=f['recommended_answer']
-        correction_warning=(needs_changes and not model_has_blockers and f['severity']=='warning'
-            and bool(_clause_refs(p,f['related_refs'])))
+        # A global assessment cannot silently turn an advisory warning into a
+        # mandatory PM decision. The separate assessment gate below still stops
+        # a negative/inconsistent review from passing without evidence.
         question=f.get('decision_question')
         # Older compatible reviewers only have required_decisions. Bind by an
         # explicit object ID; never guess which of several findings it belongs to.
@@ -319,12 +345,12 @@ def apply_result(p,response,run_id,*,previous_response=None,previous_review=_UNS
             if len(matches)==1:question=matches[0]
             elif len(decisions)==1 and decisions[0] not in explicitly_bound and f['severity']=='blocker' and len({digest(x) for x in response['findings'] if x['severity']=='blocker'})==1:
                 question=decisions[0]
-        if not question and (f['severity']=='blocker' or correction_warning) and _clause_refs(p,f['related_refs']):
+        if not question and f['severity']=='blocker' and _clause_refs(p,f['related_refs']):
             # A known-source correction still requires a displayed human change
             # review. It is not invented as a new unknown business rule.
             card['decision_kind']='correction'
             question='请核对是否按已引用依据修正以下问题，并说明修改意见：'+f['suggested_resolution']
-        if question and (f['severity']=='blocker' or correction_warning):
+        if question and f['severity']=='blocker':
             card.update(requires_confirmation=True,blocks_document=True)
             _question_for(p,card,question)
             if question in decisions:decisions.remove(question)
@@ -370,7 +396,7 @@ def apply_result(p,response,run_id,*,previous_response=None,previous_review=_UNS
             rows.append(dict(old,status='open'));continue
         if question and question.get('prewrite_origin'):
             question['prewrite_resolution']=dict(run_id=run_id,at=now(),basis='reviewed_application' if implemented else 'reviewed_dispute',
-                evidence_hash=_finding_input_hash(p,old))
+                evidence_hash=_finding_input_hash(p,old),question_hash=digest(question['question']))
         rows.append(dict(old,status='resolved'))
     rows=list({r['id']:r for r in rows}.values())
     blocking=[r for r in rows if _blocks_document(r) and r['status']!='resolved']

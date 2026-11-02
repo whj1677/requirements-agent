@@ -273,9 +273,9 @@ async def exercise(page, store, initial, output, report, control, expect):
     report['checks'].append('one_real_commit_confirms_chapter_and_stage3_atomically_without_second_form_or_checkpoint_and_keeps_documents_ten_requirements_unchanged')
     await page.screenshot(path=str(output / '05-one-confirmation-complete.png'))
 
-    await expect(drawer.get_by_role('button', name='更新当前文档', exact=True)).to_be_enabled()
+    await expect(drawer.get_by_role('button', name='按当前底稿重新生成全文', exact=True)).to_be_enabled()
     before_plan = state_hash(store)
-    await drawer.get_by_role('button', name='更新当前文档', exact=True).click()
+    await drawer.get_by_role('button', name='按当前底稿重新生成全文', exact=True).click()
     await expect(plan).to_be_visible()
     assert report['api_requests'][-1]['path'].endswith('/actions/plan') or any(
         event.get('body', {}).get('action') == 'document' and event['path'].endswith('/actions/plan') for event in report['api_requests'])

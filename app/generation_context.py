@@ -1,4 +1,5 @@
 """Input-only evidence roles for generation; no adoption or response rewriting."""
+import copy
 from .understanding import current_answer, answer_targets, applied_targets
 
 STAGES = ('ingest', 'clarify', 'change')
@@ -73,3 +74,25 @@ def condition_layers(projection,p):
             evidence_role='answer_revision_task_not_adoption'))
     return dict(projection,facts=[f for f in projection['facts'] if f['origin']!='model'],clause_assertions=assertions,
                 local_result_tasks=tasks)
+
+
+def document_condition_layers(projection,p,current_normative_ids):
+    """Document/review input roles follow this stage's normative whitelist."""
+    result={key:copy.deepcopy(value) for key,value in projection.items() if key!='facts'}
+    result.update(identity_version='document-condition-layers-1',facts=[],
+        current_clause_assertions=[],historical_clause_assertions=[],
+        scope='当前规范仅指本次规范底稿白名单，不是正式人工批准或实现事实；来源观察与历史断言分别保留，辅助谓词仍须核原文。')
+    current=set(current_normative_ids);items={item['id']:item for item in p.get('items',[])}
+    for original in projection['facts']:
+        fact=copy.deepcopy(original);item=items.get(fact.get('object_id'),{})
+        fact.update(selection_status=item.get('selection_status'),target_item_id=item.get('target_item_id'),
+            content_version=item.get('content_version'),epistemic_status=item.get('epistemic_status'),
+            object_scope=('current_normative_draft' if item.get('id') in current else
+                          'historical_unadopted_or_out_of_scope' if item else 'unbound_source_observation'))
+        if fact.get('origin')!='model':
+            fact['evidence_role']='source_observation_not_canonical';result['facts'].append(fact)
+        elif item.get('id') in current:
+            fact['evidence_role']='current_draft_assertion_not_formal_approval';result['current_clause_assertions'].append(fact)
+        else:
+            fact['evidence_role']='historical_or_unadopted_assertion';result['historical_clause_assertions'].append(fact)
+    return result

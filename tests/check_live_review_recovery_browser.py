@@ -115,7 +115,7 @@ async def run(args):
                 await page.screenshot(path=str(output/f'{round_index+1}-rechecked.png'))
             assert store.get(pid)['prewrite_review']['status']=='passed','Review still has unresolved points after three explicit rounds'
             await expect(work.get_by_text('可以继续生成 PRD。',exact=True)).to_be_visible(timeout=15000)
-            await work.get_by_role('button',name='返回并继续生成 PRD',exact=True).click();await execute('document')
+            await work.get_by_role('button',name='生成 PRD',exact=True).click();await execute('document')
             reader=page.get_by_role('article',name='PRD 正文',exact=True);await expect(reader).to_be_visible(timeout=15000)
             artifact=store.get(pid)['documents']['prd'];assert artifact
             for name,extension in [('下载评审稿 MD','md'),('下载评审稿 DOCX','docx')]:

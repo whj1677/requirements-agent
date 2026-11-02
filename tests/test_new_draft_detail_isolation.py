@@ -37,7 +37,7 @@ def test_invalid_new_detail_retains_independent_body_acceptance_and_question(tmp
     row=draft_row('new-cloud-function'); row['questions']=[question()]
     detail=sample_detail()
     if defect=='flow_metadata':detail['flow']['evidence']={'nodes':{'status':'source','sources':[{'source':'S1','locator':'L1'}]}}
-    elif defect=='bad_status':detail['fields'][0]['evidence']={'constraints':{'status':'recommendation'}}
+    elif defect=='bad_status':detail['fields'][0]['evidence']={'constraints':{'status':'unsupported_recommendation'}}
     else:detail='invalid detailed definition'
     row['detail_contract']=detail
     before=copy.deepcopy((project,row))
@@ -75,7 +75,7 @@ def test_existing_detail_is_not_silently_replaced_when_new_output_is_invalid(tmp
     project,local,_,_,excerpts,_=setup(tmp_path)
     original=sample_detail();project['items'][0]['detail_contract']=copy.deepcopy(original)
     row=draft_row();row['detail_contract']=copy.deepcopy(original)
-    row['detail_contract']['flow']['evidence']={}
+    row['detail_contract']['flow']['evidence']={'nodes':{'status':'proposal'}}
     before=copy.deepcopy(project)
     canonical,report=adapt(packet(row),project,excerpts,'clarify',local)
     assert report['status']=='partial' and not report['complete'] and not report['rejected']
@@ -87,3 +87,27 @@ def test_existing_detail_is_not_silently_replaced_when_new_output_is_invalid(tmp
     saved=copy.deepcopy(project);apply_response(saved,canonical,identity_only=True)
     assert saved['items'][:len(project['items'])]==project['items']
     assert all(item['selection_status']=='candidate' for item in saved['items'][len(project['items']):])
+
+
+@pytest.mark.parametrize('format_noise',['proposal_alias','empty_flow_evidence'])
+def test_safe_new_detail_normalization_keeps_raw_and_never_adopts_candidate(tmp_path,format_noise):
+    project,_,_,_,excerpts,_=setup(tmp_path)
+    row=draft_row('new-cloud-function');detail=sample_detail()
+    expected=copy.deepcopy(detail)
+    if format_noise=='proposal_alias':
+        detail['fields'][0]['evidence']={'constraints':{'status':'recommendation'}}
+        expected['fields'][0]['evidence']={'constraints':{'status':'proposal'}}
+    else:
+        detail['flow']['evidence']={}
+    row['detail_contract']=detail
+    before=copy.deepcopy((project,row))
+    canonical,report=adapt(packet(row),project,excerpts,'ingest')
+    assert not report['field_rejected'] and not report['rejected']
+    assert report['accepted'][0]['raw']==row and report['detail_normalized']
+    requirement=next(item for item in canonical['proposals'] if item['kind']=='requirement')
+    assert requirement['detail_contract']==expected
+    assert (project,row)==before
+    saved=copy.deepcopy(project);apply_response(saved,canonical,identity_only=True)
+    assert saved['items'][:len(project['items'])]==project['items']
+    assert all(item['selection_status']=='candidate' and not item.get('requirement_confirmation')
+               for item in saved['items'][len(project['items']):])

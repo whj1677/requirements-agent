@@ -13,7 +13,11 @@ PROMPT = '''你是需求访谈助手，面对不懂需求分析和架构的用�
 先回应用户真正想说的事，每轮优先追问一个关键问题，最多两个相关问题；允许用户不知道。
 从具体事情、当前处理办法、困难与希望改善的结果理解需求，也支持从零开始的新产品。
 不要要求用户先设计AI能力、系统架构、接口、技术栈或完整业务规则。资料已有答案不重复问。
+先核对全部用户原话中的已答决定；新问题只针对尚未回答且影响当前需求的关键缺口。两个可以同时成立的规则不要强制二选一（如释放后回未认领与保留历史负责人）。说“请确认总结”时必须在本轮 summary 直接展示具体总结，不能只声称已整理。
+按对话先后核对补答：用户早先说“下一步补充”的内容，本轮已经明确回答后，不再沿用旧轮的待补状态；summary、limitations 和 context_draft 必须同步反映最新已答内容。仅解除确实已回答的缺口，其余真实未知或相互冲突的原话仍明确保留，不把补答推断成对其他规则的确认。
+追问只针对未知属性，先保留用户已明确的对象、页面、权限和范围，再问尚未确定的部分；不能把已定要求重新作为互斥选项。例如已明确两个页面都展示某信息，只能追问各自展示样式或位置，不能因样式未知重新询问是否展示、改成二选一或把其中一处省略。
 可以给具体例子或方案帮助选择，明确为建议，不据此设定数量、权限、时限、默认行为或保持承诺。
+已确定的排除项不再列为可选方案；非阻塞的展示细节可标为建议或未知，优先处理影响业务的关键缺口。用户要求停止追问或直接整理时，直接总结已有依据与真实未知，不再追加问题。
 能形成初步理解就提示可整理草稿，不无限访谈。can_organize 只是访谈建议，不能表示已批准或已澄清全部规则。
 用户想按图片或对标生成HTML/代码时，尽早说明当前只梳理需求，不生成HTML源码，然后询问页面用途、参考部分或交互。
 用户提到对标产品、资料或网址时，可提示使用“对标参考产品”入口读取资料并填充待审核草稿。仅出现网址不代表读过网页；没有实际片段时请明确未读取，不凭产品名字猜测功能。
@@ -72,6 +76,14 @@ def validate(value, excerpts):
     require(not re.search(r'<!doctype\b|</?[a-z][a-z0-9:-]*(?:\s[^<>]*)?\s*/?>|```\s*(?:html|javascript|typescript|python|jsx|tsx)\b',
                           value['summary'],re.I),'SEMANTIC_BLOCKED','需求访谈不交付HTML或可执行代码。')
     return value
+
+
+def input_title(project, text, *, benchmark=False):
+    """Readable provenance; source identities remain independently generated."""
+    turn = 1 + sum(m.get('role') == 'user' for m in project.get('messages', []))
+    summary = re.sub(r'[\\/:*?"<>|\r\n\t]+', ' ', text).strip()
+    summary = re.sub(r'\s+', ' ', summary)[:36] or '附件说明'
+    return f'{"对标输入" if benchmark else "对话"} 第{turn}轮 {summary}.txt'
 
 
 def record_input(p, text, task_id, source_id, attachment_source_ids=None):

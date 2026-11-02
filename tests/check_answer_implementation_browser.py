@@ -38,8 +38,9 @@ async def wait_saved(store, pid, predicate, message):
 
 
 async def enter(page, initial, expect, *, homepage=False):
+    from tests.browser_navigation import select_project
     await page.goto(ORIGIN, wait_until='networkidle')
-    await page.locator('aside.sidebar button[title="' + initial['name'] + '"]').click()
+    await select_project(page, initial['id'])
     work = page.locator('.connected-workspace:visible')
     if homepage:
         await expect(work.get_by_role('button', name='和助手聊需求', exact=True)).to_have_attribute('aria-pressed', 'true')

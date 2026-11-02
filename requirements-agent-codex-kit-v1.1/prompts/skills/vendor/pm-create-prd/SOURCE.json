@@ -1,0 +1,89 @@
+{
+  "schema_version": 1,
+  "local_metadata": true,
+  "source": {
+    "id": "phuryn-pm-skills",
+    "repository": "phuryn/pm-skills",
+    "repository_url": "https://github.com/phuryn/pm-skills",
+    "reviewed_ref": "refs/heads/main",
+    "upstream_commit": "2a12295a7717569baa7be181b4cfebe3ca38a6bb",
+    "commit_url": "https://github.com/phuryn/pm-skills/commit/2a12295a7717569baa7be181b4cfebe3ca38a6bb",
+    "license": "MIT",
+    "notice": {
+      "status": "not_present_in_scanned_applicable_directories",
+      "scanned_directories": [
+        "",
+        "pm-execution",
+        "pm-execution/skills",
+        "pm-execution/skills/create-prd",
+        "pm-execution/skills/strategy-red-team"
+      ]
+    }
+  },
+  "id": "pm-create-prd",
+  "name": "create-prd",
+  "version": "2a12295a7717569baa7be181b4cfebe3ca38a6bb",
+  "upstream_commit": "2a12295a7717569baa7be181b4cfebe3ca38a6bb",
+  "repository": "phuryn/pm-skills",
+  "path": "vendor/pm-create-prd/SKILL.md",
+  "sha256": "e3aa10a437ed7f748a957bd5d1eb06d8fa3f56dc728dcb93ce484387ecc3fa13",
+  "license": "MIT",
+  "files": [
+    {
+      "path": "vendor/pm-create-prd/SKILL.md",
+      "upstream_path": "pm-execution/skills/create-prd/SKILL.md",
+      "source_url": "https://github.com/phuryn/pm-skills/blob/2a12295a7717569baa7be181b4cfebe3ca38a6bb/pm-execution/skills/create-prd/SKILL.md",
+      "raw_url": "https://raw.githubusercontent.com/phuryn/pm-skills/2a12295a7717569baa7be181b4cfebe3ca38a6bb/pm-execution/skills/create-prd/SKILL.md",
+      "upstream_commit": "2a12295a7717569baa7be181b4cfebe3ca38a6bb",
+      "sha256": "e3aa10a437ed7f748a957bd5d1eb06d8fa3f56dc728dcb93ce484387ecc3fa13",
+      "git_blob_sha": "9aa4b7a5a19af2fe4ade43da564dd607efdf0488",
+      "bytes": 7301,
+      "kind": "skill"
+    },
+    {
+      "path": "vendor/pm-create-prd/LICENSE",
+      "upstream_path": "LICENSE",
+      "source_url": "https://github.com/phuryn/pm-skills/blob/2a12295a7717569baa7be181b4cfebe3ca38a6bb/LICENSE",
+      "raw_url": "https://raw.githubusercontent.com/phuryn/pm-skills/2a12295a7717569baa7be181b4cfebe3ca38a6bb/LICENSE",
+      "upstream_commit": "2a12295a7717569baa7be181b4cfebe3ca38a6bb",
+      "sha256": "a2c922f9b81b4f40347ddfa79c38eda0f1278b5a6d108bd4099b4da254c774ee",
+      "git_blob_sha": "f6eca502b7f3fd6a3f0b024e4c98a3dcf5611cee",
+      "bytes": 1068,
+      "kind": "license"
+    }
+  ],
+  "selection": {
+    "writing": {
+      "sections": [
+        {
+          "path": "vendor/pm-create-prd/SKILL.md",
+          "heading": "## Lean by default",
+          "heading_line": 12,
+          "start_line": 16,
+          "end_line": 16
+        },
+        {
+          "path": "vendor/pm-create-prd/SKILL.md",
+          "heading": "## Lean by default",
+          "heading_line": 12,
+          "start_line": 19,
+          "end_line": 19
+        },
+        {
+          "path": "vendor/pm-create-prd/SKILL.md",
+          "heading": "## Notes",
+          "heading_line": 85,
+          "start_line": 89,
+          "end_line": 90
+        }
+      ]
+    }
+  },
+  "excluded_guidance": [
+    {
+      "range": "SKILL.md:1-15;17-18;21-88;94-97",
+      "reason": "Host instructions, fixed length/count/8-section template, always-market/JTBD, mandatory metric follow-up, external research, output file command, unrelated review standard; only explicit safe slices below are enabled."
+    }
+  ],
+  "reference_policy": "External articles, sibling skills, connectors and host command wrappers are not vendored or followed automatically."
+}

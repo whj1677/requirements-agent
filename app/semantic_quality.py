@@ -2,12 +2,14 @@
 import re
 from .core import require
 
-VERSION = 'semantic-quality-12'
+VERSION = 'semantic-quality-13'
 POLICY = (
     '先核对输入自身是否一致，来源引用正确和人工回答有出处不证明其含义无矛盾。'
-    '对计数单位、边界包含、量词、时点与条件构造具体反例；区分Unicode码点和扩展字素簇，'
+    '仅围绕本期明确要求的业务行为、边界包含、量词、时点与条件，以及已明确或待采纳的计数单位构造具体反例；区分Unicode码点和扩展字素簇，'
     '肤色修饰、组合字符、旗帜和ZWJ emoji可能含多个码点。存在影响验收的冲突时提出blocking业务选择，不能替PM选。'
-    '例如上限100时99个A加👍🏽是101码点、100字素簇；码点计数与字素簇计数都是可供PM选择的口径。'
+    '例如已明确计数单位的上限100，99个A加👍🏽是101码点、100字素簇；反例必须绑定当前对象的实际上限、原句及要求，不能凭这一技术差异创造本期业务选择。'
+    '仅给出业务字数上限不代表要求PM选择Unicode算法；保留上限和已明确校验结果，技术单位未定不自动成为业务缺口。'
+    '只有当前来源、已答决定或验收确实要求不同可观察结果且尚未决定或相互冲突时才阻断；纯实现方案未定可作非阻断说明，不代选算法，不删上限或降级已确认事实。'
     '后续明确回答可替代旧未知，但回答重复矛盾不能解除；同步核对statement、behavior、rule、AC、上下文和全部MRD/PRD正文。'
     '严格区分需求评审/采纳/正式确认角色与业务系统运行操作者，不能把PM人工确认混入运营人员运行流程或新增审批人。'
     '每个陈述区分既有事实、本期决定、模型建议；preserved和沿用是范围/本期要求，不证明其全部细则已实现。'
@@ -116,6 +118,7 @@ def current_counting_checks(p):
 
 def contract():
     return dict(version=VERSION,policy=POLICY,
+        interaction_path_review_policy='interaction_path_facts是只读投影，不是新业务规则或自动blocker。按每个interaction_id结合交互原句、关联节点出边、进入其它交互前可达的end/wait、首个跨交互边及原样状态转换逐项构造反例：成功后不主动触发下一独立操作，本次请求是否可结束；该请求已答的unknown是否进入等待；刷新确定结果是否回正确原操作结果、仍未知是否继续等待。跨交互不一律错误，合法共享等待与用户明确触发的下一操作不能误报；未绑定节点不能按文字猜归属。分别核对同一业务对象与本次请求状态、提交与成功、失败操作者与全局归属。竞争措辞对照实际来源和已答条件，不把先到、先发、先点击等替换为未经确认的成功判据。已答规则与图表不一致写finding，绑定具体交互/节点/边/状态、原句和反例，不新增PM required_decisions；仅真实业务未知才请求决定。不得通过删边、改节点类型或放松格式修复语义边界过关。',
         result_condition_policy='result_condition_facts是内部可选输入投影，保留对象、来源、位置、原句和必要/充分/正常分支/拒绝/未知角色，不是新业务规则或正式PM批准。仅有必要条件时不反推充分成功；已明确充分来源也须保留同一对象和条件作用域。正常结果应写成明确的正常成功分支，同时完整保留拒绝和未知例外；摘要、理解和解释不得把分支压缩成无条件保证。来源或人工回答自身矛盾时，同一blocking问题须联合绑定对象、双方来源及成功/拒绝条件选择，不能默默采纳一方；建议和待澄清文案仍是候选，不自动升级规范。',
         review_axes=['输入内部一致性与反例','当前决定与历史未知','运行角色与需求确认角色',
                      '既有事实/新增决定/模型建议','全部规范、行为字段、摘要与解释段条件量词'],
@@ -235,7 +238,7 @@ def counting_source_scopes(text,owners):
     return scoped
 
 
-def counting_definition_facts(p,excerpts=None):
+def counting_definition_facts(p,excerpts=None,*,include_documents=True):
     """Read-only facts keep object/source/location; never merge unrelated units."""
     facts=[]
     def add(origin,location,text,refs=(),sources=(),definition_text=None):
@@ -259,7 +262,7 @@ def counting_definition_facts(p,excerpts=None):
         if scoped is None:add('source',e['source_id']+'/'+e['id'],text,owners,sources)
         else:
             for ref,parts in scoped.items():add('source',e['source_id']+'/'+e['id'],text,[ref],sources,'；'.join(parts))
-    for artifact in p.get('documents',{}).values():
+    for artifact in (p.get('documents',{}) if include_documents else {}).values():
         visible=readable_document_blocks(artifact)
         for section in artifact.get('content',{}).get('sections',[]):
             for index,block in enumerate(section.get('blocks',[])):
@@ -541,6 +544,51 @@ def validate_current_workflow(text,existing,at):
             at+' 现状操作方式缺少同对象、同方式的肯定既有事实；本期新要求、建议和未核对假设不能反推旧流程。')
 
 
+def current_absence_claims(text):
+    """Finite explicit absence predicates; not a general factuality classifier.
+
+    Retain the entire predicate/object instead of treating a negative word as
+    an error or letting another capability supply the missing premise.
+    """
+    for sentence in re.split(r'[。；;\n]',text):
+        if not re.search(r'目前|当前|现有|既有|原有|此前|原先',sentence):continue
+        if re.search(r'假设|假定|如果|倘若|是否|能否|可能|未确认|待核对|无法确认|没有证据',sentence):continue
+        # “当前负责人/当前认领者不得操作” is a role boundary, not
+        # an assertion that the existing product lacks a capability.
+        subject=re.search(r'(?:目前|当前|现有|既有|原有|此前|原先)([^，,。；;\n]{0,30}?(?:系统|平台|应用|能力|功能|页面|工具|服务|模块|软件))'
+            r'(?=不能|无法|不支持|尚未支持|未能|(?:能|可以)(?:说明|展示|显示|记录|查询|查看|导出|识别|确定|判断|跟踪)|已有|具有|提供|包括)',sentence)
+        if not subject:continue
+        for match in re.finditer(r'(?:不能|无法|不支持|尚未支持|未能)(?:说明|展示|显示|记录|查询|查看|导出|识别|确定|判断|跟踪)[^，,。；;\n]{1,60}',sentence):
+            predicate=match.group().strip()
+            # A quoted proposition denied by the author is not an assertion.
+            if re.search(r'不代表|不表示|不能推断|不能认为|不能据此',sentence[:match.start()]):continue
+            yield (subject.group(1).strip(),predicate),sentence.strip()
+
+
+def source_condition_issues(text,evidence,existing):
+    supported={predicate for predicate,_ in current_absence_claims(existing)}
+    issues=[dict(dimension='current_capability_absence',quote=quote)
+            for predicate,quote in current_absence_claims(text) if predicate not in supported]
+    # Only an explicit success-based competition premise activates this check.
+    # Order alone cannot replace that premise; an already successful competitor
+    # remains a legitimate rejection condition.
+    success_order=re.compile(r'(?:服务端|服务器)[^。；;\n]{0,16}(?:首个|第一个|首次)[^。；;\n]{0,12}成功')
+    if success_order.search(evidence) or re.search(r'(?:后到|先到|先发|先点击)[^。；;\n]{0,24}(?:请求|操作)',text):
+        for sentence in re.split(r'[。；;\n]',text):
+            arrival=re.search(r'(?:后到|先到|先发|先点击)[^。；;\n]{0,24}(?:请求|操作)[^。；;\n]{0,20}(?:不生效|生效|成功|失败|被?拒绝)',sentence)
+            if not arrival:continue
+            if re.search(r'假设|是否|不代表|不等于|不能替代|不能认为',sentence):continue
+            if re.search(r'(?:已|已经)[^。；;\n]{0,16}成功|成功(?:认领)?\s*(?:之后|后)',sentence):continue
+            # A condition before the rejection is different from the quoted
+            # rejection message that follows it. Require a source premise too.
+            claimed_condition=r'对已(?:经)?(?:被(?:他人|其他人)?)?认领(?:的)?告警'
+            if (re.search(claimed_condition,sentence[:arrival.end()]) and
+                    (success_order.search(evidence) or re.search(claimed_condition,evidence))):continue
+            if not any(arrival.group() in part for part in re.split(r'[。；;\n]',evidence)):
+                issues.append(dict(dimension='success_order_condition',quote=sentence.strip()))
+    return issues
+
+
 def explanation_issues(text,evidence,existing_evidence,scenario_evidence=None):
     issues=[]
     for sentence in re.split(r'[。；;\n]',text):
@@ -582,11 +630,18 @@ def explanation_issues(text,evidence,existing_evidence,scenario_evidence=None):
     from .result_conditions import cited_text_issues
     outcome=[dict(dimension='failure_condition' if f['reason']=='unknown_result_asserted' else 'outcome_condition',
                   quote=f['quote']) for f in cited_text_issues(text,evidence)]
-    return issues+current_workflow_issues(text,existing_evidence)+outcome
+    return issues+current_workflow_issues(text,existing_evidence)+source_condition_issues(text,evidence,existing_evidence)+outcome
 
 def validate_explanation(text,evidence,existing_evidence,at,*,scenario_evidence=None):
-    require(not explanation_issues(text,evidence,existing_evidence,scenario_evidence),'SEMANTIC_BLOCKED',at+
-        ' 解释超出引用语义：核对必要/充分/正常成功分支、明确失败/未知结果、全部/部分、建议/义务与既有实现/现状操作证据；不能删规范或代定规则来过关。')
+    issues=explanation_issues(text,evidence,existing_evidence,scenario_evidence)
+    if issues:
+        from .core import Problem
+        error=Problem('SEMANTIC_BLOCKED',at+
+            ' 解释超出引用语义：核对必要/充分/正常成功分支、明确失败/未知结果、全部/部分、建议/义务与既有实现/现状操作证据；不能删规范或代定规则来过关。')
+        error.semantic_issues=issues
+        error.semantic_path=at
+        error.semantic_evidence=evidence
+        raise error
 
     from .source_fidelity import text_issues, raise_issues, topic, support
     hint=topic(evidence)
@@ -741,7 +796,12 @@ def validate_document_findings(findings,p,checks):
             # Unknown dimensions remain for model/human review; these four are
             # the bounded deterministic dimensions already checked above.
             error=DOCUMENT_ERROR.search(clause) and not re.search(r'没有.*错误|不存在.*错误|无此错误|未误写|表述正确',clause)
-            if error:
+            # Prewrite reviews current item properties, not a document artifact.
+            # A warning about a future PRD must not become an assertion that a
+            # current PRD exists merely because it contains an error keyword.
+            # Explicit document locations/check IDs above still require real
+            # witnesses; prewrite validates item evidence_quotes separately.
+            if error and not (p.get('_prewrite_review') and not p.get('documents')):
                 # An explicit "this paragraph" refers to this finding's nearest
                 # location; it cannot add an unsupported error after a valid one.
                 if not locations and re.search(r'该段|此段|本段|这一段|该位置|此位置|此处',clause):

@@ -68,9 +68,26 @@ export function taskElapsed(task: UserTask, now = Date.now()): string {
   return hours ? `${hours} 小时 ${minutes % 60} 分 ${seconds % 60} 秒` : minutes ? `${minutes} 分 ${seconds % 60} 秒` : `${seconds} 秒`;
 }
 
+export function taskIntakeGroundingStage(task: UserTask): string | null {
+  const grounding=task.intake_grounding;
+  if (grounding?.protocol!=='intake-grounding-1') return null;
+  switch (grounding.status) {
+    case 'checking': return '正在核对资料与已答信息';
+    case 'correcting': return '正在根据已有依据修正';
+    case 'rechecking': return '修正后正在再次核对';
+    case 'passed':
+      return grounding.candidate_applied===true?'核对完成，需求待你确认':null;
+    case 'repaired':
+      return grounding.candidate_applied===true?'已修正并完成核对，需求待你确认':null;
+    default: return null;
+  }
+}
+
 export function taskCurrentStage(task: UserTask): string {
   if (task.local_recovery) return '已恢复待核对草稿（未重新调用 AI）';
   if (task.status === 'queued') return '等待任务开始';
+  const intakeStage=taskIntakeGroundingStage(task);
+  if (intakeStage) return intakeStage;
   const current = task.step_states?.find(step => step.status === 'running');
   if (taskRunning(task)) return current ? taskStageLabels[current.stage] || current.stage : '等待最新步骤状态';
   return taskStateLabels[task.status] || '任务状态待核对';

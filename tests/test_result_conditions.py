@@ -103,6 +103,27 @@ def test_unknown_no_assertion_or_confirmed_query_is_allowed(text):
 
 
 @pytest.mark.parametrize('text',[
+    '结果未知记录点击查询，仅按保存的原请求编号查询，不发送新派单；核实成功后更新该站点对应请求为成功并禁止重试。',
+    '结果未知时按保存的原请求编号查询；核实失败后更新原请求为失败，允许用户主动重试。',
+])
+def test_saved_request_lookup_and_verified_branch_are_not_unknown_assertions(text):
+    assert not issues(facts(text,location='acceptance',fallback_subject='记录'))
+
+
+@pytest.mark.parametrize('text',[
+    '结果未知时按保存的原请求编号查询，直接更新原请求为成功。',
+    '结果未知时不发送新派单；更新原请求为失败。',
+    '结果未知时保存原请求编号，直接认定原请求失败。',
+    '记录结果未知；核实资源成功后更新记录为成功。',
+    '记录结果未知；核实成功后更新记录为成功；更新记录为失败。',
+    '记录结果未知；未核实成功后更新记录为成功。',
+])
+def test_lookup_or_local_verification_never_proves_other_unknown_outcomes(text):
+    found=issues(facts(text,location='acceptance',fallback_subject='记录'))
+    assert any(issue['reason']=='unknown_result_asserted' for issue in found)
+
+
+@pytest.mark.parametrize('text',[
     '超时结果未知，不声称服务端未创建资源，先查询原申请ID。',
     '超时结果未知，不得声称已经创建或未创建资源；先查询原申请ID。',
     '超时结果未知，不能声称服务端已创建资源。',

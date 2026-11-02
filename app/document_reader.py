@@ -5,7 +5,7 @@ import re
 from .core import brief_hash
 from .requirements import delivery_items
 
-PRESENTATION_VERSION = 'document-reading-8'
+PRESENTATION_VERSION = 'document-reading-9'
 _EMPTY_BEHAVIOR = {'未提及异常分支'}
 
 _INTERNAL_SECTIONS = {
@@ -48,7 +48,7 @@ def _source_limit_text(source):
     return f'《{title}》（{purpose}）：{state}；未读取内容不作为本版产品结论的依据。'
 
 
-def reading_structure(content, items, source_snapshot=(), *, show_requirement_behavior=True):
+def reading_structure(content, items, source_snapshot=(), *, show_requirement_behavior=True, scope_reviews=(), compact_prd=False):
     """Project explicit section/ref/behavior structure; never infer headings from prose.
 
     This is a versioned read view, not a migration of the signed content object.
@@ -59,7 +59,7 @@ def reading_structure(content, items, source_snapshot=(), *, show_requirement_be
     structured = content['document_type']=='prd' and any(
         b['kind']=='detail' for s in content['sections'] for b in s['blocks'])
     ref_labels = {}
-    if structured:
+    if structured or compact_prd:
         counters = {}
         for section in content['sections']:
             for block in section['blocks']:
@@ -73,9 +73,12 @@ def reading_structure(content, items, source_snapshot=(), *, show_requirement_be
             content_version=items[ref].get('content_version',1)) for ref,label in ref_labels.items()]
 
     def clause_table(refs):
-        return dict(kind='table', title='验收清单', text='验收清单',
+        titles={items[ref]['title'] for ref in refs}
+        shared_title=next(iter(titles)) if len(refs)>1 and len(titles)==1 else None
+        caption='验收清单'+(' · '+shared_title if shared_title else '')
+        return dict(kind='table', title=caption, text=caption,
                     columns=['编号','验收要求'],
-                    rows=[[ref_labels.get(ref,ref),items[ref]['title']+'\n'+items[ref]['statement']] for ref in refs],
+                    rows=[[ref_labels.get(ref,ref),('' if shared_title else items[ref]['title']+'\n')+items[ref]['statement']] for ref in refs],
                     item_ids=refs, table_role='acceptance', column_weights=[.10,.90])
     def heading(node_id, title, level, parent, **extra):
         child_counts[parent] = child_counts.get(parent, 0) + 1
@@ -95,14 +98,51 @@ def reading_structure(content, items, source_snapshot=(), *, show_requirement_be
                 nodes.append(clause_table(acceptance_refs.copy()))
                 acceptance_refs.clear()
         for index, block in enumerate(section['blocks']):
-            if structured and block['kind']=='acceptance' and all(r in items for r in block['ref_ids']):
+            if (structured or compact_prd) and block['kind']=='acceptance' and all(r in items for r in block['ref_ids']):
                 acceptance_refs.extend(block['ref_ids'])
                 continue
             flush_acceptance()
+            if block['kind']=='flowchart':
+                import base64
+                from .detail_rendering import flow_svg, flow_views, view_flow, view_notes, VERSION
+                from .core import digest
+                svg,layout=flow_svg(block['flow'],block['text'],show_ids=False,columns=3,fit_labels=True)
+                readable=min(10.19/layout['width'],5.27/layout['height'])*72*layout['edge_font_size']>=8
+                views=[] if readable else flow_views(block['flow'],show_ids=False)
+                names={node['id']:node['label'] for node in block['flow']['nodes']}
+                for view in views:
+                    view_svg,view_layout=flow_svg(view_flow(block['flow'],view),view['title'],
+                        show_ids=False,columns=view['columns'],fit_labels=True,display_notes=view_notes(view,labels=names))
+                    view.update(image_uri='data:image/svg+xml;base64,'+base64.b64encode(view_svg.encode('utf8')).decode('ascii'),
+                        width=view_layout['width'],height=view_layout['height'])
+                nodes.append(dict(kind='diagram',text=block['text'],title=block['text'],item_id=block['ref_ids'][0],
+                    detail_hash=digest(block),renderer_version=VERSION,flow=copy.deepcopy(block['flow']),views=views,labels_only=True,
+                    image_uri='data:image/svg+xml;base64,'+base64.b64encode(svg.encode('utf8')).decode('ascii'),
+                    svg=svg,width=layout['width'],height=layout['height']))
+                if views:
+                    nodes.append(dict(kind='table',title='流程步骤',text='流程步骤',columns=['编号','业务动作'],
+                        rows=[[node['id'],node['label']] for node in block['flow']['nodes']],column_weights=[.2,.8],
+                        item_id=block['ref_ids'][0],detail_hash=digest(block)))
+                table_title='分支与流转条件' if views else '流程分支条件'
+                nodes.append(dict(kind='table',title=table_title,text=table_title,
+                    columns=(['连线'] if views else [])+['起点','终点','条件'],
+                    rows=[([edge['id']] if views else [])+[names[edge['from']],names[edge['to']],edge.get('condition') or '顺序继续']
+                        for edge in block['flow']['edges']],column_weights=[.16,.26,.26,.32] if views else [.35,.35,.30],
+                    item_id=block['ref_ids'][0],detail_hash=digest(block)))
+                continue
             if structured and block['kind']=='open_question' and block.get('question_id'):
                 nodes.append(dict(kind='table', title='待确认事项', text='待确认事项',
                     columns=['事项','影响及状态'], rows=[[block['question_text'],block['question_context']]],
                     question_ids=[block['question_id']],table_role='questions',column_weights=[.40,.60]))
+                continue
+            if block['kind']=='table':
+                table=dict(copy.deepcopy(block),item_ids=(block['ref_ids']
+                    if block['table_role']=='function_inventory' else []))
+                if compact_prd and block['table_role']=='function_inventory':
+                    table.update(columns=['编号','功能名称'],
+                        rows=[[ref_labels.get(ref,ref),items[ref]['title']] for ref in block['ref_ids']],
+                        column_weights=[.15,.85])
+                nodes.append(table)
                 continue
             if block['kind']=='detail':
                 from .detail_rendering import detail_nodes, detail_hash
@@ -116,7 +156,7 @@ def reading_structure(content, items, source_snapshot=(), *, show_requirement_be
                     nodes.append(dict(kind='detail_error',text='详细定义快照缺失或版本不一致，请重新生成文档。',item_id=ref))
                     continue
                 try:
-                    nodes.extend(detail_nodes(item,block['detail_group'],ref_labels=ref_labels))
+                    nodes.extend(detail_nodes(item,block['detail_group'],ref_labels=ref_labels,scope_reviews=scope_reviews))
                 except (ValueError,KeyError,TypeError) as error:
                     nodes.append(dict(kind='detail_error',text='详细定义暂时无法渲染：'+str(error),item_id=ref))
                 continue
@@ -134,11 +174,21 @@ def reading_structure(content, items, source_snapshot=(), *, show_requirement_be
                 nodes.append(dict(kind='paragraph', text=item['statement'], block_kind=item['kind']))
                 if item['kind'] == 'requirement' and show_requirement_behavior and not item.get('detail_contract'):
                     from .product_flow import BEHAVIOR
+                    rows=[]
                     for key, label in BEHAVIOR.items():
                         value = item.get('behavior', {}).get(key)
                         if value and value.strip().rstrip('。') not in _EMPTY_BEHAVIOR:
-                            nodes.append(heading(node_id+'-'+key, label, level+2, node_id))
-                            nodes.append(dict(kind='paragraph', text=value, block_kind='behavior'))
+                            if compact_prd:
+                                # Exact duplicates only; never summarize or split business text.
+                                if value != item['statement'] and value not in [row[1] for row in rows]:
+                                    rows.append([label,value])
+                            else:
+                                nodes.append(heading(node_id+'-'+key, label, level+2, node_id))
+                                nodes.append(dict(kind='paragraph', text=value, block_kind='behavior'))
+                    if rows:
+                        nodes.append(dict(kind='table',title='操作与边界',text='操作与边界',
+                            columns=['事项','要求'],rows=rows,item_ids=[ref],
+                            table_role='behavior',column_weights=[.18,.82]))
         flush_acceptance()
         compact=[]
         for node in nodes:
@@ -212,6 +262,8 @@ def reader_document(artifact, *, include_locations=False):
     name = document_name(artifact)
     content['title'] = name + ('｜产品需求文档（PRD）' if content['document_type']=='prd' else '｜市场需求文档（MRD）')
     items = {i['id']:i for i in artifact.get('item_snapshot', [])}
+    compact_prd = (content['document_type']=='prd' and
+        artifact.get('assembly_version') in ('prd-plan-4','prd-plan-4-local'))
     questions = {q['id']:q for q in artifact.get('question_snapshot', [])}
     delivered = set(artifact.get('delivery_item_ids', []))
     sections = []
@@ -310,13 +362,19 @@ def reader_document(artifact, *, include_locations=False):
             refs = block.get('ref_ids',[])
             item = items.get(refs[0]) if len(refs)==1 else None
             question = questions.get(refs[0]) if len(refs)==1 else None
-            if block['kind'] in ('requirement','rule','acceptance'):
+            if block['kind']=='table':
+                # Locally compiled tables already contain their immutable rows.
+                # Do not treat a single traceability ref as replaceable prose.
+                text=block['title']
+            elif block['kind'] in ('requirement','rule','acceptance'):
                 text = '\n'.join(f'{r}｜{items[r]["title"]} · v{items[r].get("content_version",1)}\n{items[r]["statement"]}' if r in items else r+'：历史条款原文未保存，无法还原。' for r in refs)
                 if item and item['kind']=='requirement' and not v4_mrd and not item.get('detail_contract'):
                     from .product_flow import BEHAVIOR
                     text += ''.join('\n'+label+'：'+item['behavior'][key] for key,label in BEHAVIOR.items()
                                     if item.get('behavior',{}).get(key)
                                     and item['behavior'][key].strip().rstrip('。') not in _EMPTY_BEHAVIOR)
+            elif block['kind']=='flowchart':
+                text=block['text']
             elif block['kind']=='detail':
                 # Keep the signed snapshot reference for typed read projection.
                 # Semantic reviewers use block.text and source_location, so the
@@ -373,6 +431,9 @@ def reader_document(artifact, *, include_locations=False):
         pending_blocks = pending_promotion.pop(section['section_id'], [])
         if blocks or pending_blocks or (not section['blocks'] and section['section_id'] in picture_sections):
             title='文档边界与资料限制' if section['title']=='限制及参考维度待核对' else section['title']
+            if (content['document_type']=='prd' and title=='业务流程说明'
+                    and any(b['kind']=='detail' and b.get('detail_group')=='flow' for b in section['blocks'])):
+                title='功能流程图'
             blocks.extend(pending_blocks)
             sections.append(dict(section, title=title, blocks=blocks))
     # A matching product heading may have been empty and omitted by the normal
@@ -405,6 +466,44 @@ def reader_document(artifact, *, include_locations=False):
             title = '未决产品事项'
         sections.append(dict(section, title=title, blocks=[]))
     content['sections'] = sections
+    requirements={ref for section in sections for block in section['blocks']
+                  if block['kind']=='requirement' for ref in block['ref_ids'] if ref in items}
+    if (compact_prd and len(requirements)==1
+            and not any(s['parent_section_id'] is not None or s['level']!=1 for s in sections)
+            and not any(b['kind']=='detail' for s in sections for b in s['blocks'])):
+        item=items[next(iter(requirements))]
+        behavior=item.get('behavior',{})
+        repeated={value for value in behavior.values() if value}
+        repeated.update('\n'.join(behavior[key] for key in fields if behavior.get(key))
+                        for fields in (('entry','exceptions'),('flow','result')))
+        overview_titles={'背景与现状','目标与价值','本期范围与边界','使用者与权限',
+                         '使用者','产品约束','本期范围边界'}
+        overview=None
+        compact_sections=[]
+        for section in sections:
+            if (section['title']=='主要功能清单' and all(
+                    b.get('table_role')=='function_inventory' for b in section['blocks'])):
+                continue
+            if section['title'] in ('交互逻辑','业务流程说明'):
+                section['blocks']=[b for b in section['blocks']
+                    if not (b['kind']=='explanation' and b['text'] in repeated)]
+                if not section['blocks']:
+                    continue
+            if section['title'] in overview_titles and all(
+                    b['kind'] in ('narrative','explanation') for b in section['blocks']):
+                # Retain each original heading as a label and each block's exact
+                # source_location for review; canonical section identities stay saved.
+                blocks=list(section['blocks'])
+                if blocks:
+                    blocks[0]=dict(blocks[0],text=section['title']+'：\n'+blocks[0]['text'])
+                if overview is None:
+                    overview=dict(section,title='需求概述',blocks=blocks)
+                    compact_sections.append(overview)
+                else:
+                    overview['blocks'].extend(blocks)
+            else:
+                compact_sections.append(section)
+        sections[:]=compact_sections
     # The compiler appends typed definitions after its default acceptance
     # chapter. In the read view, finish those definitions before acceptance.
     # Only root compiler chapters without children qualify; custom hierarchy
@@ -438,7 +537,8 @@ def reader_document(artifact, *, include_locations=False):
         dict(item_id=ref, section_ids=list(dict.fromkeys(ids)))
         for ref, ids in coverage.items()
     ]
-    return reading_structure(content, items, show_requirement_behavior=not v4_mrd)
+    return reading_structure(content, items, show_requirement_behavior=not v4_mrd,
+        scope_reviews=artifact.get('detail_unknown_scope_reviews',[]),compact_prd=compact_prd)
 
 
 def export_readiness(p, kind, mode='formal'):
@@ -465,6 +565,11 @@ def export_readiness(p, kind, mode='formal'):
             if not item.get('detail_contract'):
                 continue
             if artifact:
+                from .detail_business_scope import current_reviews
+                current_scope=current_reviews(p,item)
+                artifact_scope=[r for r in artifact.get('detail_unknown_scope_reviews',[]) if r.get('requirement_id')==item['id']]
+                if current_scope and current_scope!=artifact_scope:
+                    issues.append(dict(code='DETAIL_SCOPE_VERSION_INVALID',message=item['id']+' 的技术未定范围审查与文档快照不一致，请重新生成文档。'))
                 groups={b['detail_group'] for s in artifact['content']['sections'] for b in s['blocks']
                         if b['kind']=='detail' and b['ref_ids']==[item['id']] and b.get('detail_hash')==detail_hash(item)}
                 if groups!=set(GROUP_TITLES):

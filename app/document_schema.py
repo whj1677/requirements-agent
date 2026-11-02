@@ -24,6 +24,11 @@ SCHEMA['$defs']['Finding']['properties'].update(
 # These blocks are compiled locally from item snapshots, never requested from
 # the model's plan schema. Historical document blocks remain byte-compatible.
 _document_blocks = SCHEMA['$defs']['prdResult']['properties']['sections']['items']['properties']['blocks']['items']['oneOf']
+_document_blocks.append(dict(type='object',additionalProperties=False,
+    required=['kind','ref_ids','text','flow','source_hash'],properties=dict(
+        kind={'const':'flowchart'},ref_ids=dict(type='array',minItems=1,maxItems=1,items=dict(type='string')),
+        text=dict(type='string'),flow=copy.deepcopy(DETAIL_SCHEMA['properties']['flow']),
+        source_hash=dict(type='string',pattern='^[0-9a-f]{64}$'))))
 _document_blocks.append(dict(type='object', additionalProperties=False,
     required=['kind','ref_ids','text','detail_group','detail_hash'], properties={
         'kind':{'const':'detail'},
@@ -31,6 +36,16 @@ _document_blocks.append(dict(type='object', additionalProperties=False,
         'text':{'type':'string'},
         'detail_group':{'enum':['fields','interactions','flow','state_transitions']},
         'detail_hash':{'type':'string','pattern':'^[0-9a-f]{64}$'}}))
+_document_blocks.append(dict(type='object', additionalProperties=False,
+    required=['kind','ref_ids','text','title','table_role','columns','rows','column_weights'], properties={
+        'kind':{'const':'table'},
+        'ref_ids':{'type':'array','items':{'type':'string'},'maxItems':100,'uniqueItems':True},
+        'text':{'type':'string','maxLength':200},
+        'title':{'type':'string','minLength':1,'maxLength':200},
+        'table_role':{'enum':['function_inventory','risk_register']},
+        'columns':{'type':'array','minItems':1,'maxItems':6,'items':{'type':'string','minLength':1,'maxLength':100}},
+        'rows':{'type':'array','maxItems':200,'items':{'type':'array','maxItems':6,'items':{'type':'string','maxLength':12000}}},
+        'column_weights':{'type':'array','minItems':1,'maxItems':6,'items':{'type':'number','exclusiveMinimum':0,'maximum':1}}}))
 from .benchmark import analysis_schema
 SCHEMA['properties']['benchmark_analysis'] = analysis_schema()
 WIRE = read_json(KIT / 'examples/wireframe.schema.json')

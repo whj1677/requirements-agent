@@ -148,3 +148,35 @@ def test_semantic_review_includes_generated_prewrite_section_without_assuming_ca
     # their frozen text or mutate the signed canonical document.
     assert any('.prewrite_snapshot.findings[' in location for location in readable_document_blocks(artifact))
     assert artifact == before
+
+
+def test_prewrite_future_document_risk_is_not_current_document_assertion(project):
+    from app.prewrite import review_project, validate_result
+    from app.semantic_quality import validate_document_findings
+    from app.core import Problem
+    from app.requirements import delivery_items
+    working = review_project(project)
+    item = working['items'][0]
+    finding = dict(message='当前条款导出到 PRD 后若被单独引用为结果断言，可能造成误解。',
+        severity='warning', related_refs=[item['id']], source_refs=[],
+        evidence_quotes=[dict(object_id=item['id'], path='statement', quote=item['statement'])])
+    response = dict(findings=[finding], result=dict(assessment='ready_for_human_review',
+        reviewed_refs=[i['id'] for i in delivery_items(working)],
+        perspectives=[dict(role='测试', considerations=['核对当前条款'])], required_decisions=[]))
+    before = copy.deepcopy(response)
+    validate_document_findings(response['findings'], working, [])
+    validate_result(working, response)
+    assert response == before and project['documents'] and not working['documents']
+    # Scope selection never relaxes real item quotes or explicit document IDs.
+    finding['evidence_quotes'][0]['quote'] = '不存在的当前条款原文'
+    with pytest.raises(Problem, match='成文检查引文不在'):
+        validate_result(working, response)
+    finding['message'] = 'DOC-prd.SEC-001.blocks[0] 存在错误。'
+    with pytest.raises(Problem, match='复核文档段落定位不存在'):
+        validate_document_findings(response['findings'], working, [])
+    finding['message'] = 'DOC:DOC-prd.SEC-001.blocks[0]:condition 存在错误。'
+    with pytest.raises(Problem, match='不存在的语义检查'):
+        validate_document_findings(response['findings'], working, [])
+    finding['message'] = before['findings'][0]['message']
+    with pytest.raises(Problem, match='复核声称错误的文档不存在'):
+        validate_document_findings(response['findings'], dict(working, _prewrite_review=False), [])

@@ -387,6 +387,15 @@ label.answer-review-confirm>input[type=checkbox] { display:inline-block; width:1
 .benchmark-cue { color:var(--accent); }.benchmark-table { overflow:auto; }.benchmark-report table { width:100%; border-collapse:collapse; table-layout:fixed; }
 .benchmark-report th,.benchmark-report td { text-align:left; vertical-align:top; padding:12px; border:1px solid var(--line); overflow-wrap:anywhere; }.benchmark-report blockquote { margin:10px 0; white-space:pre-wrap; }.benchmark-report td button { margin:4px 0; max-width:100%; white-space:normal; }
 @media(max-width:760px) { .benchmark-report table { min-width:650px; }.benchmark-actions button { flex:1 1 180px; } }
+.modal-backdrop:has(>.task-approval-dialog){z-index:10001}
 .modal.task-approval-dialog{display:flex;flex-direction:column;padding:0;overflow:hidden;max-height:calc(100dvh - 48px)}
 .task-approval-body{min-height:0;overflow:auto;overscroll-behavior:contain;padding:24px}
 .task-approval-dialog>.task-approval-actions{flex:none;margin:0;padding:12px 20px;border-top:1px solid #dce7e2;background:#fff;justify-content:flex-end}
+.prd-change-preview .preview-diff,.prd-change-preview .preview-field pre,.prd-change-preview li{overflow-wrap:anywhere}
+@media(max-width:600px){
+  .task-approval-body{padding:16px}
+  .task-approval-dialog>.task-approval-actions{flex-wrap:wrap;padding:10px 12px}
+  .task-approval-dialog>.task-approval-actions button{flex:1 1 140px}
+  .prd-change-preview .preview-counts{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .prd-change-preview .preview-full-text>div{grid-template-columns:1fr}
+}

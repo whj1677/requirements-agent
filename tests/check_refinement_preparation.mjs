@@ -13,12 +13,12 @@ const deferred=()=>{let resolve,reject;const promise=new Promise((yes,no)=>{reso
 const task=(id='TASK-1',status='running',action='organize')=>({id,status,action,message:'合成任务失败原因',retry_input:{action}});
 const ready=(status='needs_organize')=>({revision:3,input_hash:'input-1',status,needs_organize:status==='needs_organize',auto_allowed:status==='needs_organize',reason:'已保存的资料待整理',retry_requires_explicit:true,source_ids:['SRC-1'],entry_mode:'chat'});
 function fixture(){
-  const state={status:ready(),active:true,plans:[],posts:[],records:[],states:[],errors:[],navigations:0,refreshes:0,authorization:null,keys:0,tasks:[],receipt:null};
+  const state={status:ready(),active:true,plans:[],posts:[],records:[],states:[],errors:[],navigations:0,refreshes:0,keys:0,tasks:[],receipt:null};
   const deps={active:()=>state.active,blocked:()=>'',status:async()=>state.status,tasks:async()=>state.tasks,
     plan:async input=>{state.plans.push(input);return {plan_hash:'hash',recipients:[],missing:[],expected_revision:input.expected_revision};},
     submit:async request=>{state.posts.push(structuredClone(request));return task();},
     refresh:async()=>{state.refreshes++;},record:value=>state.records.push(value),navigate:consume=>{if(consume())state.navigations++;},
-    state:value=>state.states.push(value),authorization:value=>{state.authorization=value;},error:(message,stale)=>state.errors.push({message,stale}),key:()=>`key-${++state.keys}`,
+    state:value=>state.states.push(value),error:(message,stale)=>state.errors.push({message,stale}),key:()=>`key-${++state.keys}`,
     receipt:()=>structuredClone(state.receipt),saveReceipt:value=>{state.receipt=structuredClone(value);}};
   return {state,deps,controller:new RefinementPreparation(()=>deps)};
 }
@@ -27,16 +27,19 @@ async function check(name,run){await run();results.push({name,status:'passed'});
 await check('double click shares one plan and task, matching completion enters once',async()=>{
   const {state,deps,controller}=fixture(), gate=deferred();deps.status=()=>gate.promise;
   const one=controller.prepare(),two=controller.prepare();assert.equal(one,two);gate.resolve(ready());await one;
-  assert.equal(state.posts.length,1);assert.equal(state.plans.length,1);assert.equal(state.posts[0].authorize,false);
+  assert.equal(state.posts.length,1);assert.equal(state.plans.length,1);assert.equal(state.posts[0].authorize,true);
   state.status=ready('ready');deps.status=async()=>state.status;
   controller.observe([task('OTHER','succeeded')]);await flush();assert.equal(state.navigations,0);
   controller.observe([task('TASK-1','succeeded')]);controller.observe([task('TASK-1','succeeded')]);await flush();
   assert.equal(state.navigations,1);assert.equal(state.posts.length,1);
 });
-await check('new recipient requires explicit existing authorization dialog',async()=>{
-  const {state,deps,controller}=fixture();const original=deps.plan;deps.plan=async input=>({...await original(input),recipients:[{needs_authorization:true}]});
-  await controller.prepare();assert.equal(state.posts.length,0);assert.equal(state.states.at(-1).state,'authorization');
-  await controller.authorize(state.authorization.preparationToken);assert.equal(state.posts.length,1);assert.equal(state.posts[0].authorize,true);
+await check('current and legacy recipient flags directly submit without a second click',async()=>{
+  for(const needs_authorization of [false,true]){
+    const {state,deps,controller}=fixture();const original=deps.plan;
+    deps.plan=async input=>({...await original(input),needs_authorization:false,recipients:[{needs_authorization}]});
+    await controller.prepare();assert.equal(state.posts.length,1);assert.equal(state.plans.length,1);
+    assert.equal(state.posts[0].authorize,true);assert(!state.states.some(s=>s.state==='authorization'));
+  }
 });
 await check('ready with limits reuses result without plan or model submission',async()=>{
   const {state,controller}=fixture();state.status=ready('ready_with_limits');await controller.prepare();
@@ -130,12 +133,13 @@ await check('cancel and controller reload preserve an uncertain submitted receip
   const remounted=new RefinementPreparation(()=>deps);await remounted.prepare();
   assert.equal(state.posts.length,2);assert.equal(state.posts[0].key,state.posts[1].key);assert.equal(state.plans.length,1);assert.equal(state.receipt,null);
 });
-await check('definitive modal rejection closes dialog, then explicit retry works',async()=>{
+await check('definitive stale rejection does not replan or submit until explicit retry',async()=>{
   const {state,deps,controller}=fixture();const original=deps.plan;deps.plan=async input=>({...await original(input),recipients:[{needs_authorization:true}]});
   deps.submit=async request=>{state.posts.push(structuredClone(request));if(state.posts.length===1)throw {status:409,code:'STALE_REVISION',message:'版本已变化'};return task();};
-  await controller.prepare();await controller.authorize(state.authorization.preparationToken);
-  assert.equal(state.authorization,null);assert.equal(state.states.at(-1).state,'failed');assert.equal(state.receipt,null);
-  await controller.prepare(true);await controller.authorize(state.authorization.preparationToken);
+  await controller.prepare();await flush();
+  assert.equal(state.posts.length,1);assert.equal(state.plans.length,1);
+  assert.equal(state.states.at(-1).state,'failed');assert.equal(state.receipt,null);
+  await controller.prepare(true);
   assert.equal(state.posts.length,2);assert.notEqual(state.posts[0].key,state.posts[1].key);
 });
 await check('old failure visible during unknown submission does not create a fresh key',async()=>{
@@ -160,8 +164,26 @@ await check('default full draft uses server contract without fabricating a user 
   deps.plan=async input=>({...await plan(input),recipients:input.message?[{needs_authorization:true}]:[]});
   await controller.prepare();
   assert.equal(state.posts.length,1);assert.equal(state.posts[0].input.message,'');
-  assert.equal(state.posts[0].input.action,'organize');assert.equal(state.posts[0].authorize,false);
-  assert.equal(state.authorization,null);
+  assert.equal(state.posts[0].input.action,'organize');assert.equal(state.posts[0].authorize,true);
+  assert(!state.states.some(s=>s.state==='authorization'));
+});
+await check('missing plan requirements never submit or create an authorization step',async()=>{
+  const {state,deps,controller}=fixture();deps.plan=async input=>{state.plans.push(input);return {missing:['请先保存需求'],recipients:[{needs_authorization:true}]};};
+  await controller.prepare();await flush();assert.equal(state.posts.length,0);
+  assert.equal(state.receipt,null);assert.equal(state.states.at(-1).state,'failed');
+  assert(state.errors.at(-1).message.includes('请先保存需求'));assert(!state.states.some(s=>s.state==='authorization'));
+});
+await check('auto_allowed false still forbids an implicit first submission',async()=>{
+  const {state,controller}=fixture();state.status={...ready(),auto_allowed:false,reason:'需显式重试'};
+  await controller.prepare();assert.equal(state.posts.length,0);assert.equal(state.receipt,null);
+  assert.equal(state.states.at(-1).state,'failed');
+  await controller.prepare(true);assert.equal(state.posts.length,1);
+});
+await check('leaving while plan is pending prevents task submission',async()=>{
+  const {state,deps,controller}=fixture(),gate=deferred();deps.plan=async input=>{state.plans.push(input);return gate.promise;};
+  const pending=controller.prepare();await flush();state.active=false;controller.cancel();
+  gate.resolve({plan_hash:'hash',recipients:[],missing:[],expected_revision:3});await pending;
+  assert.equal(state.posts.length,0);assert.equal(state.receipt,null);assert.equal(state.navigations,0);
 });
 await check('partial full draft is shown without automatic retry or discarded human content',async()=>{
   const {state,controller}=fixture();await controller.prepare();

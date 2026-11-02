@@ -245,6 +245,21 @@ def validate_document(doc, p, kind):
         require(all(any(c['item_id'] in b['ref_ids'] for b in sections[s]['blocks']) for s in c['section_ids']), 'REFERENCE_INVALID', '虚假覆盖关系')
     for s in doc['sections']:
         for b in s['blocks']:
+            if b['kind']=='flowchart':
+                from .prd import validate_flowchart
+                from .requirement_confirmation import row_fingerprint
+                ref=b['ref_ids'][0]
+                require(kind=='prd' and ref in items,'REFERENCE_INVALID','流程图需求引用无效')
+                validate_flowchart(b['flow'],items[ref],p)
+                require(b['source_hash']==row_fingerprint(p,items[ref]),'STALE_REVISION','流程图来源版本已变化')
+            if b['kind']=='table':
+                require(kind=='prd','REFERENCE_INVALID','本地汇总表格仅用于 PRD。')
+                require(all(len(row)==len(b['columns']) for row in b['rows'])
+                        and len(b['column_weights'])==len(b['columns']),
+                        'SCHEMA_INVALID','汇总表格的列、行或宽度不一致。')
+                if b['table_role']=='function_inventory':
+                    selected={i['id'] for i in delivery_items(p) if i['kind']=='requirement'}
+                    require(set(b['ref_ids'])==selected,'REFERENCE_INVALID','主要功能清单必须绑定全部本期需求。')
             if b['kind']=='detail':
                 from .detail_rendering import detail_hash
                 ref=b['ref_ids'][0]; item=items.get(ref)

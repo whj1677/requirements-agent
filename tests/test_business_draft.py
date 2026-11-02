@@ -308,6 +308,39 @@ def test_business_protocol_runs_through_actual_action_workflow_as_candidates(tmp
     class BusinessFakeProvider(FakeProvider):
         business_draft_protocol = PROTOCOL
 
+        async def request(self, config, messages, evidence=None):
+            header=json.loads(messages[0]['content'].split('可信任务头：',1)[1])
+            if header.get('source_only'):
+                # Explicit second synthetic response for the current source gate.
+                # Verify the frozen fixture and complete field coverage; this is
+                # a protocol/persistence test, not a model semantic acceptance.
+                from app import intake_grounding as grounding
+                from app.core import digest, dumps
+                payload=json.loads(messages[1]['content'][0]['text'])
+                assert header['grounding_protocol']==grounding.CHALLENGE_VERSION
+                assert payload['candidate']==packet(draft_row())
+                assert payload['candidate_hash']==digest(payload['candidate'])
+                assert payload['input_hash']==digest(payload['context'])
+                assert {tuple(field['path']) for field in payload['fields']}=={
+                    ('requirements',0,'statement'),('requirements',0,'acceptance',0),
+                    *(('requirements',0,'behavior',key) for key in BEHAVIOR)}
+                excerpts={(row['source'],row['locator']):row['text'] for row in payload['context']['excerpts']}
+                assert excerpts[('S1','L1')]=='管理员维护电价时段；重叠拒绝；相接边界待确认。'
+                for field in payload['fields']:
+                    expected=payload['candidate']
+                    for key in field['path']:expected=expected[key]
+                    assert field['text']==expected['text'] and field['basis']==expected['basis']
+                    assert field['sources']==expected['sources']
+                    assert expected['sources']==([dict(source='S1',locator='L1')] if expected['basis']=='fact' else [])
+                self.received.append(copy.deepcopy(messages))
+                result=dict(candidate_hash=payload['candidate_hash'],input_hash=payload['input_hash'],
+                    checked_field_ids=[field['id'] for field in payload['fields']],findings=[])
+                metadata=dict(finish_reason='stop',usage={'total_tokens':100},response_model='OFFLINE_SOURCE_FIXTURE')
+                if evidence:
+                    evidence.response(dumps(result),http_status=200,finish_reason='stop',usage=metadata['usage'])
+                return result,metadata
+            return await super().request(config,messages,evidence)
+
     async def scenario():
         store, initial = project(tmp_path)
         provider = BusinessFakeProvider([packet(draft_row())])
@@ -321,7 +354,7 @@ def test_business_protocol_runs_through_actual_action_workflow_as_candidates(tmp
         finished = store.get_record(initial['id'], task['id'], 'user_task')
         saved = store.get(initial['id'])
         assert finished['status'] in ('succeeded', 'partial'), finished
-        assert finished['calls'] == 1 and len(provider.received) == 1
+        assert finished['calls'] == 2 and len(provider.received) == 2
         header = json.loads(provider.received[0][0]['content'].split('可信任务头：')[1])
         assert header['response_protocol'] == PROTOCOL
         assert saved['items'][:len(initial['items'])] == initial['items']
@@ -334,6 +367,10 @@ def test_business_protocol_runs_through_actual_action_workflow_as_candidates(tmp
         assert report['accepted'][0]['raw']['row_key'] == 'R1'
         assert report['accepted'][0]['field_evidence']['statement']['basis'] == 'fact'
         assert report['raw_response_hash'] and report['run_id']
+        assert report['business_source_review']['status']=='passed'
+        assert report['business_source_review']['source_only'] is True
+        assert report['business_source_review']['coverage_review'] is False
+        assert report['source_validation']=='body_source_semantic_checked_not_human_approval'
 
     asyncio.run(scenario())
 

@@ -174,8 +174,8 @@ async def run(args):
                 await expect(page.get_by_role('complementary',name='AI 任务进度',exact=True)).to_have_count(0)
                 await page.screenshot(path=str(args.output/'03-draft.png'))
                 await batch.get_by_role('button',name='确认全部修改并复检',exact=True).click();ids={t['id'] for t in store.records(PID,'user_task')};await execute();task=await wait_task('prewrite',ids);assert task['status'] in ('succeeded','partial'),{k:task.get(k) for k in ('status','error','message')}
-                await expect(work.get_by_role('button',name='返回并继续生成 PRD',exact=True)).to_be_enabled(timeout=15000);assert store.get(PID)['prewrite_review']['blocking_count']==0
-                await work.get_by_role('button',name='返回并继续生成 PRD',exact=True).click();ids={t['id'] for t in store.records(PID,'user_task')};await execute();task=await wait_task('document',ids);assert task['status'] in ('succeeded','partial'),{k:task.get(k) for k in ('status','error','message')}
+                await expect(work.get_by_role('button',name='生成 PRD',exact=True)).to_be_enabled(timeout=15000);assert store.get(PID)['prewrite_review']['blocking_count']==0
+                await work.get_by_role('button',name='生成 PRD',exact=True).click();ids={t['id'] for t in store.records(PID,'user_task')};await execute();task=await wait_task('document',ids);assert task['status'] in ('succeeded','partial'),{k:task.get(k) for k in ('status','error','message')}
                 reader=page.get_by_role('article',name='PRD 正文',exact=True);await expect(reader.locator('.document-detail-table table').first).to_be_visible(timeout=15000)
                 current=store.get(PID);assert current['documents']['prd']['base_document_id']==initial['documents']['prd']['id']
                 assert current['documents']['prd']['prewrite_snapshot']['blocking_count']==0

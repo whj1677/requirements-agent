@@ -1,13 +1,26 @@
 import React from 'react';
 import type { UserTask } from './api';
 
+function isIntakeGroundingFailure(task: UserTask) {
+  if (task.status !== 'failed') return false;
+  if (['INTAKE_GROUNDING_BLOCKED', 'INTAKE_GROUNDING_UNVERIFIED'].includes(task.error || '')) return true;
+  const grounding=task.intake_grounding;
+  return grounding?.protocol==='intake-grounding-1'&&['blocked','unverified'].includes(grounding.status)&&grounding.candidate_applied===false;
+}
+
 export function canRecoverDraft(task:UserTask) {
+  if (isIntakeGroundingFailure(task)) return false;
   return !task.local_recovery&&task.status==='failed'&&(task.local_recovery_available===true||task.action==='organize'&&
     !task.retry_input?.target&&!task.retry_input?.benchmark&&/JSON 有重复键/.test(task.message));
 }
 
 export function taskFailure(task: UserTask) {
   if (task.local_recovery) return null;
+  if (isIntakeGroundingFailure(task)) return {
+    summary:'本次需求初稿核对未完成，本次候选未写入。',
+    next:'原输入、已保存资料和已有需求均已保留，无需重新回答全部。'+(task.intake_resume_available===true?'可以继续核对上次完整候选，仍调用模型，不重新生成，尚未通过。请核对失败详情与原任务范围后手动重试。':'请核对失败详情与原任务范围后重试，或继续核对此前已有的需求草稿。'),
+    detail:[task.message,task.intake_grounding?.reason,`原始错误：${task.error||'未提供错误代码'}`].filter(Boolean).join('\n'),
+  };
   if(task.status==='failed'&&task.error==='PREWRITE_DECISION_BINDING_REQUIRED')return {
     summary:'AI 检查结果没有正确关联到需求，这次成文检查未完成。',
     next:'你的回答和已有需求都已保留，不用重新填写。先核对已有修改，再重新进行成文检查；下方旧检查项仅供继续处理。',

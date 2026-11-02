@@ -150,8 +150,9 @@ def normal(text):
 
 def equivalent(a,b):
     # Topic is only a grouping hint; it cannot prove that two answered decisions mean the same thing.
-    same_subject=bool(set(a.get('related_refs',[])) & set(b.get('related_refs',[]))) or not (a.get('related_refs') or b.get('related_refs'))
-    return (a['topic_key']==b['topic_key'] and same_subject) or normal(a['question'])==normal(b['question'])
+    same_subject=set(a.get('related_refs',[]))==set(b.get('related_refs',[]))
+    same_sources={digest(ref) for ref in a.get('source_refs',[])}=={digest(ref) for ref in b.get('source_refs',[])}
+    return same_subject and same_sources and (a['topic_key']==b['topic_key'] or normal(a['question'])==normal(b['question']))
 
 
 def question_ids(p, questions, item_mapping):
@@ -159,13 +160,14 @@ def question_ids(p, questions, item_mapping):
     from .core import ident
     from .response_application import replace_refs
     mapping={}
-    planned=[q for q in p['questions'] if not q.get('superseded_by')]
+    planned=[q for q in p['questions'] if active_question(q)]
     for parent in questions:
         split_targets={q.get('target_question_id') for q in questions if q.get('decision_points')}
         children=parent.get('decision_points') or [parent]
         for child in children:
             candidate=replace_refs(child,item_mapping)
             prior=next((q for q in planned if q['id'] not in split_targets and equivalent(q,candidate)
+                        and normal(q['question'])==normal(candidate['question'])
                         and not (q.get('status')=='answered' and
                                  (normal(q['question'])!=normal(candidate['question'])
                                   or candidate['blocking'] and not q.get('blocking')
@@ -311,7 +313,7 @@ def save_questions(p,questions):
                     prior['blocking']=True
                     prior['blocking_stage']=min(prior.get('blocking_stage',3),q.get('blocking_stage',3))
                 children.append(prior['id']);continue
-            earlier=next((x for x in p['questions'] if x.get('status')=='answered' and equivalent(x,q)),None)
+            earlier=next((x for x in p['questions'] if active_question(x) and x.get('status')=='answered' and equivalent(x,q)),None)
             row=dict(id=q['temp_id'],**{k:copy.deepcopy(v) for k,v in q.items() if k!='temp_id'},status='open',answer=None)
             if group_id:
                 row.update(decision_group_id=group_id,decision_group_title=parent['question'],decision_coverage='pending')

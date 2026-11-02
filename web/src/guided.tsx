@@ -1,46 +1,68 @@
 import React, { useRef, useState } from 'react';
-import { ActionInput, ActionPlan, Project, UserTask } from './api';
+import { DocumentPreview, Project, UserTask } from './api';
 import { useDialog } from './shell';
-import { taskStateLabels as states, taskStageLabels as steps } from './task-progress-state';
-import { TaskFailureNotice, taskFailure } from './task-failure';
-import { requirementBehaviorLabels } from './pm-prototype/requirement-fields';
+import { taskStateLabels as states, taskStageLabels as steps, taskIntakeGroundingStage } from './task-progress-state';
+import { TaskFailureNotice, taskFailure, canRecoverDraft } from './task-failure';
+
 type Obj = Record<string, any>;
-export const phases = ['聊清需求想法', '核对需求草稿', '澄清流程与规则', '核对功能草图', '评审 MRD 与 PRD', '确认与交接'];
+export const phases = ['聊清需求想法', '核对草稿与规则', '澄清流程与规则', '核对功能草图', '评审 MRD 与 PRD', '确认与交接'];
 
 export function TaskStatus({ task, busy = false, uncertain = false, onRefresh, onCancel, onRetry, onViewResult, onOpenDraft, onRecover }: { task?: UserTask; busy?: boolean; uncertain?: boolean; onRefresh?: () => void; onCancel: () => void; onRetry: () => void; onViewResult?: () => void; onOpenDraft?: () => void; onRecover?: () => void }) {
   if (!task) return null;
   if (task.local_recovery) return <article className="task-status" role="status"><strong>已恢复待核对草稿</strong><p>已从原输出恢复 {task.local_recovery.candidate_ids.length} 条候选，未重新调用 AI。请核对内容并决定是否采纳。</p>{onOpenDraft&&<button className="primary" disabled={busy} onClick={onOpenDraft}>查看恢复的草稿 →</button>}<details><summary>原任务与恢复记录</summary><p>原 AI 请求仍记录为失败，本地恢复单独留痕。</p><small>{task.id} · {task.local_recovery.id}</small></details></article>;
+  const recover=onRecover&&canRecoverDraft(task)?onRecover:undefined;
   const generated=onViewResult && ['succeeded','partial','awaiting_user'].includes(task.status);
   const running=['queued','running'].includes(task.status);
   const stopped=['failed','cancelled','paused_budget'].includes(task.status);
   const unknownSlots=task.request_budget?.reservations.filter(r=>r.state!=='response_received').length||0;
-  if (taskFailure(task)) return <article className="task-status task-status-failed" role="status">{uncertain&&<p className="error" role="alert">最新任务状态暂未取得，下方为此前记录。请刷新核对，不要重复发起。{onRefresh&&<button disabled={busy} onClick={onRefresh}>刷新任务状态</button>}</p>}<strong>{task.label} · 分析未成功</strong><TaskFailureNotice task={task}/>{onRecover&&<button className="primary" disabled={busy||uncertain} onClick={onRecover}>恢复草稿（不调用 AI） →</button>}{onOpenDraft&&<button className={onRecover?undefined:"primary"} disabled={busy} onClick={onOpenDraft}>{onRecover?"手工填写草稿":"前往需求草稿 →"}</button>}<button disabled={busy||uncertain} onClick={onRetry}>核对后重试</button><details><summary>查看调用记录</summary><p>已执行 {task.calls} 次请求{task.max_calls!=null&&` / 本次授权上限 ${task.max_calls}`} · 费用 {task.cost ?? '未知'}</p><small>{task.id} · {task.run_ids.join('、')}</small></details></article>;
+  if (taskFailure(task)) return <article className="task-status task-status-failed" role="status">{uncertain&&<p className="error" role="alert">最新任务状态暂未取得，下方为此前记录。请刷新核对，不要重复发起。{onRefresh&&<button disabled={busy} onClick={onRefresh}>刷新任务状态</button>}</p>}<strong>{task.label} · 分析未成功</strong><TaskFailureNotice task={task}/>{recover&&<button className="primary" disabled={busy||uncertain} onClick={recover}>恢复草稿（不调用 AI） →</button>}{onOpenDraft&&<button className={recover?undefined:"primary"} disabled={busy} onClick={onOpenDraft}>{recover?"手工填写草稿":"前往需求草稿 →"}</button>}<button disabled={busy||uncertain} onClick={onRetry}>手动重试</button><details><summary>查看调用记录</summary><p>已执行 {task.calls} 次请求{task.max_calls!=null&&` / 本次上限 ${task.max_calls}`} · 费用 {task.cost ?? '未知'}</p><small>{task.id} · {task.run_ids.join('、')}</small></details></article>;
   return <article className="task-status" role="status" aria-live="polite">
-    {uncertain&&<p className="error" role="alert">最新任务状态暂未取得，下方为此前记录。请刷新核对，不要重复发起。{onRefresh&&<button disabled={busy} onClick={onRefresh}>刷新任务状态</button>}</p>}<strong>{task.label} · {states[task.status] || '请核对任务状态'}</strong>
+    {uncertain&&<p className="error" role="alert">最新任务状态暂未取得，下方为此前记录。请刷新核对，不要重复发起。{onRefresh&&<button disabled={busy} onClick={onRefresh}>刷新任务状态</button>}</p>}<strong>{task.label} · {taskIntakeGroundingStage(task) || states[task.status] || '请核对任务状态'}</strong>
     <p className="preserve-lines">{task.message || (running?'任务已开始，正在准备本次分析。':'请核对本次执行记录。')}</p>
     {running&&<><progress aria-label="分析步骤进度" max={Math.max(1,task.stages.length)} value={task.completed_steps}/><p>已完成 {task.completed_steps}/{task.stages.length} 步；当前步骤完成后更新进度。</p></>}
-    {stopped&&<p>{unknownSlots?'有 '+unknownSlots+' 个已预留或启动的请求结果未知，不释放额度、不自动重发。':task.calls===0?'本次尚未发出模型请求。':'本次已发出 '+task.calls+' 次模型请求。'}输入与已保存资料保留；继续需重新核对计划并明确授权。</p>}
+    {stopped&&<p>{unknownSlots?'有 '+unknownSlots+' 个已预留或启动的请求结果未知，不释放额度、不自动重发。':task.calls===0?'本次尚未发出模型请求。':'本次已发出 '+task.calls+' 次模型请求。'}输入与已保存资料保留；核对当前内容后可手动重试。</p>}
     {generated&&<button onClick={onViewResult}>{task.status==='awaiting_user'?'处理成文检查问题':task.action==='prewrite'?'查看成文检查':task.action==='organize'?'查看分析结果':task.action==='document'?'查看讨论稿':task.action==='prototype'?'查看功能草图':'查看本步结果'}</button>}
-    {running?<button disabled={busy} onClick={onCancel}>停止后续步骤</button>:stopped&&<button disabled={busy||uncertain} onClick={onRetry}>重新核对后发起任务</button>}
-    <details><summary>本次资料、限制与执行记录</summary><p>已执行 {task.calls} 次请求{task.max_calls!=null&&` / 本次授权上限 ${task.max_calls}`} · 已处理步骤 {task.completed_steps}/{task.stages.length} · 费用 {task.cost ?? '未知'}</p>{task.request_budget&&<p>已占用请求额度 {task.request_budget.used}/{task.request_budget.limit}；其中结果未知 {unknownSlots}。预留与发送之间中断时，额度保守占用，费用未知。</p>}{task.step_states&&<p>{task.step_states.map(s=>`${steps[s.stage]}：${s.status==='NOT_RUN'?'未执行':states[s.status]||s.status}`).join(' → ')}</p>}<p>资料：{task.source_ids.join('、') || '无资料文件'}</p><p>子步骤：{task.stages.map(s => steps[s]).join(' → ')}</p><small>{task.id} · {task.run_ids.join('、')}</small></details>
+    {running?<button disabled={busy} onClick={onCancel}>停止后续步骤</button>:stopped&&<button disabled={busy||uncertain} onClick={onRetry}>手动重试</button>}
+    <details><summary>本次资料、限制与执行记录</summary><p>已执行 {task.calls} 次请求{task.max_calls!=null&&` / 本次上限 ${task.max_calls}`} · 已处理步骤 {task.completed_steps}/{task.stages.length} · 费用 {task.cost ?? '未知'}</p>{task.request_budget&&<p>已占用请求额度 {task.request_budget.used}/{task.request_budget.limit}；其中结果未知 {unknownSlots}。预留与发送之间中断时，额度保守占用，费用未知。</p>}{task.step_states&&<p>{task.step_states.map(s=>`${steps[s.stage]}：${s.status==='NOT_RUN'?'未执行':states[s.status]||s.status}`).join(' → ')}</p>}<p>资料：{task.source_ids.join('、') || '无资料文件'}</p><p>子步骤：{task.stages.map(s => steps[s]).join(' → ')}</p><small>{task.id} · {task.run_ids.join('、')}</small></details>
   </article>;
 }
 
-function TaskInputPreview({message,scoped}:{message:string;scoped:boolean}) {
-  const marker='\n当前待核对草稿：',offset=message.lastIndexOf(marker);
-  let draft:Obj|null=null;
-  if(scoped&&offset>=0){try{const value=JSON.parse(message.slice(offset+marker.length));
-    if(value&&typeof value.statement==='string'&&value.behavior&&typeof value.behavior==='object'&&Array.isArray(value.acceptance_items)&&Object.keys(value).every(k=>['statement','change_type','behavior','acceptance_items'].includes(k)))draft=value;
-  }catch{/* An unrecognized message remains visible verbatim. */}}
-  if(!draft)return <details open><summary>本次新增输入（保存为项目来源）</summary><p className="preserve-lines">{message}</p></details>;
-  return <section aria-label="本次修改内容"><h3>你的修改意见</h3><p className="preserve-lines">{message.slice(0,offset)||'根据当前资料完善本行建议'}</p><details><summary>同时提供本行草稿：需求内容、业务说明和 {draft.acceptance_items.length} 条验收</summary><p className="preserve-lines">{draft.statement}</p><p>本次改动：{({new:'新增功能',modified:'修改已有功能',preserved:'保持已有功能'} as Obj)[draft.change_type]||'尚未确定'}</p>{Object.entries(requirementBehaviorLabels).map(([key,label])=>draft?.behavior[key]&&<p className="preserve-lines" key={key}><b>{label}：</b>{String(draft.behavior[key])}</p>)}<h4>当前验收</h4><ol>{draft.acceptance_items.map((a:Obj,n:number)=><li className="preserve-lines" key={n}>{a.statement}</li>)}</ol></details><small>这些输入会随任务保存；生成的新建议仍需你确认。</small></section>;
+
+export function PrdChangePreview({preview}:{preview:DocumentPreview}) {
+  const counts=preview.counts;
+  return <section className="prd-change-preview" aria-label="PRD 生成前变更预览">
+    <header><div><span className="preview-kicker">生成前预览 · 底稿 v{preview.input_revision}</span><h3>{preview.first_generation?'首次生成，先核对本次纳入内容':'生成 PRD 前，先核对本版变化'}</h3></div><span className="preview-local">生成前核对 · 尚未生成文档</span></header>
+    <div className="preview-counts" aria-label="变更数量">
+      {[['新增',counts.added],['修改',counts.modified],['移出本版',counts.removed],['未确认',counts.pending],['排除',counts.excluded],['AI 建议',counts.suggestions]].map(([label,count])=><div key={label} data-attention={label==='未确认'&&Number(count)>0||undefined}><strong>{count}</strong><span>{label}</span></div>)}
+    </div>
+    <details className="preview-group" open={preview.first_generation||counts.modified>0}><summary>本轮新增与具体修改 <span>{counts.added+counts.modified+counts.removed} 项</span></summary>
+      {!preview.changes.length?<p className="preview-empty">当前纳入范围及条目内容与上一版相同；本次将按当前资料重新成文。</p>:preview.changes.map((change,index)=><details className="preview-change" key={change.item_id} open={index===0&&change.change_type==='modified'}><summary><span className="preview-change-type" data-type={change.change_type}>{change.change_label}</span><strong>{change.title}</strong><small>{change.item_id}</small></summary>
+        {change.fields.map(field=><section className="preview-field" key={field.field}><h4>{field.label}<small>逐字对比</small></h4><p className="preview-diff">{field.segments.map((segment,n)=>segment.type==='added'?<ins key={n}>{segment.text}</ins>:segment.type==='removed'?<del key={n}>{segment.text}</del>:<span key={n}>{segment.text}</span>)}</p><details className="preview-full-text"><summary>查看完整前后原文</summary><div><section><h5>修改前</h5><pre>{field.before||'（空）'}</pre></section><section><h5>修改后</h5><pre>{field.after||'（空）'}</pre></section></div></details></section>)}
+      </details>)}
+    </details>
+    <details className="preview-group preview-pending" open={counts.pending>0}><summary>还有 {counts.pending} 条未确认 <span>{counts.pending?'需要处理':'已全部核对'}</span></summary>
+      {!preview.pending_confirmations.length?<p className="preview-empty">当前没有待确认的问题、需求行或成文检查事项。</p>:<ul>{preview.pending_confirmations.map(row=><li key={row.id}><strong>{row.kind==='question'?'业务问题':row.kind==='answer'?'回答落实':row.kind==='requirement'?'需求确认':'成文检查'}</strong><span>{row.text}</span><small>{row.id}</small></li>)}</ul>}
+    </details>
+    <details className="preview-group"><summary>哪些内容被排除 <span>{counts.excluded} 项</span></summary>
+      {!preview.excluded.length?<p className="preview-empty">当前没有额外排除的需求条目或资料。</p>:<ul>{preview.excluded.map(row=><li key={row.kind+row.id}><strong>{row.title}</strong><span>{row.reason}</span>{row.text&&<p>{row.text}</p>}<small>{row.id}</small></li>)}</ul>}
+    </details>
+    <details className="preview-group"><summary>AI 建议是什么 <span>{counts.suggestions} 条待核对</span></summary>
+      {!preview.ai_suggestions.length?<p className="preview-empty">当前没有待核对的 AI 建议。</p>:<ul>{preview.ai_suggestions.map(row=><li key={row.kind+row.id}><strong>{row.title}</strong><span>{row.status}</span><p>{row.text}</p><small>{row.id}</small></li>)}</ul>}
+    </details>
+    <p className="preview-notice">{preview.notice}</p>
+  </section>;
 }
 
-export function ActionDialog({ plan, input, error, busy, stale = false, onReplan, onClose, onSubmit }: { plan: ActionPlan; input: ActionInput; error: string; busy: boolean; stale?: boolean; onReplan?: () => Promise<void>; onClose: () => void; onSubmit: () => void }) {
-  useDialog(!busy, onClose);
-  const authorize = plan.recipients.some(r => r.needs_authorization);
-  return <div className="modal-backdrop"><div className="modal task-approval-dialog" role="dialog" aria-modal="true" aria-label="核对本次任务"><div className="task-approval-body"><h2>{plan.label}</h2><p>底稿 v{plan.expected_revision}</p>{plan.benchmark&&<p>对标对象：{plan.benchmark.target}；参考范围：{plan.benchmark.focus||"按已有资料提出待审建议"}。对标资料：{plan.sources.filter(s=>plan.benchmark!.source_ids.includes(s.id)).map(s=>s.title).join("、")}。其他项目资料也会按下方范围发送用于比较。</p>}<p>{plan.stages.map(s => steps[s]).join(' → ')}</p>{plan.max_calls!=null&&<p>本次授权最多 {plan.max_calls} 次模型请求，所有步骤、修复及重试共享此上限。额度用尽后停止；继续需重新核对计划并明确授权。</p>}<p>按所需步骤执行；运行中可停止后续步骤。调用模型可能产生费用，实际金额取决于使用量和服务方计价。</p>{plan.recipients.map(r => <p key={r.origin + r.model}><strong>接收端：</strong>{r.origin} · {r.model}<br />{r.needs_authorization ? '本次包含需你授权的内容' : '已有授权覆盖当前范围'}</p>)}<p>{plan.context_scope}</p>{(plan as any).target_label&&<p>本次对象：{(plan as any).target_label}</p>}<details className="task-source-scope"><summary>本次使用 {plan.sources.length} 份已保存资料（展开核对）</summary><ul>{plan.sources.map(s => <li key={s.id}>{s.title}</li>)}</ul><details><summary>查看来源编号</summary><ul>{plan.sources.map(s=><li key={s.id}>{s.title} · {s.id}</li>)}</ul></details></details>{input.message && <TaskInputPreview message={input.message} scoped={!!(plan as any).requirement_recommendation_scope}/>}{plan.generation_target && <p>原型对象：{plan.generation_target.name} · 输入版本 v{plan.expected_revision}</p>}{plan.missing.map(m => <p className="notice" key={m}>{m}</p>)}{error && <p className="error" role="alert">{error}</p>}{stale && <p className="notice">内容或配置已变化，输入仍保留。读取最新版本后请重新核对资料、接收端和发送范围。</p>}</div><div className="toolbar task-approval-actions"><button onClick={onClose} disabled={busy}>返回保留输入</button>{stale && onReplan && <button disabled={busy} onClick={() => void onReplan()}>读取最新版本并重新核对</button>}<button className="primary" disabled={busy || stale || !!plan.missing.length} onClick={onSubmit}>{authorize ? '授权本次范围并运行' : '运行本次任务'}</button></div></div></div>;
+export function PrdGenerationPreviewDialog({preview,error,busy,onClose,onSubmit}:{preview:DocumentPreview;error:string;busy:boolean;onClose:()=>void;onSubmit:()=>void}) {
+  useDialog(!busy,onClose);
+  return <div className="modal-backdrop"><div className="modal task-approval-dialog" role="dialog" aria-modal="true" aria-label="核对 PRD 生成内容"><div className="task-approval-body"><h2>核对后调用 AI 生成 PRD</h2><section className="task-authorization ai-generation-note" aria-label="AI 生成说明"><span className="task-authorization-flag">核对后调用 AI</span><div><h3>按当前已保存内容生成</h3><p>本预览只用于核对，不修改需求或生成文档。点击“核对后生成 PRD”后，才会按当前已保存内容调用 AI；未确认事项和 AI 建议仍需人工处理。</p></div></section><PrdChangePreview preview={preview}/>{error&&<p className="error" role="alert">{error}</p>}</div><div className="toolbar task-approval-actions"><button onClick={onClose} disabled={busy}>返回继续核对</button><button className="primary task-authorize-button" disabled={busy} onClick={onSubmit}>核对后生成 PRD</button></div></div></div>;
 }
+
+export function LocalPrdPreviewDialog({preview,error,busy,onClose,onSubmit}:{preview:DocumentPreview;error:string;busy:boolean;onClose:()=>void;onSubmit:()=>void}) {
+  useDialog(!busy,onClose);
+  return <div className="modal-backdrop"><div className="modal task-approval-dialog" role="dialog" aria-modal="true" aria-label="确认 PRD 变更预览"><div className="task-approval-body"><h2>确认预览后，本机生成 PRD 评审稿</h2><section className="task-authorization local-generation-note" aria-label="本机生成说明"><span className="task-authorization-flag">无需外发授权</span><div><h3>不调用 AI，不发送项目资料</h3><p>只把当前已保存的需求、规则和验收编排为评审稿。未确认事项会保留，不代表正式交付。</p></div></section><PrdChangePreview preview={preview}/>{error&&<p className="error" role="alert">{error}</p>}</div><div className="toolbar task-approval-actions"><button onClick={onClose} disabled={busy}>返回继续核对</button><button className="primary task-authorize-button" disabled={busy} onClick={onSubmit}>确认预览并生成 PRD</button></div></div></div>;
+}
+
 
 export function OptionDecision({ option, p, action, onClose, submit }: { option: Obj; p: Project; action: string; onClose: () => void; submit: (path: string, body: Obj) => Promise<void> }) {
   const [selected, setSelected] = useState<string[]>([]), [error, setError] = useState(''), [busy, setBusy] = useState(false); const submitLock=useRef(false);

@@ -53,3 +53,30 @@
   .document-reading-area { height: min(75vh, 680px); }
   .reading-node-actions span { max-width: 16ch; }
 }
+.source-add__common { display: grid; gap: 14px; }
+.source-add__common > .card { margin: 0; }
+.source-paste { display: grid; gap: 10px; }
+.source-paste h3 { margin: 0; }
+.source-paste textarea { box-sizing: border-box; width: 100%; min-height: 140px; resize: vertical; }
+.source-paste label { display: grid; gap: 6px; }
+.source-import__batch { margin-top: 14px; padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--soft); }
+.source-import__batch-head { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; }
+.source-import__results { display: grid; gap: 10px; margin: 12px 0 0; padding: 0; list-style: none; }
+.source-import__result { min-width: 0; padding: 12px; border: 1px solid var(--line); border-radius: 7px; background: #fff; }
+.source-import__result-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.source-import__result-head > div { min-width: 0; }
+.source-import__result-head b { overflow-wrap: anywhere; }
+.source-import__result-head small { display: block; margin-top: 3px; color: var(--muted); }
+.source-import__result-head > span { flex: none; color: var(--muted); font-size: 12px; }
+.source-import__result p { margin: 8px 0 0; }
+.source-import__result small { display: block; margin-top: 6px; }
+.source-import__result-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.source-import__batch-actions { display: grid; gap: 8px; margin-top: 12px; }
+.source-import__batch-actions button { justify-self: start; }
+@media (max-width: 700px) {
+  .source-import__result-head { flex-wrap: wrap; }
+  .source-import__result-actions,
+  .source-import__batch-actions { width: 100%; }
+  .source-import__result-actions button,
+  .source-import__batch-actions button { box-sizing: border-box; width: 100%; }
+}

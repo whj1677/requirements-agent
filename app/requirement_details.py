@@ -4,6 +4,7 @@ Structure validation permits incomplete drafts. Completeness is checked at the
 human confirmation and delivery boundaries, using stable IDs rather than indexes.
 """
 import re
+import copy
 
 import jsonschema
 
@@ -65,6 +66,65 @@ class DetailProblem(Problem):
         super().__init__(code, '；'.join(row['message'] for row in issues[:8]), 409)
 
 
+def interaction_path_facts(detail):
+    """Read-only graph facts, not a completeness verdict or a business rule.
+
+    Walk each associated node once per starting node, stopping at the first
+    other interaction. Cycles and branching never enumerate full paths.
+    Only literal business properties are projected; evidence aliases and any
+    unknown metadata from rejected model candidates are deliberately excluded.
+    """
+    result=dict(version='interaction-path-facts-1',
+        notice='只读路径事实，不是业务结论或新阻断项；跨交互不自动判错，未绑定节点不推断所属操作。结合当前原文、回答和交互逐项核对。',
+        interactions=[],state_transitions=[])
+    if not isinstance(detail,dict):return result
+    flow=detail.get('flow')
+    if not isinstance(flow,dict):return result
+    def rows(value,properties):
+        return [{key:copy.deepcopy(row[key]) for key in properties if key in row and
+                 (isinstance(row[key],str) or isinstance(row[key],list) and all(isinstance(x,str) for x in row[key]))}
+                for row in value if isinstance(row,dict)] if isinstance(value,list) else []
+    local_refs=('field_refs','rule_refs','acceptance_refs')
+    interactions=rows(detail.get('interactions'),('id',*INTERACTION_PROPERTIES,*local_refs))
+    nodes=rows(flow.get('nodes'),('id','label','kind','actor','interaction_id'))
+    edges=rows(flow.get('edges'),('id','from','to','condition'))
+    result['state_transitions']=rows(detail.get('state_transitions'),('id',*TRANSITION_PROPERTIES,*local_refs))
+    ids=[node.get('id') for node in nodes]
+    if None in ids or len(ids)!=len(set(ids)):
+        result['diagnostic_reason']='节点编号缺失或重复，未推断路径归属。'
+        return result
+    by_id={node['id']:node for node in nodes}
+    outgoing={nid:[] for nid in ids}
+    for edge in edges:
+        if edge.get('from') in outgoing:outgoing[edge['from']].append(edge)
+    result['unbound_node_ids']=[node['id'] for node in nodes if not node.get('interaction_id')]
+    for interaction in interactions:
+        iid=interaction.get('id')
+        if not iid:continue
+        associated=[node for node in nodes if node.get('interaction_id')==iid]
+        paths=[]
+        for node in associated:
+            visited=set();todo=[node['id']];cross=[];cross_seen=set()
+            while todo:
+                current=todo.pop()
+                if current in visited:continue
+                visited.add(current)
+                for edge in outgoing[current]:
+                    target=by_id.get(edge.get('to'))
+                    if target is None:continue
+                    owner=target.get('interaction_id')
+                    if owner and owner!=iid:
+                        identity=(edge.get('id'),edge.get('from'),edge.get('to'))
+                        if identity not in cross_seen:cross.append(copy.deepcopy(edge));cross_seen.add(identity)
+                    elif target['id'] not in visited:todo.append(target['id'])
+            paths.append(dict(node=copy.deepcopy(node),outgoing_edges=copy.deepcopy(outgoing[node['id']]),
+                reachable_end_node_ids=[n['id'] for n in nodes if n['id'] in visited and n.get('kind')=='end'],
+                reachable_wait_node_ids=[n['id'] for n in nodes if n['id'] in visited and n.get('kind')=='wait'],
+                first_cross_interaction_edges=cross))
+        result['interactions'].append(dict(interaction=interaction,associated_nodes=paths))
+    return result
+
+
 def _objects(detail):
     for section in ('fields', 'interactions', 'state_transitions'):
         for row in detail.get(section, []):
@@ -97,6 +157,20 @@ def validate_detail(detail, project=None):
     if issues:
         raise DetailProblem(issues, 'DETAIL_INVALID')
     return detail
+
+
+def technical_issues(item):
+    """Existing AI/preflight structural boundary, independent of adoption state.
+
+    No project is passed: references to same-response unadopted clauses are
+    validated by the adapter, not mistaken for missing selected project items.
+    Ordinary sparse values and proposal/unknown semantics keep their own gates.
+    """
+    structural={'DETAIL_STRUCTURE','DETAIL_DUPLICATE_ID','DETAIL_EVIDENCE_PATH',
+        'DETAIL_FIELD_REFERENCE','DETAIL_FIELD_CYCLE','DETAIL_INTERACTION_REFERENCE',
+        'DETAIL_APPLICABILITY_CONFLICT','DETAIL_SECTION_EMPTY','DETAIL_SOURCE_MISSING'}
+    return [issue for issue in detail_issues(item)
+        if issue['code'] in structural or issue['code'].startswith('DETAIL_FLOW_')]
 
 
 def detail_issues(item, project=None, require_confirmed=False):
@@ -282,6 +356,10 @@ def detail_issues(item, project=None, require_confirmed=False):
             from .requirement_confirmation import confirmation_current
             if not confirmation_current(project, item):
                 add('DETAIL_CONFIRMATION_REQUIRED', '', '详细需求未确认或确认后内容/依赖已变化')
+    if project is not None:
+        from .detail_business_scope import current_reviews
+        allowed={p['path'] for review in current_reviews(project,item) for p in review['properties']}
+        issues=[issue for issue in issues if not (issue['code']=='DETAIL_PROPERTY_UNKNOWN' and issue['path'] in allowed)]
     return issues
 
 

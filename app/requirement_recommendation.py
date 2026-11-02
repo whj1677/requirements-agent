@@ -12,6 +12,9 @@ RELATED_KINDS = ('rule', 'acceptance', 'constraint')
 
 
 def scope(project, target, stage='clarify'):
+    if target and target.get('detail_required') is not None:
+        require(stage=='clarify' and target.get('kind')=='item' and type(target['detail_required']) is bool,
+                'TARGET_INVALID','详细定义生成意图仅用于完善原需求行')
     if stage != 'clarify' or not target or target.get('kind') != 'item':
         return None
     requirement = next((item for item in project['items'] if item['id'] == target['id']), None)
@@ -36,7 +39,7 @@ def scope(project, target, stage='clarify'):
                 related_item_ids=sorted(visible), shared_readonly_item_ids=sorted(shared),
                 question_ids=[q['id'] for q in questions],
                 answered_question_ids=[q['id'] for q in questions if answer_bindable(project, q)],
-                candidate_only=True)
+                candidate_only=True,**({'detail_required':True} if target.get('detail_required') is True else {}))
 
 
 def contract(local):

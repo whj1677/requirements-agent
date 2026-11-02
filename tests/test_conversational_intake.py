@@ -73,10 +73,10 @@ def test_chat_cancel_does_not_lose_original_or_store_late_reply(case):
     assert p['questions']==[] and p['items']==[]
 
 
-def test_chat_needs_authorization_and_changed_receiver_cannot_send(case):
+def test_chat_changed_receiver_cannot_send(case):
     c,app,model,root=case;chat(model)
     body,preview=plan(c,root,'interview','先帮我聊聊。')
-    assert start(c,root,body,preview,authorize=False).status_code==403
+    assert not any(r['needs_authorization'] for r in preview['recipients'])
     config=dict(model['config'],model='changed-receiver')
     assert c.put('/api/models/model',json=config).status_code==200
     response=start(c,root,body,preview)

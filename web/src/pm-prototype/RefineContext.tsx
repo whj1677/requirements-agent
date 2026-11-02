@@ -64,7 +64,7 @@ function ContextField({project,busy,mutate,onChanged,onProjectUpdated,onTaskSave
   }
   useDirty(project.id+'-refine-context-'+field,dirty,'业务摘要：'+scopeLabels[field],async()=>{await save();},discard);
   return <section className="refine-context-field" id={'refine-context-field-'+project.id+'-'+field}>
-    <h4>{scopeLabels[field]}{!isScopeFieldRequired(field,profile)&&<small>按需补充</small>}</h4>
+    <h4>{scopeLabels[field]}{!isScopeFieldRequired(field,profile,project.product_context?.scope_ids,project)&&<small>按需补充</small>}</h4>
     {!editing&&text.trim()?<div className="refine-context-recommendation" aria-label={scopeLabels[field]+'待核对内容'}>
       <strong>{suggestion?'AI 已整理 · 待你确认':state.status==='unknown'?'已保存内容 · 待你确认':'已确认内容'}</strong>
       <p>{text}</p>
@@ -110,7 +110,7 @@ export function RefineContext(props:Props){
   const {focus}=props,profile=((project as Obj).scope_profile||defaultScopeProfile) as ScopeProfile,states=((project as Obj).context_field_states||{}) as Record<string,FieldState>;
   function syncProject(next:Project){setLatestProject(previous=>previous.id!==next.id||next.revision>=previous.revision?next:previous);props.onProjectUpdated?.(next);}
   const [open,setOpen]=useState(false),[field,setField]=useState(''),[fieldFocusNonce,setFieldFocusNonce]=useState(0),navigate=useNavigation();
-  const missing=Object.keys(scopeLabels).filter(key=>{const status=fieldStatus(key,project.product_context||{},states,profile);return !choices(key,profile).includes(status)||status==='known'&&!String(project.product_context?.[key]||'').trim()||isScopeFieldRequired(key,profile)&&status==='unknown';});
+  const missing=Object.keys(scopeLabels).filter(key=>{const status=fieldStatus(key,project.product_context||{},states,profile);return !choices(key,profile).includes(status)||status==='known'&&!String(project.product_context?.[key]||'').trim()||isScopeFieldRequired(key,profile,project.product_context?.scope_ids,project)&&status==='unknown';});
   function edit(key:string){const openField=()=>{setField(key);setOpen(true);setFieldFocusNonce(n=>n+1);};if(field===key)openField();else navigate(openField);}
   useEffect(()=>{if(focus?.field&&scopeLabels[focus.field])edit(focus.field);},[project.id,focus?.nonce]);
   return <section className={'refine-context'+(props.focusedOnly?' refine-context-focused':'')}>

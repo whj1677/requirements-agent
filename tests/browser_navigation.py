@@ -11,3 +11,6 @@ async def select_project(page, project_id):
         drawer=page.locator('details.compact-projects')
         if not await selector.is_visible():await drawer.locator('summary').click()
         await selector.select_option(project_id)
+        # Restoring the remembered project needs no change event; finish the
+        # same drawer interaction explicitly so it cannot cover the workspace.
+        if await drawer.get_attribute('open') is not None:await drawer.locator('summary').click()

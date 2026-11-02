@@ -5,16 +5,19 @@ import { useDirty, useNavigation } from '../editing';
 import { activitySnapshot, subscribeActivity } from '../activity';
 import { hasPendingInterviewInput } from '../intake-chat';
 import { RequirementTable } from './RequirementTable';
+import { ProjectMemorySettings } from '../project-memory';
 const PrewriteReviewPanel=React.lazy(()=>import('./PrewriteReviewPanel').then(m=>({default:m.PrewriteReviewPanel})));
 import { prewriteLabel } from '../prewrite-review';
 import { singleRequirementRoot } from './requirement-location';
 import { refinementDestination, ConnectedDestination } from './refine-navigation';
 export type { ConnectedDestination } from './refine-navigation';
-import { currentQuestions } from './refine-context';
+import { openQuestionProgress, questionGroups } from './refine-context';
 import type {RefinementReturnState} from './refinement-return';
 import {publicBlocker} from '../workflow-labels';
+import {blockerActionLabel} from '../blockers';
 import './refine-guided.css';
 import './connected-workspace.css';
+import './human-usage.css';
 
 type Obj = Record<string, any>;
 type EntryMode = 'chat' | 'direct';
@@ -29,14 +32,14 @@ export function ConnectedWorkspace({ id, project, tasks, active=true, busy, runn
   id: string; project: Project; tasks: UserTask[]; active?: boolean; busy: boolean; running: boolean; actionBlockReason: string;
   mutate: (path: string, body: Obj, method?: string) => Promise<any>;
   onOrganize: (instruction?:string,request?:ActionInput['draft_request']) => void; onClarify: (questionId?: string) => void; onSources: (refs?: Obj[]) => void;
-  onRecommendRequirement: (requirementId: string, instruction: string) => void;
+  onRecommendRequirement: (requirementId: string, instruction: string, requestDetails?: boolean) => void;
   chatPanel: (beforeSend: () => Promise<Project>, onDirect: (text: string) => void, onViewDraft: () => void, onPrepareDraft: () => void) => React.ReactNode;
   onCreateRequirement: () => void; onCreateAcceptance: (requirementId?: string) => void;
   onDelivery: () => void; onDocuments: () => void; onRefresh: () => void;
   workspaceRef?: React.Ref<HTMLDivElement>; taskPanel?: (task: UserTask) => React.ReactNode; destination?: ConnectedDestination; onMainNavigation?: () => void;
   onResolveBlocker: (action: BlockerAction, row: Blocker) => void;
   deliveryBlockers?: Blocker[];
-  preparation?: {state:'idle'|'checking'|'running'|'failed'|'authorization';message?:string;taskId?:string};
+  preparation?: {state:'idle'|'checking'|'running'|'failed';message?:string;taskId?:string};
   onPrepareRefinement: (retry?:boolean) => Promise<void>; onCancelPreparation: () => void;
   assistantEntryNonce?: number;
   onPrewrite:()=>void; onGeneratePrd:(allowReviewDraft?:boolean)=>void;
@@ -66,7 +69,7 @@ export function ConnectedWorkspace({ id, project, tasks, active=true, busy, runn
   const manualRefinement=useRef(false),restoreRefinement=useRef(false);
   const [refinementGate,setRefinementGate]=useState(false);
   const [refinementReturn,setRefinementReturn]=useState<RefinementReturnState|null>(null);
-  const preparing=['checking','running','authorization'].includes(preparation.state);
+  const preparing=['checking','running'].includes(preparation.state);
   const scrollPositions = useRef<Partial<Record<string, number>>>({});
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [taskOpen, setTaskOpen] = useState(false);
@@ -81,8 +84,12 @@ export function ConnectedWorkspace({ id, project, tasks, active=true, busy, runn
   const [entryError,setEntryError]=useState('');
   const [tableFocus,setTableFocus]=useState<{itemId?:string;questionId?:string;field?:string;scope?:boolean;nonce:number}>();
   const [tableValidationRequest,setTableValidationRequest]=useState<number>();
-  const questions = useMemo(() => currentQuestions(project), [project.questions]);
-  const candidates = project.items.filter(i => i.selection_status !== 'excluded');
+  const questionState=useMemo(()=>questionGroups(project),[project.questions,project.question_view]);
+  const questionProgress=useMemo(()=>openQuestionProgress(project),[project.questions,project.question_view]);
+  const activeRequirements=project.items.filter(i=>i.kind==='requirement'&&i.applies_to==='to_be'&&!i.target_item_id&&!i.superseded_by&&!['rejected','deferred','excluded'].includes(i.selection_status));
+  const scopeIds=Array.isArray(project.product_context?.scope_ids)?project.product_context.scope_ids:[];
+  const includedRequirementCount=activeRequirements.filter(item=>scopeIds.includes(item.id)).length;
+  const notIncludedCount=activeRequirements.length-includedRequirementCount;
   const hasExistingRequirements=project.items.some(i=>i.kind==='requirement'&&i.applies_to==='to_be'&&!i.superseded_by&&!['rejected','excluded'].includes(i.selection_status));
   const latestTask = tasks.at(-1);
   const draftDirty = draft !== savedDraft;
@@ -169,11 +176,23 @@ export function ConnectedWorkspace({ id, project, tasks, active=true, busy, runn
   }
   const markContextSaved=useDirty(id + '-connected-context', contextDirty, '项目背景与本次来源', saveContext, () => { setContextDraft(context?.background || ''); setContextSelection(context?.selected_source_ids || null); setTermsDraft(context?.terms || []); });
   async function prepareRefinement(manual=false,retry=false,restoring=false) {
-    if(!draftLoaded){setNavigationError(draftError||'工作底稿仍在读取，请稍候再进入完善需求。');return;}
+    if(!draftLoaded){setNavigationError(draftError||'工作底稿仍在读取，请稍候再核对草稿与规则。');return;}
     if(preparingNext.current||(!manual&&preparing)||busy||localBusy)return;
     setNavigationError('');setEntryError('');
+    if(manual){
+      // Reading an existing table is a same-project view change. Keep every
+      // registered draft and pending chat input untouched; do not call navigate.
+      onMainNavigation?.();restoreRefinement.current=false;manualRefinement.current=true;
+      session.setItem('ra-refinement-entry-'+id,'manual');
+      onCancelPreparation();setRefinementGate(false);setStep('refine');
+      session.setItem('ra-connected-step-'+id,'refine');
+      // Refresh discovers existing content/tasks without saving inputs,
+      // uploading pending attachments or submitting another task.
+      onRefresh();
+      return;
+    }
     if(hasPendingInterviewInput(id,mode==='chat')){
-      setEntryError('聊天框还有未发送的文字或附件。请先发送，或移除本轮输入，再进入完善需求。');
+      setEntryError('聊天框还有未发送的文字或附件。AI更新前请先发送或移除本轮输入；已有草稿仍可查看。');
       requestAnimationFrame(()=>containerRef.current?.querySelector('.connected-entry-error')?.scrollIntoView({block:'nearest'}));
       return;
     }
@@ -184,19 +203,13 @@ export function ConnectedWorkspace({ id, project, tasks, active=true, busy, runn
       if(!restoring){
         // Opening an existing table must not create an untouched information
         // draft and invalidate the very review the user is trying to read.
-        if(!manual||draftDirty){await ensureSharedDraft();markDraftSaved();}
+        await ensureSharedDraft();markDraftSaved();
         if(contextDirty){await saveContext();markContextSaved();}
       }
       navigate(()=>{
-        onMainNavigation?.();restoreRefinement.current=false;manualRefinement.current=manual;
-        session.setItem('ra-refinement-entry-'+id,manual?'manual':'auto');
-        if(manual){
-          onCancelPreparation();setRefinementGate(false);setStep('refine');session.setItem('ra-connected-step-'+id,'refine');
-          // Read current content/tasks even if a previous task submission lost
-          // its response. Refreshing discovers that task without resubmitting it.
-          onRefresh();
-        }
-        else {setRefinementGate(step==='refine');void onPrepareRefinement(retry).catch(e=>setNavigationError((e as Error).message));}
+        onMainNavigation?.();restoreRefinement.current=false;manualRefinement.current=false;
+        session.setItem('ra-refinement-entry-'+id,'auto');
+        setRefinementGate(step==='refine');void onPrepareRefinement(retry).catch(e=>setNavigationError((e as Error).message));
       });
     }catch(e){setNavigationError((e as Error).message);}
     finally{preparingNext.current=false;}
@@ -263,6 +276,11 @@ export function ConnectedWorkspace({ id, project, tasks, active=true, busy, runn
   }
   const saving = busy || localBusy || pendingActivity;
   const blockers = deliveryBlockers ?? project.confirmation_blockers;
+  const displayedBlockers=(blockers||[]).map(publicBlocker);
+  const hasDeliveryBlockers=displayedBlockers.length>0||project.confirmation_issues.length>0;
+  const firstDeliveryBlocker=displayedBlockers[0];
+  const firstDeliveryAction=firstDeliveryBlocker?.actions[0];
+
   return <div ref={node => { containerRef.current = node; if (typeof workspaceRef === 'function') workspaceRef(node); else if (workspaceRef) workspaceRef.current = node; }} onScroll={e => { if (active) scrollPositions.current[scrollKey] = e.currentTarget.scrollTop; }} className="connected-workspace" data-step={step}>
     {draftError&&<p role="alert" className="connected-error">{draftError}{!draftLoaded&&<button type="button" onClick={()=>setDraftReadAttempt(value=>value+1)}>重新读取工作底稿</button>}</p>}
     {navigationError && <p role="alert" className="connected-error">{navigationError}<button type="button" onClick={() => {
@@ -272,42 +290,41 @@ export function ConnectedWorkspace({ id, project, tasks, active=true, busy, runn
     }}>{step==='refine'?'返回表格核对':'刷新处理入口'}</button></p>}
     <div className="workspace-stagebar">
     <nav className="connected-steps" aria-label="需求工作流程">
-      {([['information', '1', '提供信息'], ['refine', '2', '完善需求'], ['delivery', '3', '确认交付']] as const).map(([key, number, label]) =>
+      {([['information', '1', '聊清需求想法', '聊天或填写底稿，保留已有内容'], ['refine', '2', '核对草稿与规则', '确认范围、业务规则与验收'], ['delivery', '3', '评审与交付文档', '预览变更，评审 MRD / PRD']] as const).map(([key, number, label, hint]) =>
         <button key={key} type="button" disabled={step==='information'&&key==='refine'&&!draftLoaded} aria-current={step === key ? 'step' : undefined} onClick={() => {
-          if(key==='delivery'&&step==='refine'&&!(refinementReturn?.projectId===project.id&&refinementReturn.revision===project.revision&&refinementReturn.canReturn)){
-            setNavigationError('');setRefineView('requirements');setTableValidationRequest(value=>(value||0)+1);return;
-          }
+
           chooseStep(key);
-        }}><span>{number}</span>{label}</button>)}
+        }}><span>{number}</span><b>{label}</b><small>{hint}</small></button>)}
     </nav>
     {latestTask && <div className="connected-task" data-state={latestTask.status} role="status"><span title={latestTask.label+' · '+(taskStatusText[latestTask.status]||'状态待核对')+(latestTask.error?' · '+humanError(latestTask.error):'')}><b>{latestTask.label}</b> · {taskStatusText[latestTask.status] || '状态待核对'}{latestTask.error ? ' · ' + humanError(latestTask.error) : ''}</span><button type="button" aria-expanded={taskOpen} onClick={() => setTaskOpen(value => !value)}>{taskOpen ? '收起任务记录' : '查看任务与恢复'}</button><button type="button" onClick={onRefresh}>刷新</button></div>}
     </div>
-    {entryError&&<p role="alert" className="connected-error connected-entry-error"><span>{entryError}</span><button type="button" onClick={()=>{chooseStep('information');setMode('chat');requestAnimationFrame(()=>{const input=containerRef.current?.querySelector<HTMLTextAreaElement>('.intake-chat textarea');input?.focus();input?.scrollIntoView({block:'center'});});}}>返回聊天输入</button></p>}
-    {(step==='information'||step==='refine')&&(preparation.state!=='idle'||refinementGate)&&<section className="connected-preparation" aria-label="进入完善需求的准备状态" role={preparation.state==='failed'?'alert':'status'}>
-      <strong>{preparation.state==='failed'?'整理尚未完成':preparation.state==='authorization'?'确认本次资料使用范围':'正在整理，完成后自动进入完善需求'}</strong>
+
+    {entryError&&hasPendingInterviewInput(id,mode==='chat')&&<p role="alert" className="connected-error connected-entry-error"><span>{entryError}</span><button type="button" onClick={()=>{chooseStep('information');setMode('chat');requestAnimationFrame(()=>{const input=containerRef.current?.querySelector<HTMLTextAreaElement>('.intake-chat textarea');input?.focus();input?.scrollIntoView({block:'center'});});}}>返回聊天输入</button></p>}
+    {(step==='information'||step==='refine')&&(preparation.state!=='idle'||refinementGate)&&<section className="connected-preparation" aria-label="打开草稿与规则的准备状态" role={preparation.state==='failed'?'alert':'status'}>
+      <strong>{preparation.state==='failed'?'整理尚未完成':'正在整理，完成后自动打开草稿与规则'}</strong>
       <p>{preparation.message||actionBlockReason||'正在检查已保存草稿；缺少时先根据聊天和资料起草摘要、需求说明和验收建议，你在本表核对即可。'}</p>
       {preparation.state==='failed'&&<button type="button" className="primary" disabled={saving||running} onClick={()=>void prepareRefinement(false,true)}>重试整理</button>}
       {refinementGate&&preparation.state==='idle'&&<button type="button" disabled={saving||!draftLoaded} onClick={()=>void prepareRefinement()}>继续检查并整理</button>}
-      {refinementGate&&<button type="button" disabled={saving||running||preparing||!draftLoaded} onClick={()=>void prepareRefinement(true)}>不使用 AI，直接完善</button>}
+      {refinementGate&&<button type="button" disabled={saving||running||preparing||!draftLoaded} onClick={()=>void prepareRefinement(true)}>不使用 AI，直接核对草稿</button>}
     </section>}
     {(project as Obj).decision_review_status?.status === 'pending_manual_review' && <p className="connected-review-notice" role="status">有效草稿已保留；问题拆分与回答覆盖仍待人工核对。{humanError((project as Obj).decision_review_status.message)}</p>}
     {taskOpen && latestTask && <section className="connected-task-details" aria-label="当前任务记录">{taskPanel?.(latestTask)}</section>}
     {step === 'information' && <div className="connected-grid assistant-grid" data-context-open={assistantContextOpen}>
       <main className="connected-card">
-        <h2>从已知信息开始</h2>
-        <p className="assistant-intro">提供信息后，点击“整理并进入完善需求”。助手先根据聊天和资料起草整张需求确认表，包含验收建议；你再确认或修改。</p>
+        <h2>聊清需求想法</h2>
+        <p className="assistant-intro">先和助手聊清想法，或直接填写底稿；随后整理为需求确认表，核对范围、业务规则和验收建议。进入页面不会自动调用 AI。</p>
         {hasExistingRequirements&&<div className="assistant-resume"><div><strong>已有需求草稿，可以直接继续</strong><p>{project.prewrite_review?.blocking_count?project.prewrite_review.blocking_count+' 项待确认。':'打开已有内容核对或修改。'}无需重新整理，打开不调用 AI。</p></div><button type="button" className="primary" disabled={saving||preparing||!draftLoaded} onClick={()=>{setRefineView(project.prewrite_review?.blocking_count||project.prewrite_review?.status==='passed'&&project.prewrite_review.current?'prewrite':'requirements');void prepareRefinement(true,false,true);}}>继续核对已有草稿</button></div>}
         <div className="connected-mode" role="group" aria-label="输入方式"><button type="button" aria-pressed={mode === 'chat'} onClick={event => {
           modeTouched.current=true;
           setMode('chat');
           const card=event.currentTarget.closest('.connected-card');
           requestAnimationFrame(()=>card?.querySelector('.chat-composer-actions')?.scrollIntoView({block:'nearest'}));
-        }}>和助手聊需求</button><button type="button" aria-pressed={mode === 'direct'} onClick={() => {modeTouched.current=true;const pending=session.getItem('ra-chat-draft-'+id)||'';if(!draft.trim()&&pending.trim()){draftTouched.current=true;setDraft(pending);}setMode('direct');}}>直接填写需求</button>{!hasExistingRequirements&&<details className="entry-alternative"><summary>其他方式</summary><button type="button" disabled={saving||preparing||!draftLoaded} onClick={()=>void prepareRefinement(true)}>不使用 AI，直接完善</button></details>}<button type="button" className="assistant-context-toggle" aria-expanded={assistantContextOpen} aria-controls={'assistant-context-'+id} onClick={()=>setAssistantContextOpen(open=>!open)}>项目语境与资料设置</button></div>
+        }}>和助手聊需求</button><button type="button" aria-pressed={mode === 'direct'} onClick={() => {modeTouched.current=true;const pending=session.getItem('ra-chat-draft-'+id)||'';if(!draft.trim()&&pending.trim()){draftTouched.current=true;setDraft(pending);}setMode('direct');}}>直接填写需求</button>{!hasExistingRequirements&&<details className="entry-alternative"><summary>其他方式</summary><button type="button" disabled={saving||preparing||!draftLoaded} onClick={()=>void prepareRefinement(true)}>不使用 AI，直接核对草稿</button></details>}<button type="button" className="assistant-context-toggle" aria-expanded={assistantContextOpen} aria-controls={'assistant-context-'+id} onClick={()=>setAssistantContextOpen(open=>!open)}>项目语境与资料设置</button></div>
         {mode === 'chat' && <div className="connected-chat">{chatPanel(ensureSharedDraft, text => { modeTouched.current=true;setMode('direct'); if (text.trim()){draftTouched.current=true;setDraft(text);} }, () => chooseStep('refine'), () => {void prepareRefinement();})}</div>}
         <div hidden={mode !== 'direct'}>
         <label className="connected-label" htmlFor={'connected-draft-' + id}>填写当前需求的原文底稿</label>
         <textarea id={'connected-draft-' + id} rows={12} value={draft} disabled={!draftLoaded||preparing} onChange={e => {draftTouched.current=true;setDraft(e.target.value);}} placeholder={draftLoaded ? '填写已确认信息；未知处可以明确写“待确定”' : '正在读取底稿…'} />
-        <div className="connected-actions"><button className={hasExistingRequirements?'secondary':'primary'} type="button" disabled={saving||preparing||!draftLoaded} onClick={()=>void prepareRefinement()}>{preparing?'正在整理…':hasExistingRequirements?'让 AI 更新草稿':'整理并进入完善需求'}</button><button type="button" disabled={saving||preparing||!draftLoaded||(!draftDirty&&draftCommitted)} onClick={() => void saveDraft().catch(() => {})}>保存工作底稿</button><button type="button" onClick={() => onSources()}>查看与补充资料</button></div>
+        <div className="connected-actions"><button className={hasExistingRequirements?'secondary':'primary'} type="button" disabled={saving||preparing||!draftLoaded} onClick={()=>void prepareRefinement()}>{preparing?'正在整理…':hasExistingRequirements?'让 AI 更新草稿':'整理并核对草稿与规则'}</button><button type="button" disabled={saving||preparing||!draftLoaded||(!draftDirty&&draftCommitted)} onClick={() => void saveDraft().catch(() => {})}>保存工作底稿</button><button type="button" onClick={() => onSources()}>查看与补充资料</button></div>
         {draftDirty && <p className="connected-status">当前编辑尚未保存。保存只写入底稿，不调用模型。</p>}
         {!draftDirty && draftLoaded && draftCommitted && <p className="connected-status">底稿已保存；候选建议仍须逐条审核。</p>}
         {!draftDirty && draftLoaded && !draftCommitted && <p className="connected-status">当前文字尚未保存为共享工作底稿。</p>}
@@ -315,20 +332,34 @@ export function ConnectedWorkspace({ id, project, tasks, active=true, busy, runn
       </main>
       <aside className="connected-side assistant-context" id={'assistant-context-'+id}>
         <button type="button" className="assistant-context-close" onClick={()=>setAssistantContextOpen(false)}>收起项目语境与资料设置</button>
+        <ProjectMemorySettings key={project.id} project={project} disabled={saving||running||preparing} mutate={mutate}/>
         <section className="connected-card"><h3>项目语境与本次来源</h3><p>背景只帮助理解，不作为当前需求的业务依据。</p>{contextError && <p role="alert" className="connected-error">{contextError}</p>}
           {context && <><label className="connected-label" htmlFor={'domain-background-' + id}>产品线简短背景</label><textarea id={'domain-background-' + id} rows={4} value={contextDraft} onChange={e => setContextDraft(e.target.value)} placeholder={context.suggested_background || '可选'} />
           <details><summary>选择本次供模型参考的项目资料</summary><p>默认使用全部未排除参考资料；已写进当前输入的来源仍按原文绑定，停用来源始终不发送。</p><label><input type="checkbox" checked={contextSelection === null} onChange={e => setContextSelection(e.target.checked ? null : context.effective_source_ids)} /> 使用全部未排除参考资料</label>{contextSelection !== null && project.sources.filter(s => !s.excluded).map(s => <label key={s.id}><input type="checkbox" checked={contextSelection.includes(s.id)} onChange={e => setContextSelection(e.target.checked ? [...contextSelection, s.id] : contextSelection.filter(x => x !== s.id))} /> {s.title || s.id}</label>)}{Boolean(context.bound_input_source_ids?.length) && <p>当前输入已绑定来源：{context.bound_input_source_ids?.join('、')}</p>}{context.unavailable_selected_source_ids?.length > 0 && <p className="connected-error">已有选择不可用：{context.unavailable_selected_source_ids.join('、')}</p>}</details>
           <details><summary>按需维护术语 · {termsDraft.length}</summary>{termsDraft.map((t, n) => <div key={t.id || n} className="connected-term"><input aria-label={'术语 ' + (n + 1)} value={t.term || ''} onChange={e => setTermsDraft(current => current.map((x, k) => k === n ? { ...x, term: e.target.value } : x))} placeholder="术语" /><input aria-label={'解释 ' + (n + 1)} value={t.meaning || ''} onChange={e => setTermsDraft(current => current.map((x, k) => k === n ? { ...x, meaning: e.target.value } : x))} placeholder="本项目中的含义" /><select aria-label={'术语状态 ' + (n + 1)} value={t.status || 'reference'} onChange={e => setTermsDraft(current => current.map((x, k) => k === n ? { ...x, status: e.target.value } : x))}><option value="reference">仅供参考</option><option value="confirmed">项目已确认</option></select><button type="button" onClick={() => setTermsDraft(current => current.filter((_, k) => k !== n))}>删除</button></div>)}<button type="button" onClick={() => setTermsDraft(current => [...current, { term: '', meaning: '', status: 'reference' }])}>添加术语</button></details>
           <button type="button" disabled={saving || !contextDirty} onClick={() => void saveContext().catch(() => {})}>保存项目语境</button></>}
         </section>
-        <section className="connected-card assistant-state"><h3>当前进度</h3><p>已有 {candidates.length} 条条目 · {questions.length} 个问题。</p><p>打开草稿后集中核对，缺少的内容会直接标出。</p></section>
+        <section className="connected-card assistant-state"><h3>当前进度</h3>
+          <p><strong>可核对需求 {activeRequirements.length} 条</strong></p>
+          <p>已纳入本期 {includedRequirementCount} 条；未明确或排除 {notIncludedCount} 条，不计为已纳入。</p>
+          <p>{questionProgress.inputCount} 项待决定（{questionProgress.recordCount} 条原记录） · {questionState.pending.length} 项已保存回答待落实。</p>
+          {!!questionProgress.duplicateGroupCount&&<p>相同问题 {questionProgress.duplicateGroupCount} 组，共 {questionProgress.duplicateRecordCount} 条原记录；按项目已保存内容以代表待答输入计数，表内仍可查看原 ID 与来源。</p>}
+          {!!questionProgress.relatedGroupCount&&<p>同一需求的相关记录 {questionProgress.relatedRecordCount} 条（{questionProgress.relatedGroupCount} 组）；仅归组，仍逐条处理，不合并为同一问题或已解决事项。</p>}
+          <p className="stage-next-step"><strong>下一步：</strong>{questionState.open.length?'打开需求确认表，先处理仍未决定的业务问题。':questionState.pending.length?'打开需求确认表，核对回答对应的正文与验收位置。':'打开需求确认表，核对本期范围与验收内容。'}</p>
+          <details className="connected-progress-history"><summary>历史与累计记录</summary>
+            <p>{questionState.history.length} 条历史问题 · {questionState.applied.length} 条本期回答已落实；均不计入上方待决定数。</p>
+            {!!questionState.history.length&&<ul>{questionState.history.map(q=><li key={q.id}>{q.question}<small>{q.answer?'原回答已保留':'原题未保存回答'}</small></li>)}</ul>}
+            <p>项目累计保留 {project.items.length} 条条目和 {project.questions.length} 条问题原记录；历史记录仅供追溯。</p>
+          </details>
+        </section>
       </aside>
     </div>}
     {step === 'refine' && !refinementGate && <>
       <div className="refinement-view-toolbar">
-      <div className="refinement-view-switch" role="group" aria-label="完善需求视图"><button type="button" disabled={saving} aria-pressed={refineView==='requirements'} onClick={()=>navigate(()=>setRefineView('requirements'))}>需求列表</button><button type="button" disabled={saving} aria-pressed={refineView==='prewrite'} onClick={()=>navigate(()=>setRefineView('prewrite'))}>成文检查{project.prewrite_review?.blocking_count?' · '+project.prewrite_review.blocking_count:''}</button><small>{prewriteLabel(project.prewrite_review)}</small></div>
+      <div className="refinement-view-switch" role="group" aria-label="草稿与规则视图"><button type="button" disabled={saving} aria-pressed={refineView==='requirements'} onClick={()=>navigate(()=>setRefineView('requirements'))}>需求列表</button><button type="button" disabled={saving} aria-pressed={refineView==='prewrite'} onClick={()=>navigate(()=>setRefineView('prewrite'))}>成文检查{project.prewrite_review?.blocking_count?' · '+project.prewrite_review.blocking_count:''}</button><small>{prewriteLabel(project.prewrite_review)}</small></div>
       {manualRefinement.current&&refineView==='requirements'&&<p className="connected-status">查看与确认不调用 AI</p>}
       </div>
+      <p className="stage-next-step refinement-next-step"><strong>当前任务：</strong>{refineView==='requirements'?'逐项确认需求、规则、范围与验收；随后打开成文检查。':'处理成文检查中的阻塞项；生成 PRD 前核对新增、逐字改动、未确认、排除项和 AI 建议。'}</p>
       <div className="refinement-requirements-view" hidden={refineView!=='requirements'}>
       <RequirementTable project={project} active={active&&refineView==='requirements'} busy={saving||running} mutate={mutate} onRefresh={onRefresh} onSources={onSources}
         onRecommend={onRecommendRequirement} onSuggest={onOrganize} onCreate={onCreateRequirement} onResolve={resolveTable} onQuestionReview={reviewTableQuestion} onStageConfirmed={()=>{onRefinementConfirmed?.();chooseStep('delivery');}} onReturnAvailabilityChange={setRefinementReturn} focus={tableFocus} validationRequest={tableValidationRequest}/>
@@ -337,13 +368,15 @@ export function ConnectedWorkspace({ id, project, tasks, active=true, busy, runn
     </>}
     {step === 'delivery' && <div className="connected-grid">
       <main className="connected-card">
-        <h2>确认交付版本</h2>
+        <h2>评审与交付文档</h2>
         <p>可先查看当前原文和未决项的讨论稿；正式交付由服务端检查来源、问题、条款、文档和确认条件。</p>
-        <div className="connected-actions"><button type="button" disabled={saving} onClick={() => void loadDiscussion()}>预览当前讨论稿</button><button type="button" disabled={!discussion || discussion.revision !== project.revision} onClick={downloadDiscussion}>下载讨论稿</button><button type="button" onClick={onDocuments}>查看与核对正式文档</button><button className="primary" type="button" onClick={onDelivery}>打开正式确认</button></div>
+        <p>{hasDeliveryBlockers?'当前仍有 '+(displayedBlockers.length||project.confirmation_issues.length)+' 项交付阻塞，讨论稿和文档查看入口仍可使用。':'当前未发现交付阻塞；正式确认仍会由服务端再次检查。'}</p>
+        <p className="stage-next-step"><strong>下一步：</strong>{firstDeliveryAction?(blockerActionLabel(firstDeliveryAction,firstDeliveryBlocker)||'处理第一项交付阻塞')+'。':firstDeliveryBlocker?'刷新第一项阻塞的处理入口。':project.confirmation_issues.length?'刷新交付条件并核对剩余问题。':'打开正式确认，核对并确认本次交付版本。'}</p>
+        <div className="connected-actions"><button type="button" disabled={saving} onClick={() => void loadDiscussion()}>预览当前讨论稿</button><button type="button" disabled={!discussion || discussion.revision !== project.revision} onClick={downloadDiscussion}>下载讨论稿</button><button type="button" onClick={onDocuments}>查看与核对正式文档</button><button className={hasDeliveryBlockers?undefined:'primary'} type="button" onClick={onDelivery}>打开正式确认</button></div>
         {discussionError && <p role="alert" className="connected-error">讨论稿未能读取：{discussionError}</p>}
         {discussion && <section className="connected-discussion"><h3>非正式讨论稿 · 项目 v{discussion.revision}</h3>{discussion.revision !== project.revision && <p className="connected-error">项目内容已变化，请重新预览后下载。</p>}<pre>{discussion.text}</pre></section>}
-        {Boolean(blockers?.length || project.confirmation_issues?.length) && <div className="connected-blockers"><h3>当前交付阻塞</h3>
-          {blockers?.length ? blockers.map(publicBlocker).map(row => <div key={row.key} className="connected-blocker-row"><b>{row.title}</b><p>{row.detail || row.message}</p><div className="connected-actions">{row.actions.map((action, n) => <button type="button" key={n} onClick={() => resolveHere(action, row)}>{action.label || '去处理'} →</button>)}{!row.actions.length && <button type="button" onClick={onRefresh}>刷新处理入口</button>}</div></div>) : project.confirmation_issues.map((issue, n) => <p key={n}>{issue}</p>)}
+        {Boolean(blockers?.length || project.confirmation_issues?.length) && <div className="connected-blockers" role="alert"><div className="connected-blocker-heading"><span className="blocker-flag">阻止继续</span><h3>先处理以下 {blockers?.length||project.confirmation_issues.length} 项，再继续交付</h3></div>
+          {displayedBlockers.length ? displayedBlockers.map((row,rowIndex) => <div key={row.key} className="connected-blocker-row"><b>{row.title}</b><p>{row.detail || row.message}</p><div className="connected-actions">{row.actions.map((action, n) => <button type="button" className={rowIndex===0&&n===0?'primary':undefined} key={n} onClick={() => resolveHere(action, row)}>{blockerActionLabel(action,row) || '去处理'} →</button>)}{!row.actions.length && <button type="button" className={rowIndex===0?'primary':undefined} onClick={onRefresh}>刷新处理入口</button>}</div></div>) : project.confirmation_issues.map((issue, n) => <div key={n} className="connected-blocker-row"><p>{issue}</p>{n===0&&<button type="button" className="primary" onClick={onRefresh}>刷新交付条件</button>}</div>)}
         </div>}
       </main>
       <aside className="connected-side"><section className="connected-card"><h3>任务状态</h3>{latestTask ? <><p>{latestTask.label} · {taskStatusText[latestTask.status] || '状态待核对'}</p>{latestTask.error && <p className="connected-error">{humanError(latestTask.error)}</p>}<button type="button" onClick={() => { setTaskOpen(true); requestAnimationFrame(() => document.querySelector('.project-workspace:not([hidden]) .connected-task-details')?.scrollIntoView({ block: 'start' })); }}>查看任务与恢复操作</button></> : <p>暂无生成任务。</p>}</section></aside>

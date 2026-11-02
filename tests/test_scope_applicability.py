@@ -59,6 +59,9 @@ def test_shared_or_modified_requires_current_and_explicit_preservation(tmp_path)
     for scenario, dependency in [('new_module', 'shared'), ('new_module', 'unknown'),
                                  ('modify_existing', 'independent'), ('unspecified', 'unknown')]:
         client, app, root = case(tmp_path / (scenario + dependency))
+        project = client.get(root).json()
+        with app.state.store.edit(project['id'], project['revision'], 'existing modification') as (draft, _):
+            draft['items'][0]['change_type'] = 'modify'
         p = save(client, root, essentials(), {'scenario': scenario, 'dependencies': dependency},
                  {'current_state': {'status': 'unknown'}, 'preserve_scope': {'status': 'none'}}, ['REQ-0001'])
         assert p['scope_field_rules']['current_state']['required']
@@ -66,6 +69,42 @@ def test_shared_or_modified_requires_current_and_explicit_preservation(tmp_path)
         assert not any('保持不变' in issue for issue in p['product_flow'][1]['missing'])
         p = save(client, root, states={'current_state': {'status': 'none'}})
         assert any('当前页面与流程' in issue for issue in p['product_flow'][1]['missing'])
+
+
+def test_shared_additive_module_keeps_unknown_current_state(tmp_path):
+    client, app, root = case(tmp_path)
+    p = save(client, root, essentials(), {'scenario': 'new_module', 'dependencies': 'shared'},
+             {'current_state': {'status': 'unknown', 'note': '资料未说明现有页面'},
+              'preserve_scope': {'status': 'none'}}, ['REQ-0001'])
+    assert p['scope_field_rules']['current_state'] == {
+        'required': False, 'allowed_statuses': ['known', 'unknown']}
+    assert p['scope_field_rules']['preserve_scope']['required']
+    assert p['context_field_states']['current_state']['status'] == 'unknown'
+    assert p['scope_profile']['dependencies'] == 'shared'
+    assert p['product_flow'][1]['missing'] == []
+    checked = client.post(root + '/stage-checks/2', json={
+        'expected_revision': p['revision'], 'expected_hash': p['product_flow'][1]['content_hash']})
+    assert checked.status_code == 200, checked.text
+
+
+def test_additive_module_requires_explicit_current_roots():
+    from copy import deepcopy
+    from app.scope_context import scope_field_rules
+    p = dict(scope_profile=dict(scenario='new_module', dependencies='unknown'),
+             product_context=dict(scope_ids=['R1']), items=[dict(id='R1', kind='requirement',
+             applies_to='to_be', selection_status='candidate', change_type='new')])
+    assert not scope_field_rules(p)['current_state']['required']
+    for update in ({'change_type': 'unknown'}, {'change_type': 'modify'},
+                   {'selection_status': 'rejected'}, {'selection_status': 'deferred'},
+                   {'superseded_by': 'R2'}, {'target_item_id': 'R0'}, {'applies_to': 'as_is'}):
+        bad = deepcopy(p)
+        bad['items'][0].update(update)
+        assert scope_field_rules(bad)['current_state']['required'], update
+    for scope in ([], ['missing'], ['R1', 'R2']):
+        bad = deepcopy(p)
+        bad['product_context']['scope_ids'] = scope
+        bad['items'].append(dict(p['items'][0], id='R2', change_type='modify'))
+        assert scope_field_rules(bad)['current_state']['required'], scope
 
 
 def test_core_values_and_real_scope_ids_cannot_be_bypassed(tmp_path):

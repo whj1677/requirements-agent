@@ -23,7 +23,14 @@ def test_one_business_response_covers_all_points_and_preserves_saved_answers(tmp
         await actions.jobs[task['id']]
         task=store.get_record(before['id'],task['id'],'user_task');after=store.get(before['id'])
         assert task['status'] in ('succeeded','partial'),task
-        assert len(provider.requests)==1 and task['calls']==1
+        assert [r['role'] for r in provider.requests]==['business_generation','detail_source_review']
+        assert len(provider.requests)==task['calls']==2
+        run=store.get_record(before['id'],task['run_ids'][0],'run')
+        reviews=run['business_draft_review']['detail_semantic_reviews']
+        assert reviews and all(r['status']=='passed' for r in reviews.values())
+        candidates=[r for r in run['response']['proposals'] if r['kind']=='requirement']
+        assert len(candidates)==len(before['product_context']['scope_ids'])
+        assert all(r.get('detail_contract') for r in candidates)
         assert after['questions']==before['questions'] and after['documents']==before['documents']
         assert after['items'][:len(before['items'])]==before['items']
         completion=after['refinement_completion'];assert completion['mode']=='prewrite' and completion['applied_revision']==after['revision']

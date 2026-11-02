@@ -47,6 +47,8 @@ async def run(args):
                 await page.set_viewport_size(dict(width=1280,height=720))
                 await page.screenshot(path=str(args.output/'01-review-choice.png'))
                 await batch.get_by_role('button',name='先生成待确认评审稿',exact=True).click()
+                preview=page.get_by_role('dialog',name='确认 PRD 变更预览',exact=True);await expect(preview).to_be_visible()
+                await preview.get_by_role('button',name='确认预览并生成 PRD',exact=True).click()
                 reader=page.get_by_role('article',name='PRD 正文',exact=True);await expect(reader).to_be_visible(timeout=20000)
                 task_status=page.get_by_role('region',name='PRD 生成任务状态',exact=True)
                 await expect(task_status).to_contain_text('本机生成 PRD 评审稿')

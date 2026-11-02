@@ -1,0 +1,132 @@
+{
+  "schema_version": 1,
+  "local_metadata": true,
+  "source": {
+    "id": "anthropic-knowledge-work-plugins",
+    "repository": "anthropics/knowledge-work-plugins",
+    "repository_url": "https://github.com/anthropics/knowledge-work-plugins",
+    "reviewed_ref": "refs/heads/main",
+    "upstream_commit": "2574e29377c7173d0cecffef29a6ecbd7f8ccb5d",
+    "commit_url": "https://github.com/anthropics/knowledge-work-plugins/commit/2574e29377c7173d0cecffef29a6ecbd7f8ccb5d",
+    "license": "Apache-2.0",
+    "notice": {
+      "status": "not_present_in_scanned_applicable_directories",
+      "scanned_directories": [
+        "",
+        "product-management",
+        "product-management/skills",
+        "product-management/skills/write-spec"
+      ]
+    }
+  },
+  "id": "anthropic-write-spec",
+  "name": "write-spec",
+  "version": "2574e29377c7173d0cecffef29a6ecbd7f8ccb5d",
+  "upstream_commit": "2574e29377c7173d0cecffef29a6ecbd7f8ccb5d",
+  "repository": "anthropics/knowledge-work-plugins",
+  "path": "vendor/anthropic-write-spec/SKILL.md",
+  "sha256": "ca6670913878b4ac4582727562bfced5271492a5a800d934f68c9e7bc1cd4dcc",
+  "license": "Apache-2.0",
+  "files": [
+    {
+      "path": "vendor/anthropic-write-spec/SKILL.md",
+      "upstream_path": "product-management/skills/write-spec/SKILL.md",
+      "source_url": "https://github.com/anthropics/knowledge-work-plugins/blob/2574e29377c7173d0cecffef29a6ecbd7f8ccb5d/product-management/skills/write-spec/SKILL.md",
+      "raw_url": "https://raw.githubusercontent.com/anthropics/knowledge-work-plugins/2574e29377c7173d0cecffef29a6ecbd7f8ccb5d/product-management/skills/write-spec/SKILL.md",
+      "upstream_commit": "2574e29377c7173d0cecffef29a6ecbd7f8ccb5d",
+      "sha256": "ca6670913878b4ac4582727562bfced5271492a5a800d934f68c9e7bc1cd4dcc",
+      "git_blob_sha": "183cf053df391e761c21431bc0dfb791b6d52b80",
+      "bytes": 12326,
+      "kind": "skill"
+    },
+    {
+      "path": "vendor/anthropic-write-spec/LICENSE",
+      "upstream_path": "product-management/LICENSE",
+      "source_url": "https://github.com/anthropics/knowledge-work-plugins/blob/2574e29377c7173d0cecffef29a6ecbd7f8ccb5d/product-management/LICENSE",
+      "raw_url": "https://raw.githubusercontent.com/anthropics/knowledge-work-plugins/2574e29377c7173d0cecffef29a6ecbd7f8ccb5d/product-management/LICENSE",
+      "upstream_commit": "2574e29377c7173d0cecffef29a6ecbd7f8ccb5d",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "git_blob_sha": "d645695673349e3947e8e5ae42332d0ac3164cd7",
+      "bytes": 11358,
+      "kind": "license"
+    },
+    {
+      "path": "vendor/anthropic-write-spec/LICENSE.repository",
+      "upstream_path": "LICENSE",
+      "source_url": "https://github.com/anthropics/knowledge-work-plugins/blob/2574e29377c7173d0cecffef29a6ecbd7f8ccb5d/LICENSE",
+      "raw_url": "https://raw.githubusercontent.com/anthropics/knowledge-work-plugins/2574e29377c7173d0cecffef29a6ecbd7f8ccb5d/LICENSE",
+      "upstream_commit": "2574e29377c7173d0cecffef29a6ecbd7f8ccb5d",
+      "sha256": "a6946284993aeec75c7d75906064b66210c46051e562077efb30eb6dcfe72e26",
+      "git_blob_sha": "f53c679acba79cbb292961fd9fb9e87ca20eab22",
+      "bytes": 11607,
+      "kind": "license"
+    }
+  ],
+  "selection": {
+    "writing": {
+      "sections": [
+        {
+          "path": "vendor/anthropic-write-spec/SKILL.md",
+          "heading": "### Problem Statement",
+          "heading_line": 79,
+          "start_line": 81,
+          "end_line": 83
+        },
+        {
+          "path": "vendor/anthropic-write-spec/SKILL.md",
+          "heading": "### User Stories",
+          "heading_line": 97,
+          "start_line": 97,
+          "end_line": 105
+        },
+        {
+          "path": "vendor/anthropic-write-spec/SKILL.md",
+          "heading": "### Requirements",
+          "heading_line": 113,
+          "start_line": 121,
+          "end_line": 125
+        },
+        {
+          "path": "vendor/anthropic-write-spec/SKILL.md",
+          "heading": "### Open Questions",
+          "heading_line": 127,
+          "start_line": 127,
+          "end_line": 130
+        },
+        {
+          "path": "vendor/anthropic-write-spec/SKILL.md",
+          "heading": "## Acceptance Criteria",
+          "heading_line": 194,
+          "start_line": 194,
+          "end_line": 201
+        },
+        {
+          "path": "vendor/anthropic-write-spec/SKILL.md",
+          "heading": "### Tips for Acceptance Criteria",
+          "heading_line": 215,
+          "start_line": 215,
+          "end_line": 220
+        }
+      ]
+    }
+  },
+  "excluded_guidance": [
+    {
+      "range": "SKILL.md:1-78",
+      "reason": "Frontmatter, usage, connectors, host workflow, forced question/section counts and generation template."
+    },
+    {
+      "range": "SKILL.md:80;85-96;106;113-120;154-192",
+      "reason": "Fixed sentence/goal counts, priority sorting/P0/P1/P2/MoSCoW, metric and target prescriptions."
+    },
+    {
+      "range": "SKILL.md:132-153;222-250",
+      "reason": "Timeline/estimation/scope-management policies and output format are owned by the application; not included in these writing slices."
+    },
+    {
+      "range": "SKILL.md:203-214",
+      "reason": "Unrelated SSO examples must not become current business facts."
+    }
+  ],
+  "reference_policy": "External articles, sibling skills, connectors and host command wrappers are not vendored or followed automatically."
+}

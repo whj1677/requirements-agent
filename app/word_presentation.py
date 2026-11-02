@@ -150,20 +150,13 @@ def clean_style_gallery(doc):
 
 
 def adopted_text(text):
-    """Remove editorial prefixes, never modal verbs inside a business rule."""
-    prefix=r'(?:AI\s*)?(?:建议|推荐)(?:方案)?\s*[：:]\s*'
-    value=re.sub(r'(?m)^(\s*)(?:'+prefix+r')+',r'\1',str(text))
-    # These labels are emitted by the document renderer, not user quotations.
-    labels=('现有产品','相关页面或模块','本次改动意图','当前页面与流程','目标使用者',
-            '问题与改动价值','本期新增或修改','保持不变','暂不涉及','优先级与依据',
-            '谁操作','入口及前置条件','主要流程','业务数据','权限约束','操作结果','边界和异常',
-            '类型','来源','必填条件','默认值','约束','枚举选项','可见范围','编辑权限',
-            '补充权限','操作者','入口','前置条件','触发动作','输入','校验','处理中反馈',
-            '重复操作','取消或离开','成功结果','失败结果','数据影响')
-    value=re.sub(r'(?m)^(\s*(?:'+'|'.join(labels)+r')\s*[：:]\s*)(?:'+prefix+r')+',r'\1',value)
-    # Priority rationale is an editorial field; "建议用户..." in a business rule
-    # remains a prescribed recommendation to the end user.
-    return re.sub(r'(?m)^(\s*优先级与依据\s*[：:]\s*)建议(?:为)?',r'\1',value)
+    """Preserve epistemic qualifiers when no property-level approval is supplied.
+
+    A selected clause or an entire reviewed document does not establish that
+    every proposed field is a confirmed fact. Rendering must not erase that
+    distinction, including priority rationale and table cells.
+    """
+    return str(text)
 
 
 def reading_node(node):

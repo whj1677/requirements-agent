@@ -1,6 +1,6 @@
 import type { ActionInput, ActionPlan, UserTask } from './api';
 
-export type PreparationState = {state:'idle'|'checking'|'running'|'failed'|'authorization';message?:string;taskId?:string};
+export type PreparationState = {state:'idle'|'checking'|'running'|'failed';message?:string;taskId?:string};
 export type PreparationStatus = {
   revision:number; input_hash:string; status:'empty'|'running'|'ready'|'ready_with_limits'|'needs_organize'|'failed';
   needs_organize:boolean; auto_allowed:boolean; task_id?:string|null; reason:string;
@@ -13,7 +13,7 @@ export type PreparationDependencies = {
   active:()=>boolean; blocked:()=>string; status:()=>Promise<PreparationStatus>; tasks:()=>Promise<UserTask[]>;
   plan:(input:ActionInput)=>Promise<ActionPlan>; submit:(request:PreparationSubmission)=>Promise<UserTask>;
   refresh:()=>Promise<void>; record:(task:UserTask)=>void; navigate:(consumeIntent:()=>boolean)=>void;
-  state:(state:PreparationState)=>void; authorization:(request:PreparationSubmission|null)=>void;
+  state:(state:PreparationState)=>void;
   error:(message:string,stale:boolean)=>void; key:()=>string;
   receipt:()=>PreparationSubmission|null; saveReceipt:(request:PreparationSubmission|null)=>void;
 };
@@ -39,7 +39,6 @@ export class RefinementPreparation {
     // Detach the cancelled navigation's wait. Its late response is still
     // guarded by current(); any sent request retains its exact receipt/key.
     this.flight=null;
-    this.deps.authorization(null);
     this.deps.state({state:'idle'});
   }
   prepare(retry=false):Promise<void> {
@@ -80,26 +79,13 @@ export class RefinementPreparation {
     const input:ActionInput={expected_revision:status.revision,action:'organize',message:'',document_type:'prd',option_id:null,max_calls:null};
     const plan=await this.deps.plan(input);
     if(!this.current(intent))return;
-    const request:PreparationSubmission={input,plan,key:this.deps.key(),preparationToken:intent.token,authorize:false};
+    const request:PreparationSubmission={input,plan,key:this.deps.key(),preparationToken:intent.token,authorize:true};
     intent.submission=request;
-    if(plan.recipients.some(r=>r.needs_authorization)||plan.missing.length){
-      this.update(intent,{state:'authorization',message:'请核对本次新增资料和接收端；确认后继续整理。'});
-      this.deps.authorization(request);return;
-    }
+    if(plan.missing.length)throw Error(plan.missing.join('；'));
     if(!status.auto_allowed&&!retry)throw Error(status.reason);
     await this.submit(intent,request);
   }
-  authorize(token:number):Promise<void> {
-    if(this.flight)return this.flight;
-    const intent=this.intent, request=intent?.submission;
-    if(!intent||!request||intent.token!==token||!this.current(intent))return Promise.resolve();
-    request.authorize=request.plan.recipients.some(r=>r.needs_authorization);
-    const operation=this.submit(intent,request).catch(error=>this.fail(intent,error));
-    this.flight=operation;
-    void operation.finally(()=>{if(this.flight===operation)this.flight=null;});
-    return operation;
-  }
-  async replan():Promise<void> {this.cancel();await this.prepare(true);}
+
   private clearReceipt(request?:PreparationSubmission) {
     if(request&&this.deps.receipt()?.key===request.key)this.deps.saveReceipt(null);
   }
@@ -122,7 +108,6 @@ export class RefinementPreparation {
     this.clearReceipt(request);
     if(!this.current(intent)){this.deps.record(task);return;}
     intent.uncertain=false;
-    this.deps.authorization(null);
     this.accept(intent,task);
     await this.deps.refresh().catch(()=>this.update(intent,{state:'running',taskId:task.id,
       message:'整理任务已提交，暂未取得最新进度；会继续检查同一任务，请勿重复提交。'}));
@@ -165,8 +150,7 @@ export class RefinementPreparation {
     intent.taskId=undefined;intent.resolving=false;
     if(!intent.uncertain)intent.submission=undefined;
     // Every retry stays actionable. A rejected modal submission moves to the
-    // local failure/retry UI rather than leaving a now-stale submit button.
-    this.deps.authorization(null);
+    // local failure/retry UI without automatically repeating the request.
     const e=error as {message?:string;status?:number;code?:string};
     const message=(e.message||'整理状态暂时无法读取，请重试检查。')+(intent.uncertain?' 本次提交结果尚未确认；重试会先核对状态并复用同一次提交，不会主动另建任务。':'');
     this.update(intent,{state:'failed',message});

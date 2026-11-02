@@ -10,12 +10,24 @@ from .response_application import apply_response
 RECEIPT_KIND = 'local_prd_receipt'
 
 
+def preview(store, pid, body):
+    """Build the local confirmation view without changing state or calling AI."""
+    require(set(body) == {'expected_revision'} and type(body['expected_revision']) is int,
+            'INPUT_REQUIRED', '请提交当前版本以核对 PRD 变更预览')
+    project = store.get(pid)
+    require(project['revision'] == body['expected_revision'], 'STALE_REVISION',
+            '内容版本已变化，请重新读取并核对预览', 409)
+    from .document_preview import build_prd_preview
+    return build_prd_preview(project)
+
+
 def generate(store, pid, body):
-    require(set(body) == {'expected_revision', 'idempotency_key', 'review_draft_confirmed'}
+    require(set(body) == {'expected_revision', 'idempotency_key', 'review_draft_confirmed', 'preview_hash'}
             and type(body['expected_revision']) is int
             and isinstance(body['idempotency_key'], str)
-            and 8 <= len(body['idempotency_key']) <= 100,
-            'INPUT_REQUIRED', '请提交当前版本与有效生成编号')
+            and 8 <= len(body['idempotency_key']) <= 100
+            and isinstance(body['preview_hash'], str),
+            'INPUT_REQUIRED', '请先核对当前版本的 PRD 变更预览，并提交有效生成编号')
     require(body['review_draft_confirmed'] is True, 'REVIEW_REQUIRED',
             '请明确选择保留未决事项的 PRD 评审稿', 409)
     request_hash = digest(body)
@@ -32,6 +44,10 @@ def generate(store, pid, body):
     if old:
         return dict(project=store.get(pid), artifact_id=old['artifact_id'], receipt=old, repeated=True)
     with store.edit(pid, body['expected_revision'], '本机将已保存内容编排为 PRD 评审稿，保留未决事项') as (p, db):
+        from .document_preview import build_prd_preview
+        current_preview = build_prd_preview(p)
+        require(current_preview['preview_hash'] == body['preview_hash'], 'STALE_PREVIEW',
+                '需求、未确认项或排除范围已变化，请重新核对 PRD 变更预览', 409)
         require(previous(db) is None, 'IDEMPOTENCY_CONFLICT', '相同生成请求正在处理', 409)
         require(not any(r.get('status') in ('queued', 'running') for kind in ('user_task', 'run')
                         for r in store.records(pid, kind, db)),
@@ -49,15 +65,28 @@ def generate(store, pid, body):
         for item in p['items']:
             if item['id'] in contract['normative_item_ids']:
                 _sources_valid(p, item)
-        plan = dict(plan_version='4', sections=[dict(section_key='function',
-            context_refs=contract['context_ref_ids'], normative_refs=contract['normative_item_ids'],
-            discussion_refs=[], explanations=[])])
+        from .prd import saved_prd_plan
+        plan=saved_prd_plan(p)
+        from .requirement_confirmation import row_fingerprint
+        current_items={item['id']:item for item in p['items']}
+        charts=[]
+        for section in p.get('documents',{}).get('prd',{}).get('content',{}).get('sections',[]):
+            for block in section['blocks']:
+                if block['kind']=='flowchart':
+                    ref=block['ref_ids'][0]
+                    if ref in current_items and block['source_hash']==row_fingerprint(p,current_items[ref]):
+                        charts.append(dict(requirement_id=ref,flow=copy.deepcopy(block['flow'])))
+        if charts:plan['flowcharts']=charts
         response = compile_plan(plan, p, 'prd', include_sketch=False)
         from .contracts import validate_response
         validate_response(response, 'prd', p, [e for s in p['sources'] for e in s['excerpts']])
         response['summary'] = '已按已保存原文生成 PRD 评审稿，未调用 AI；未决事项保留，请核对后再正式交付。'
         apply_response(p, response)
         artifact = p['documents']['prd']
+        from .detail_business_scope import current_reviews
+        from .requirements import delivery_items
+        scoped_details=[review for item in delivery_items(p) if item.get('kind')=='requirement' and not item.get('target_item_id') for review in current_reviews(p,item)]
+        if scoped_details:artifact['detail_unknown_scope_reviews']=scoped_details
         artifact.update(prewrite_required=True, sketch_policy='excluded',
             assembly_version='prd-plan-4-local', assembly_origin='saved_content', model_calls=0)
         p['stale_document_kinds'] = [k for k in p.get('stale_document_kinds', []) if k != 'prd']

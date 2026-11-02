@@ -57,10 +57,10 @@ def test_authorization_budget_idempotency_and_vision_context(case):
     body,preview=plan(c,root,max_calls=3)
     assert preview['max_calls'] == 3
     assert preview['stages']==['vision','ingest'] and not model['requests']
-    assert start(c,root,body,preview,False).status_code==403 and not model['requests']
+    assert not any(r['needs_authorization'] for r in preview['recipients'])
     model['invalid_next']=True
     key=uuid.uuid4().hex
-    response=start(c,root,body,preview,key=key)
+    response=start(c,root,body,preview,False,key=key)
     assert response.status_code==200,response.text
     duplicate=start(c,root,body,preview,key=key)
     assert duplicate.json()['id']==response.json()['id']
@@ -70,7 +70,10 @@ def test_authorization_budget_idempotency_and_vision_context(case):
     assert len(task['run_ids'])==2
     ctx=json.loads(model['requests'][-1]['messages'][1]['content'][0]['text'])
     assert ctx['vision_observations'][0]['result']['observations'][0]['observation']=='合成图中可见列表和新增按钮'
-    assert any(s['title']=='对话输入.txt' for s in c.get(root).json()['sources'])
+    sources=c.get(root).json()['sources']
+    conversation=next(s for s in sources if s['title'].startswith('对话 第1轮 '))
+    assert conversation['title'].endswith('.txt')
+    assert any(e['text']==body['message'] for e in conversation['excerpts'])
     from tests.product_flow_helpers import http_check
     http_check(c,root,through=1)
     body,preview=plan(c,root,'explore','')
@@ -89,6 +92,75 @@ def test_omitted_total_call_limit_does_not_block_later_stage(case):
     assert task['status']=='succeeded' and task['calls']==2 and len(model['requests'])==2
     assert task['max_calls'] is None and len(task['run_ids'])==2
     assert c.get(root).json()['sources'][0]['parse_status']=='read'
+
+
+@pytest.mark.parametrize('authorization',[None,False])
+def test_explicit_submission_records_only_current_sources_without_extra_authorization(case,authorization):
+    c,app,model,root=case
+    from tests.test_conversational_intake import chat
+    chat(model)
+    def add(text):
+        result=c.post(root+'/sources/text',json=dict(expected_revision=c.get(root).json()['revision'],
+            text=text,purpose='reference'))
+        assert result.status_code==200,result.text
+        return result.json()['id']
+    included=add('储能云平台运营人员查看站点告警列表。')
+    excluded=add('已排除材料，不纳入本次讨论。')
+    assert c.post(root+'/sources/'+excluded+'/exclude',json={
+        'expected_revision':c.get(root).json()['revision']}).status_code==200
+    before=c.get(root).json()
+    source_files=set((app.state.store.folder/'sources').iterdir())
+    body,preview=plan(c,root,'interview','先梳理储能站点告警筛选需求，权限待确认。')
+    assert not any(r['needs_authorization'] for r in preview['recipients'])
+    assert not model['requests'] and c.get(root).json()==before
+    assert set((app.state.store.folder/'sources').iterdir())==source_files
+    assert c.get(root+'/actions').json()==[]
+    payload=dict(**body,plan_hash=preview['plan_hash'],idempotency_key=uuid.uuid4().hex)
+    if authorization is not None:payload['authorize']=authorization
+    response=c.post(root+'/actions',json=payload)
+    assert response.status_code==200,response.text
+    assert finished(c,root)['status']=='succeeded'
+    assert c.post(root+'/actions',json=payload).json()['id']==response.json()['id']
+    p=app.state.store.get(root.rsplit('/',1)[-1])
+    task=c.get(root+'/actions').json()[-1]
+    message_source=p['messages'][0]['source_id']
+    assert set(task['source_ids'])=={included,message_source}
+    for recipient in preview['recipients']:
+        grant=p['grants'][recipient['origin']]
+        assert grant['user_task_id']==task['id']
+        assert set(grant['source_ids'])=={included,message_source}
+    assert len(model['requests'])==1 and len(c.get(root+'/actions').json())==1
+    context=json.loads(model['requests'][0]['messages'][1]['content'][0]['text'])
+    assert {e['source_id'] for e in context['excerpts']}=={included,message_source}
+    assert not p['items'] and not p['documents'] and not c.get(root).json()['baselines']
+
+
+def test_new_source_invalidates_frozen_plan_without_writing_task_input(case):
+    c,app,model,root=case
+    body,preview=plan(c,root,'interview','梳理储能站点告警需求。')
+    assert c.post(root+'/sources/text',json=dict(expected_revision=body['expected_revision'],
+        text='新补充的告警筛选资料。',purpose='reference')).status_code==200
+    before=c.get(root).json()
+    # Even updating the revision cannot reuse a plan frozen before new material.
+    body['expected_revision']=before['revision']
+    response=start(c,root,body,preview,False)
+    assert response.status_code==409 and response.json()['code']=='STALE_PLAN'
+    assert not model['requests'] and c.get(root).json()==before
+    assert c.get(root+'/actions').json()==[]
+
+
+@pytest.mark.parametrize('blocker',['key','missing','busy'])
+def test_direct_submit_retains_execution_blockers(case,monkeypatch,blocker):
+    c,app,model,root=case
+    if blocker=='key':monkeypatch.setattr(app.state.workflow.provider,'key',lambda _:None)
+    if blocker=='busy':
+        app.state.store.record(root.rsplit('/',1)[-1],'user_task',dict(status='running',calls=0))
+    body,preview=plan(c,root,'organize','' if blocker=='missing' else '梳理储能站点告警需求。')
+    before=c.get(root).json()
+    assert preview['missing']
+    response=start(c,root,body,preview,False)
+    assert response.status_code==409 and response.json()['code']=='ACTION_BLOCKED'
+    assert not model['requests'] and c.get(root).json()==before
 
 
 def test_null_total_call_limit_does_not_block_image_batches_or_ingest(case):
@@ -220,10 +292,11 @@ def test_changed_plan_and_new_source_require_fresh_review(case):
     finished(c,root)
     image(c,root)
     body,preview=plan(c,root,message='')
-    assert any(r['needs_authorization'] for r in preview['recipients'])
+    assert not any(r['needs_authorization'] for r in preview['recipients'])
     count=len(model['requests'])
-    assert start(c,root,body,preview,False).status_code==403
-    assert len(model['requests'])==count
+    assert start(c,root,body,preview,False).status_code==200
+    assert finished(c,root)['status']=='succeeded'
+    assert len(model['requests'])==count+2
 
 
 def test_active_task_serialization_and_explicit_cap_bounds_pipeline(case):

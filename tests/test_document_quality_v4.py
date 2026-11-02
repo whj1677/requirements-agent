@@ -135,15 +135,17 @@ def test_v4_places_unplanned_context_in_product_sections_without_process_heading
                    for section in readable['sections'])
         for key,title in expected.items():
             if kind=='mrd' and key=='priority':title='优先级与决策依据'
-            actual=[section['title'] for section in readable['sections']
-                    for block in section['blocks'] if project['product_context'][key] in block.get('text','')]
+            actual=[section['title'] for section in result['result']['sections']
+                    for block in section['blocks'] if project['product_context'][key] in (block.get('text') or '')]
             assert title in actual, (kind,key,actual)
-        assert any('章节建议未指定的已核对上下文字段' in limit
-                   for limit in result['limitations'])
+            assert project['product_context'][key] in dumps(readable)
+        assert not any('章节建议未指定的已核对上下文字段' in limit
+                       for limit in result['limitations'])
     for version in ('2','3'):
         old=compile_plan(plan(version),project,'prd')
         assert any(section['title']=='补列的已核对事实与规范条款'
                    for section in old['result']['sections'])
+        assert any('章节建议未指定的已核对上下文字段' in limit for limit in old['limitations'])
 
 
 def test_v4_prd_fixes_clause_kinds_to_one_section_each(tmp_path):

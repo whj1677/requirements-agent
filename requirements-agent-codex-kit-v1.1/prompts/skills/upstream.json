@@ -1,0 +1,408 @@
+{
+  "schema_version": 1,
+  "reviewed_at": "2026-10-31",
+  "resource_root": "requirements-agent-codex-kit-v1.1/prompts/skills",
+  "scope": "Reviewed upstream source resources only; no installation, remote-script execution, app logic or data changes.",
+  "byte_preservation": "Upstream originals saved without edits; SHA-256 and Git blob SHA verified against the commit-pinned content response. SOURCE.json files and this manifest are local provenance metadata, not upstream originals.",
+  "selection_policy": {
+    "status": "reviewed_stage_slices_for_application_adaptation",
+    "line_numbers": "1-based inclusive, relative to the exact byte-hashed UTF-8 source; heading_line identifies the containing exact Markdown heading, while start_line may be within its body.",
+    "loading": "Load only the fixed slices appropriate to the active stage. The application owns routing, output schema, current-evidence precedence, source/confirmation gates and explicit task approval.",
+    "flow_boundary": "Flow patterns are topology references only. Preserve the existing structured flow schema; do not output standalone Mermaid or renderer commands, and do not promote example conditions or retries to business facts.",
+    "quality_boundary": "Provenance, licenses and byte integrity do not establish model-output quality."
+  },
+  "sources": [
+    {
+      "id": "anthropic-knowledge-work-plugins",
+      "repository": "anthropics/knowledge-work-plugins",
+      "repository_url": "https://github.com/anthropics/knowledge-work-plugins",
+      "reviewed_ref": "refs/heads/main",
+      "upstream_commit": "2574e29377c7173d0cecffef29a6ecbd7f8ccb5d",
+      "commit_url": "https://github.com/anthropics/knowledge-work-plugins/commit/2574e29377c7173d0cecffef29a6ecbd7f8ccb5d",
+      "license": "Apache-2.0",
+      "notice": {
+        "status": "not_present_in_scanned_applicable_directories",
+        "scanned_directories": [
+          "",
+          "product-management",
+          "product-management/skills",
+          "product-management/skills/write-spec"
+        ]
+      }
+    },
+    {
+      "id": "phuryn-pm-skills",
+      "repository": "phuryn/pm-skills",
+      "repository_url": "https://github.com/phuryn/pm-skills",
+      "reviewed_ref": "refs/heads/main",
+      "upstream_commit": "2a12295a7717569baa7be181b4cfebe3ca38a6bb",
+      "commit_url": "https://github.com/phuryn/pm-skills/commit/2a12295a7717569baa7be181b4cfebe3ca38a6bb",
+      "license": "MIT",
+      "notice": {
+        "status": "not_present_in_scanned_applicable_directories",
+        "scanned_directories": [
+          "",
+          "pm-execution",
+          "pm-execution/skills",
+          "pm-execution/skills/create-prd",
+          "pm-execution/skills/strategy-red-team"
+        ]
+      }
+    },
+    {
+      "id": "softaworks-agent-toolkit",
+      "repository": "softaworks/agent-toolkit",
+      "repository_url": "https://github.com/softaworks/agent-toolkit",
+      "reviewed_ref": "refs/heads/main",
+      "upstream_commit": "3027f20f3181758385a1bb8c022d4041dfb4de84",
+      "commit_url": "https://github.com/softaworks/agent-toolkit/commit/3027f20f3181758385a1bb8c022d4041dfb4de84",
+      "license": "MIT",
+      "notice": {
+        "status": "not_present_in_scanned_applicable_directories",
+        "scanned_directories": [
+          "",
+          "skills",
+          "skills/mermaid-diagrams",
+          "skills/mermaid-diagrams/references"
+        ]
+      }
+    }
+  ],
+  "skills": [
+    {
+      "id": "anthropic-write-spec",
+      "name": "write-spec",
+      "version": "2574e29377c7173d0cecffef29a6ecbd7f8ccb5d",
+      "upstream_commit": "2574e29377c7173d0cecffef29a6ecbd7f8ccb5d",
+      "repository": "anthropics/knowledge-work-plugins",
+      "path": "vendor/anthropic-write-spec/SKILL.md",
+      "sha256": "ca6670913878b4ac4582727562bfced5271492a5a800d934f68c9e7bc1cd4dcc",
+      "license": "Apache-2.0",
+      "files": [
+        {
+          "path": "vendor/anthropic-write-spec/SKILL.md",
+          "upstream_path": "product-management/skills/write-spec/SKILL.md",
+          "source_url": "https://github.com/anthropics/knowledge-work-plugins/blob/2574e29377c7173d0cecffef29a6ecbd7f8ccb5d/product-management/skills/write-spec/SKILL.md",
+          "raw_url": "https://raw.githubusercontent.com/anthropics/knowledge-work-plugins/2574e29377c7173d0cecffef29a6ecbd7f8ccb5d/product-management/skills/write-spec/SKILL.md",
+          "upstream_commit": "2574e29377c7173d0cecffef29a6ecbd7f8ccb5d",
+          "sha256": "ca6670913878b4ac4582727562bfced5271492a5a800d934f68c9e7bc1cd4dcc",
+          "git_blob_sha": "183cf053df391e761c21431bc0dfb791b6d52b80",
+          "bytes": 12326,
+          "kind": "skill"
+        },
+        {
+          "path": "vendor/anthropic-write-spec/LICENSE",
+          "upstream_path": "product-management/LICENSE",
+          "source_url": "https://github.com/anthropics/knowledge-work-plugins/blob/2574e29377c7173d0cecffef29a6ecbd7f8ccb5d/product-management/LICENSE",
+          "raw_url": "https://raw.githubusercontent.com/anthropics/knowledge-work-plugins/2574e29377c7173d0cecffef29a6ecbd7f8ccb5d/product-management/LICENSE",
+          "upstream_commit": "2574e29377c7173d0cecffef29a6ecbd7f8ccb5d",
+          "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+          "git_blob_sha": "d645695673349e3947e8e5ae42332d0ac3164cd7",
+          "bytes": 11358,
+          "kind": "license"
+        },
+        {
+          "path": "vendor/anthropic-write-spec/LICENSE.repository",
+          "upstream_path": "LICENSE",
+          "source_url": "https://github.com/anthropics/knowledge-work-plugins/blob/2574e29377c7173d0cecffef29a6ecbd7f8ccb5d/LICENSE",
+          "raw_url": "https://raw.githubusercontent.com/anthropics/knowledge-work-plugins/2574e29377c7173d0cecffef29a6ecbd7f8ccb5d/LICENSE",
+          "upstream_commit": "2574e29377c7173d0cecffef29a6ecbd7f8ccb5d",
+          "sha256": "a6946284993aeec75c7d75906064b66210c46051e562077efb30eb6dcfe72e26",
+          "git_blob_sha": "f53c679acba79cbb292961fd9fb9e87ca20eab22",
+          "bytes": 11607,
+          "kind": "license"
+        }
+      ],
+      "selection": {
+        "writing": {
+          "sections": [
+            {
+              "path": "vendor/anthropic-write-spec/SKILL.md",
+              "heading": "### Problem Statement",
+              "heading_line": 79,
+              "start_line": 81,
+              "end_line": 83
+            },
+            {
+              "path": "vendor/anthropic-write-spec/SKILL.md",
+              "heading": "### User Stories",
+              "heading_line": 97,
+              "start_line": 97,
+              "end_line": 105
+            },
+            {
+              "path": "vendor/anthropic-write-spec/SKILL.md",
+              "heading": "### Requirements",
+              "heading_line": 113,
+              "start_line": 121,
+              "end_line": 125
+            },
+            {
+              "path": "vendor/anthropic-write-spec/SKILL.md",
+              "heading": "### Open Questions",
+              "heading_line": 127,
+              "start_line": 127,
+              "end_line": 130
+            },
+            {
+              "path": "vendor/anthropic-write-spec/SKILL.md",
+              "heading": "## Acceptance Criteria",
+              "heading_line": 194,
+              "start_line": 194,
+              "end_line": 201
+            },
+            {
+              "path": "vendor/anthropic-write-spec/SKILL.md",
+              "heading": "### Tips for Acceptance Criteria",
+              "heading_line": 215,
+              "start_line": 215,
+              "end_line": 220
+            }
+          ]
+        }
+      },
+      "excluded_guidance": [
+        {
+          "range": "SKILL.md:1-78",
+          "reason": "Frontmatter, usage, connectors, host workflow, forced question/section counts and generation template."
+        },
+        {
+          "range": "SKILL.md:80;85-96;106;113-120;154-192",
+          "reason": "Fixed sentence/goal counts, priority sorting/P0/P1/P2/MoSCoW, metric and target prescriptions."
+        },
+        {
+          "range": "SKILL.md:132-153;222-250",
+          "reason": "Timeline/estimation/scope-management policies and output format are owned by the application; not included in these writing slices."
+        },
+        {
+          "range": "SKILL.md:203-214",
+          "reason": "Unrelated SSO examples must not become current business facts."
+        }
+      ],
+      "reference_policy": "External articles, sibling skills, connectors and host command wrappers are not vendored or followed automatically."
+    },
+    {
+      "id": "pm-create-prd",
+      "name": "create-prd",
+      "version": "2a12295a7717569baa7be181b4cfebe3ca38a6bb",
+      "upstream_commit": "2a12295a7717569baa7be181b4cfebe3ca38a6bb",
+      "repository": "phuryn/pm-skills",
+      "path": "vendor/pm-create-prd/SKILL.md",
+      "sha256": "e3aa10a437ed7f748a957bd5d1eb06d8fa3f56dc728dcb93ce484387ecc3fa13",
+      "license": "MIT",
+      "files": [
+        {
+          "path": "vendor/pm-create-prd/SKILL.md",
+          "upstream_path": "pm-execution/skills/create-prd/SKILL.md",
+          "source_url": "https://github.com/phuryn/pm-skills/blob/2a12295a7717569baa7be181b4cfebe3ca38a6bb/pm-execution/skills/create-prd/SKILL.md",
+          "raw_url": "https://raw.githubusercontent.com/phuryn/pm-skills/2a12295a7717569baa7be181b4cfebe3ca38a6bb/pm-execution/skills/create-prd/SKILL.md",
+          "upstream_commit": "2a12295a7717569baa7be181b4cfebe3ca38a6bb",
+          "sha256": "e3aa10a437ed7f748a957bd5d1eb06d8fa3f56dc728dcb93ce484387ecc3fa13",
+          "git_blob_sha": "9aa4b7a5a19af2fe4ade43da564dd607efdf0488",
+          "bytes": 7301,
+          "kind": "skill"
+        },
+        {
+          "path": "vendor/pm-create-prd/LICENSE",
+          "upstream_path": "LICENSE",
+          "source_url": "https://github.com/phuryn/pm-skills/blob/2a12295a7717569baa7be181b4cfebe3ca38a6bb/LICENSE",
+          "raw_url": "https://raw.githubusercontent.com/phuryn/pm-skills/2a12295a7717569baa7be181b4cfebe3ca38a6bb/LICENSE",
+          "upstream_commit": "2a12295a7717569baa7be181b4cfebe3ca38a6bb",
+          "sha256": "a2c922f9b81b4f40347ddfa79c38eda0f1278b5a6d108bd4099b4da254c774ee",
+          "git_blob_sha": "f6eca502b7f3fd6a3f0b024e4c98a3dcf5611cee",
+          "bytes": 1068,
+          "kind": "license"
+        }
+      ],
+      "selection": {
+        "writing": {
+          "sections": [
+            {
+              "path": "vendor/pm-create-prd/SKILL.md",
+              "heading": "## Lean by default",
+              "heading_line": 12,
+              "start_line": 16,
+              "end_line": 16
+            },
+            {
+              "path": "vendor/pm-create-prd/SKILL.md",
+              "heading": "## Lean by default",
+              "heading_line": 12,
+              "start_line": 19,
+              "end_line": 19
+            },
+            {
+              "path": "vendor/pm-create-prd/SKILL.md",
+              "heading": "## Notes",
+              "heading_line": 85,
+              "start_line": 89,
+              "end_line": 90
+            }
+          ]
+        }
+      },
+      "excluded_guidance": [
+        {
+          "range": "SKILL.md:1-15;17-18;21-88;94-97",
+          "reason": "Host instructions, fixed length/count/8-section template, always-market/JTBD, mandatory metric follow-up, external research, output file command, unrelated review standard; only explicit safe slices below are enabled."
+        }
+      ],
+      "reference_policy": "External articles, sibling skills, connectors and host command wrappers are not vendored or followed automatically."
+    },
+    {
+      "id": "pm-strategy-red-team",
+      "name": "strategy-red-team",
+      "version": "2a12295a7717569baa7be181b4cfebe3ca38a6bb",
+      "upstream_commit": "2a12295a7717569baa7be181b4cfebe3ca38a6bb",
+      "repository": "phuryn/pm-skills",
+      "path": "vendor/pm-strategy-red-team/SKILL.md",
+      "sha256": "3758fcf6f2f2653721c9d58586f7816e17d47d4723b54a5d3457a6641d2663fc",
+      "license": "MIT",
+      "files": [
+        {
+          "path": "vendor/pm-strategy-red-team/SKILL.md",
+          "upstream_path": "pm-execution/skills/strategy-red-team/SKILL.md",
+          "source_url": "https://github.com/phuryn/pm-skills/blob/2a12295a7717569baa7be181b4cfebe3ca38a6bb/pm-execution/skills/strategy-red-team/SKILL.md",
+          "raw_url": "https://raw.githubusercontent.com/phuryn/pm-skills/2a12295a7717569baa7be181b4cfebe3ca38a6bb/pm-execution/skills/strategy-red-team/SKILL.md",
+          "upstream_commit": "2a12295a7717569baa7be181b4cfebe3ca38a6bb",
+          "sha256": "3758fcf6f2f2653721c9d58586f7816e17d47d4723b54a5d3457a6641d2663fc",
+          "git_blob_sha": "fe7b7feaaa7a7662d72aac226d40d3abea7e0596",
+          "bytes": 4515,
+          "kind": "skill"
+        },
+        {
+          "path": "vendor/pm-strategy-red-team/LICENSE",
+          "upstream_path": "LICENSE",
+          "source_url": "https://github.com/phuryn/pm-skills/blob/2a12295a7717569baa7be181b4cfebe3ca38a6bb/LICENSE",
+          "raw_url": "https://raw.githubusercontent.com/phuryn/pm-skills/2a12295a7717569baa7be181b4cfebe3ca38a6bb/LICENSE",
+          "upstream_commit": "2a12295a7717569baa7be181b4cfebe3ca38a6bb",
+          "sha256": "a2c922f9b81b4f40347ddfa79c38eda0f1278b5a6d108bd4099b4da254c774ee",
+          "git_blob_sha": "f6eca502b7f3fd6a3f0b024e4c98a3dcf5611cee",
+          "bytes": 1068,
+          "kind": "license"
+        }
+      ],
+      "selection": {
+        "review": {
+          "sections": [
+            {
+              "path": "vendor/pm-strategy-red-team/SKILL.md",
+              "heading": "## Instructions",
+              "heading_line": 18,
+              "start_line": 20,
+              "end_line": 24
+            },
+            {
+              "path": "vendor/pm-strategy-red-team/SKILL.md",
+              "heading": "## Notes",
+              "heading_line": 58,
+              "start_line": 60,
+              "end_line": 62
+            }
+          ]
+        }
+      },
+      "excluded_guidance": [
+        {
+          "range": "SKILL.md:1-18;26-56;63-72",
+          "reason": "Host argument placeholder, fixed risk counts/kill criteria, default-risk-is-real assumption, ranking estimates, cross-model execution and unrelated output template are not loaded."
+        }
+      ],
+      "reference_policy": "External articles, sibling skills, connectors and host command wrappers are not vendored or followed automatically."
+    },
+    {
+      "id": "mermaid-diagrams",
+      "name": "mermaid-diagrams",
+      "version": "3027f20f3181758385a1bb8c022d4041dfb4de84",
+      "upstream_commit": "3027f20f3181758385a1bb8c022d4041dfb4de84",
+      "repository": "softaworks/agent-toolkit",
+      "path": "vendor/mermaid-diagrams/SKILL.md",
+      "sha256": "79bca3c767a821a28aa7d83a9673010b2066afa4889923ea5946153c8967e824",
+      "license": "MIT",
+      "files": [
+        {
+          "path": "vendor/mermaid-diagrams/SKILL.md",
+          "upstream_path": "skills/mermaid-diagrams/SKILL.md",
+          "source_url": "https://github.com/softaworks/agent-toolkit/blob/3027f20f3181758385a1bb8c022d4041dfb4de84/skills/mermaid-diagrams/SKILL.md",
+          "raw_url": "https://raw.githubusercontent.com/softaworks/agent-toolkit/3027f20f3181758385a1bb8c022d4041dfb4de84/skills/mermaid-diagrams/SKILL.md",
+          "upstream_commit": "3027f20f3181758385a1bb8c022d4041dfb4de84",
+          "sha256": "79bca3c767a821a28aa7d83a9673010b2066afa4889923ea5946153c8967e824",
+          "git_blob_sha": "6ecbbaf9854ada56cc8e01cde47915e3c34277b7",
+          "bytes": 7479,
+          "kind": "skill"
+        },
+        {
+          "path": "vendor/mermaid-diagrams/references/flowcharts.md",
+          "upstream_path": "skills/mermaid-diagrams/references/flowcharts.md",
+          "source_url": "https://github.com/softaworks/agent-toolkit/blob/3027f20f3181758385a1bb8c022d4041dfb4de84/skills/mermaid-diagrams/references/flowcharts.md",
+          "raw_url": "https://raw.githubusercontent.com/softaworks/agent-toolkit/3027f20f3181758385a1bb8c022d4041dfb4de84/skills/mermaid-diagrams/references/flowcharts.md",
+          "upstream_commit": "3027f20f3181758385a1bb8c022d4041dfb4de84",
+          "sha256": "73b599797659ced9211ab947e3d4aee4f3ef2bfb4c1aefcfd6537276d2a21f96",
+          "git_blob_sha": "1a43c5827457b23152d3de6ba9a0774d7da83a2e",
+          "bytes": 9844,
+          "kind": "reference"
+        },
+        {
+          "path": "vendor/mermaid-diagrams/LICENSE",
+          "upstream_path": "LICENSE",
+          "source_url": "https://github.com/softaworks/agent-toolkit/blob/3027f20f3181758385a1bb8c022d4041dfb4de84/LICENSE",
+          "raw_url": "https://raw.githubusercontent.com/softaworks/agent-toolkit/3027f20f3181758385a1bb8c022d4041dfb4de84/LICENSE",
+          "upstream_commit": "3027f20f3181758385a1bb8c022d4041dfb4de84",
+          "sha256": "4b4447da5344f8b2d3a8a19ba8366d1ac7a24d9ab4690bd04576dc772ddf8321",
+          "git_blob_sha": "fc473440ee9ae27aa3d774bcd3888496ef0fad2d",
+          "bytes": 1072,
+          "kind": "license"
+        }
+      ],
+      "selection": {
+        "flow": {
+          "sections": [
+            {
+              "path": "vendor/mermaid-diagrams/references/flowcharts.md",
+              "heading": "## Best Practices",
+              "heading_line": 402,
+              "start_line": 402,
+              "end_line": 408,
+              "note": "Renderer-supported display conventions only; no new business condition."
+            },
+            {
+              "path": "vendor/mermaid-diagrams/references/flowcharts.md",
+              "heading": "### Branching Decision",
+              "heading_line": 422,
+              "start_line": 422,
+              "end_line": 430,
+              "note": "Illustrative topology only; preserve the application flow schema."
+            },
+            {
+              "path": "vendor/mermaid-diagrams/references/flowcharts.md",
+              "heading": "### Loop Pattern",
+              "heading_line": 432,
+              "start_line": 432,
+              "end_line": 439,
+              "note": "Only use a loop when present in the current confirmed business input."
+            },
+            {
+              "path": "vendor/mermaid-diagrams/references/flowcharts.md",
+              "heading": "### Error Handling",
+              "heading_line": 441,
+              "start_line": 441,
+              "end_line": 450,
+              "note": "Retry is an example, not a product requirement; do not invent retries."
+            }
+          ]
+        }
+      },
+      "excluded_guidance": [
+        {
+          "range": "SKILL.md:1-217",
+          "reason": "Main skill retained unchanged as provenance/reference; no automatic broad triggers, renderer commands, online validation, themes or mandatory diagramming."
+        },
+        {
+          "range": "references/flowcharts.md outside selected ranges",
+          "reason": "No unrelated registration/checkout/CI/CD examples, styling requirements, or additional syntax are needed for the fixed flow stage."
+        }
+      ],
+      "reference_policy": "Only flowcharts.md is vendored. Other linked references are not required by the selected stage slices and are not followed automatically."
+    }
+  ]
+}

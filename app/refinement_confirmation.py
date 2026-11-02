@@ -433,6 +433,17 @@ def confirm_table(store, pid, body):
                 clauses = _linked_clause_preview(project, body, supplied)
                 save_context_edit(project, context['values'], context['scope_ids'],
                                   context.get('scope_profile'), context['field_states'])
+                # Bind explicit table confirmation to each displayed value.
+                # Saving a page or carrying a proposal alone never creates this.
+                for field,text in context['values'].items():
+                    content_hash=digest(dict(text=text,state=context['field_states'].get(field)))
+                    prior=(project.get('context_confirmations') or {}).get(field) or {}
+                    if (prior.get('actor')=='authenticated_local_user'
+                            and prior.get('content_hash')==content_hash):
+                        continue  # Reconfirming unchanged input does not expire its document.
+                    project.setdefault('context_confirmations',{})[field]=dict(
+                        content_hash=content_hash,
+                        actor='authenticated_local_user',confirmed_at=now())
                 bundles = _stage_answers(project, supplied, staging)
                 # Answers are explicitly reviewed once, collectively, after all
                 # displayed clauses are final. The batch still guards sources,
@@ -504,7 +515,32 @@ def confirm_table(store, pid, body):
         raise
 
 
+def confirmation_receipt(store, pid, idempotency_key):
+    """Read one current server-owned acknowledgement; never replay confirmation."""
+    require(isinstance(idempotency_key, str) and 8 <= len(idempotency_key) <= 100,
+            'INPUT_REQUIRED', '请提供有效确认提交编号')
+    with store.connect() as db:
+        db.execute('BEGIN')
+        current = store.get(pid, db)
+        matches = [receipt for receipt in store.records(pid, RECEIPT_KIND, db)
+                   if receipt.get('idempotency_key') == idempotency_key]
+    require(len(matches) <= 1, 'RECEIPT_INVALID', '确认回执不唯一，请保留草稿并核对当前项目', 409)
+    if not matches:
+        return dict(confirmed=False, status='not_found', message='尚未找到该次确认回执，请保留草稿并核对，不要重复提交。')
+    receipt = matches[0]
+    if current['revision'] != receipt['result_revision']:
+        return dict(confirmed=False, status='not_current', message='该次确认已完成，但项目之后又有修改，请保留草稿并核对当前状态。')
+    return dict(confirmed=True, project=current, receipt=receipt, repeated=True,
+        destination=receipt.get('destination','delivery'),
+        implementation_pending_ids=receipt.get('implementation_pending_ids',[]),
+        issues=receipt.get('implementation_issues',[]))
+
+
 def register(app, store):
+    @app.get('/api/projects/{pid}/refinement-confirmation/receipts/{idempotency_key}')
+    async def refinement_confirmation_receipt(pid: str, idempotency_key: str):
+        return confirmation_receipt(store, pid, idempotency_key)
+
     @app.post('/api/projects/{pid}/refinement-confirmation')
     async def refinement_confirmation(pid: str, body: dict):
         return confirm_table(store, pid, body)

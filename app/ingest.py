@@ -375,7 +375,7 @@ def temporary_id_repair(original, value, stage):
     return normalized if dumps(normalized)==dumps(value) else None
 
 
-def reference_repair_anchor(original, value, excerpts, stage, project):
+def reference_repair_anchor(original, value, excerpts, stage, project, *, document_target=None, normalizations=None):
     """Align only invalid reference slots for comparison; never amend model output.
 
     A source-pair correction must keep its excerpt and have a unique actual
@@ -398,6 +398,17 @@ def reference_repair_anchor(original, value, excerpts, stage, project):
     known = ({i['id'] for i in project['items']} | {q['id'] for q in project['questions']}) if project else set()
     if project and project.get('ui'):
         known.update(page['page_id'] for page in project['ui']['spec']['pages'])
+    document_locators=set()
+    if stage=='change' and project and document_target and document_target.get('kind')=='document':
+        documents=list(project.get('documents',{}).values())
+        targets=[d for d in documents if d['id']==document_target.get('id') and
+            any(s['section_id']==document_target.get('section_id') for s in d['content']['sections'])]
+        if len(targets)==1:
+            counts={}
+            for document in documents:
+                locators=[document['id']]+[document['id']+'.'+section['section_id'] for section in document['content']['sections']]
+                for locator in locators:counts[locator]=counts.get(locator,0)+1
+            document_locators={ref for ref,count in counts.items() if count==1 and ref not in known}
 
     def pair(ref):
         if isinstance(ref, dict) and isinstance(ref.get('source_id'), str) and isinstance(ref.get('excerpt_id'), str):
@@ -459,6 +470,13 @@ def reference_repair_anchor(original, value, excerpts, stage, project):
                     if align(old, new, lambda ref: isinstance(ref, str) and ref in known,
                              lambda a, b: False):
                         before[key] = copy.deepcopy(new)
+                elif document_locators and (*path,key) in (('result','impacted_refs'),('result','unimpacted_refs')):
+                    if align(old,new,lambda ref: not isinstance(ref,str) or ref not in document_locators,lambda a,b:False):
+                        before[key]=copy.deepcopy(new)
+                        if old!=new and normalizations is not None:
+                            normalizations.append(dict(rule='document-locator-reference-removal-1',path=list((*path,key)),
+                                before=copy.deepcopy(old),after=copy.deepcopy(new),
+                                notice='仅比较模型修复前后引用；原始输出不改写，不映射为条款ID。'))
                 else:
                     walk(old, new, (*path, key))
         elif isinstance(before, list) and isinstance(after, list) and len(before) == len(after):
@@ -469,9 +487,11 @@ def reference_repair_anchor(original, value, excerpts, stage, project):
     return normalized
 
 
-def preserve_response(anchor, value, excerpts, stage, original=None, project=None):
+def preserve_response(anchor, value, excerpts, stage, original=None, project=None, *, document_target=None):
+    normalizations=[]
     if original is not None and anchor==response_anchor(original,excerpts,stage,project):
-        normalized=reference_repair_anchor(original,value,excerpts,stage,project)
+        normalized=reference_repair_anchor(original,value,excerpts,stage,project,
+            document_target=document_target,normalizations=normalizations)
         renamed=temporary_id_repair(normalized,value,stage)
         anchor=response_anchor(renamed if renamed is not None else normalized,excerpts,stage,project)
     if project is not None:
@@ -483,3 +503,4 @@ def preserve_response(anchor, value, excerpts, stage, original=None, project=Non
     changed=[list(path) for path,original in anchor.items() if current.get(path)!=original]
     require(not changed,'SEMANTIC_BLOCKED',
             '格式修复改变了已有问题、规则、决定或引用，结果未采纳；请单独核对：'+str(changed))
+    return normalizations

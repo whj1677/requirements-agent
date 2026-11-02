@@ -51,6 +51,9 @@ def row_fingerprint(project, requirement):
                                 for sid in sorted(refs)})
     if dependencies is not None:
         content['detail_dependencies'] = dependencies
+    from .detail_business_scope import current_reviews
+    scoped=current_reviews(project,requirement)
+    if scoped:content['detail_unknown_scope_reviews']=scoped
     return digest(content)
 
 
@@ -64,7 +67,8 @@ def confirmation_current(project, requirement):
 def confirmation_state(project):
     from .product_flow import question_open
     from .requirement_details import detail_issues
-    return dict(revision=project['revision'], rows=[dict(
+    from .detail_business_scope import projection
+    return dict(revision=project['revision'],**({'detail_unknown_scope_reviews':projection(project)} if projection(project) else {}), rows=[dict(
         requirement_id=item['id'], confirmed=confirmation_current(project, item),
         current=confirmation_current(project, item),
         detail_issues=detail_issues(item, project),
@@ -320,6 +324,9 @@ def build_preview(project, payload, *, detail_project=None):
             if ref not in refs:
                 refs.append(ref)
     preview['source_snapshot'] = _source_snapshot(project, refs)
+    from .detail_business_scope import current_reviews
+    scope_snapshot=current_reviews(project,after)
+    if scope_snapshot:preview['detail_scope_snapshot']=scope_snapshot
     preview['preview_hash'] = digest(preview)
     return preview
 
@@ -352,6 +359,9 @@ def apply_preview(project, preview, store, *, confirm_questions=True, detail_pro
     requirement = items[preview['requirement_id']]
     require(requirement == preview['before'], 'STALE_REVISION', '需求已变化，请重新核对', 409)
     candidate = preview.get('candidate')
+    if 'detail_scope_snapshot' in preview:
+        from .detail_business_scope import current_reviews
+        require(current_reviews(project,preview['after'])==preview['detail_scope_snapshot'],'STALE_DETAIL_SCOPE','默认值范围审查或其引用材料已变化，请重新核对。',409)
     from .decision_review import _source_snapshot
     if 'source_snapshot' in preview:
         refs = [{key: ref[key] for key in ('source_id', 'excerpt_id')}

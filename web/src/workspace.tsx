@@ -1,7 +1,7 @@
 import {session} from './draft-storage';
 import {useWorkspaceData,workspaceErrorText} from './use-workspace-data';
 import React, { useEffect, useRef, useState } from 'react';
-import { api, ApiError, BenchmarkInput, categorizeError, ActionInput, ActionPlan, BusinessAction, Blocker, BlockerAction, Project, UserTask } from './api';
+import { api, ApiError, BenchmarkInput, categorizeError, ActionInput, ActionPlan, BusinessAction, Blocker, BlockerAction, DocumentPreview, Project, UserTask } from './api';
 import { ArtifactTabs } from './workbench';
 import { SourcePanel, VersionHistory, ConfirmationPanel, DocumentStudio, documentTaskForType } from './panels';
 import { useDialog } from './shell';
@@ -11,7 +11,7 @@ import { BenchmarkReport } from './benchmark-report';
 import { pastedWebpageReference } from './benchmark-intake';
 import { DraftConflictError, EditProof, useDirty, useNavigation } from './editing';
 import { Icon } from './ui-icons';
-import { phases, TaskStatus, ActionDialog, OptionDecision } from './guided';
+import { phases, TaskStatus, LocalPrdPreviewDialog, PrdGenerationPreviewDialog, OptionDecision } from './guided';
 import { activityNotice, beginActivity } from './activity';
 import { canRecoverDraft } from './task-failure';
 import { mergeProjectWrite } from './project-update';
@@ -31,6 +31,36 @@ import {prewriteCanDraft} from './prewrite-review';
 type Obj = Record<string, any>;
 export type Compat = { status: 'ok' | 'incompatible' | 'unverified'; missing: string[] };
 
+type PreparedAction = {
+  projectId:string;plan:ActionPlan;input:ActionInput;key:string;documentPreparation?:boolean;
+  ingestCount:number;itemCount:number;questionCount:number;
+  analysisNavigation?:{connected:boolean};
+};
+const actionRecoveryStorageKey=(projectId:string)=>'ra-action-submission-'+projectId;
+const recoveryActions:BusinessAction[]=['interview','organize','explore','clarify','prototype','document','review','prewrite','change'];
+function readActionRecovery(projectId:string):{prepared:PreparedAction|null;damaged:boolean}{
+  const raw=session.getItem(actionRecoveryStorageKey(projectId));
+  if(!raw)return {prepared:null,damaged:false};
+  try{
+    const value=JSON.parse(raw) as PreparedAction,input=value?.input,plan=value?.plan;
+    const count=(candidate:unknown)=>typeof candidate==='number'&&Number.isInteger(candidate)&&candidate>=0;
+    const valid=Boolean(value?.projectId===projectId&&input&&plan&&recoveryActions.includes(input.action)&&
+      typeof input.message==='string'&&typeof input.document_type==='string'&&
+      typeof input.expected_revision==='number'&&Number.isInteger(input.expected_revision)&&input.expected_revision>=0&&
+      plan.expected_revision===input.expected_revision&&typeof plan.plan_hash==='string'&&Boolean(plan.plan_hash.trim())&&
+      typeof plan.label==='string'&&Array.isArray(plan.stages)&&Array.isArray(plan.missing)&&
+      typeof value.key==='string'&&Boolean(value.key.trim())&&count(value.ingestCount)&&count(value.itemCount)&&count(value.questionCount)&&
+      (value.documentPreparation===undefined||typeof value.documentPreparation==='boolean')&&
+      (value.analysisNavigation===undefined||typeof value.analysisNavigation?.connected==='boolean'));
+    if(!valid)throw Error('invalid action recovery');
+    return {prepared:value,damaged:false};
+  }catch{session.removeItem(actionRecoveryStorageKey(projectId));return {prepared:null,damaged:true};}
+}
+const actionSubmissionUncertain=(error:unknown)=>{
+  const e=error as {status?:number;kind?:string};
+  return e.status===0||e.kind==='network'||e.kind==='empty'||e.kind==='text'||(e.status!==undefined&&e.status>=500);
+};
+
 export function Workspace({ id, active, assistantEntryNonce, assistantEntryTask = false, models, onProjectsChanged, onProjectSnapshot, compat, onExit, onOpen, onKeepAlive }: { id: string; active: boolean; onKeepAlive?:(id:string,keep:boolean)=>void; assistantEntryNonce?: number; assistantEntryTask?: boolean; models: Obj; onProjectsChanged: () => Promise<void>; onProjectSnapshot?: (project: Project) => void; compat: Compat; onExit: () => void; onOpen: (afterOpen: () => void) => void }) {
   const {root,p,setP,projectRef,runs,tasks,setTasks,artifacts,fatal,stale,staleNotice,setStaleNotice,tasksLoaded,setTasksLoaded,running,refresh,onRefreshFail} = useWorkspaceData(id,active,onProjectSnapshot);
   const [phase, setPhase] = useState(()=>session.getItem('ra-phase-'+id)==='5'?5:4);
@@ -40,10 +70,15 @@ export function Workspace({ id, active, assistantEntryNonce, assistantEntryTask 
   const [historyOpen, setHistoryOpen] = useState(false), [history, setHistory] = useState<Obj[]>([]);
   const [docType, setDocType] = useState('prd'), [selectedDocId, setSelectedDocId] = useState(''), [rename, setRename] = useState(''), [renameOpen, setRenameOpen] = useState(false);
   const [documentQuestion, setDocumentQuestion] = useState<{id:string;nonce:number}>();
+  const [localPrdPreview,setLocalPrdPreview]=useState<DocumentPreview|null>(null);
+  const [prdGenerationPreview,setPrdGenerationPreview]=useState<PreparedAction|null>(null);
   const [chapter, setChapter] = useState<ChapterTarget | null>(null);
   const [chapterSubmission, setChapterSubmission] = useState<ChapterSubmission>();
   const [taskContinuation, setTaskContinuation] = useState<{id: string; retry: boolean}>();
-  const [pending, setPending] = useState<{ plan: ActionPlan; input: ActionInput; key: string; preparationToken?:number; documentPreparation?:boolean } | null>(null), [actionError, setActionError] = useState('');
+  const [actionRecovery,setActionRecovery]=useState<PreparedAction|null>(null),[actionError,setActionError]=useState('');
+  const [actionPostingReceipt,setActionPostingReceipt]=useState('');
+  const [actionRecoveryNotice,setActionRecoveryNotice]=useState(''),[actionRecoveryPersistent,setActionRecoveryPersistent]=useState(true);
+  const actionRecoveryRef=useRef<PreparedAction|null>(null);
   const documentPreparationKey=id+'-document-preparation';
   const [documentPreparationNotice,setDocumentPreparationNotice]=useState('');
   const [documentReviewRequested,setDocumentReviewRequested]=useState(false);
@@ -78,7 +113,7 @@ export function Workspace({ id, active, assistantEntryNonce, assistantEntryTask 
   const currentView=useRef({active,phase});currentView.current={active,phase};
   const detailRef=useRef<HTMLDetailsElement|null>(null);
   const connectedRef=useRef<HTMLDivElement|null>(null);
-  function showMain(){analysisNavigation.current=null;const wasOpen=detailRef.current?.open;if(detailRef.current)detailRef.current.open=false;if(wasOpen)requestAnimationFrame(()=>connectedRef.current?.scrollIntoView({block:'nearest'}));}
+  function showMain(){actionIntent.current++;analysisNavigation.current=null;setPrdGenerationPreview(null);const wasOpen=detailRef.current?.open;if(detailRef.current)detailRef.current.open=false;if(wasOpen)requestAnimationFrame(()=>connectedRef.current?.scrollIntoView({block:'nearest'}));}
   useEffect(() => {
     if (assistantEntryNonce === undefined) return;
     // Invalidate only a former navigation intent; submitted tasks keep their
@@ -88,7 +123,7 @@ export function Workspace({ id, active, assistantEntryNonce, assistantEntryTask 
     documentPreparationNavigation.current=null;
     setDocumentReviewRequested(false);
     showMain();setChapter(null);setHelp(null);setSourcesOpen(false);setHistoryOpen(false);
-    setCandidateOpen(false);setAcceptanceOpen(false);setRenameOpen(false);setPending(null);
+    setCandidateOpen(false);setAcceptanceOpen(false);setRenameOpen(false);
     setDocumentQuestion(undefined);setBlockerTask(null);setError('');
     if (!assistantEntryTask) setTaskContinuation(undefined);
     setConnectedDestination(previous=>({step:'information',nonce:(previous?.nonce||0)+1}));
@@ -96,12 +131,27 @@ export function Workspace({ id, active, assistantEntryNonce, assistantEntryTask 
   function openMain(next:Omit<ConnectedDestination,'nonce'>){guard(()=>{showMain();setConnectedDestination(previous=>({...next,nonce:(previous?.nonce||0)+1}));});}
   function openDetails(n:number,documentKind?:string,afterOpen?:()=>void){go(n,()=>{if(documentKind){setDocType(documentKind);setSelectedDocId('');setDocumentQuestion(undefined);}setConnectedDestination(previous=>({step:'delivery',nonce:(previous?.nonce||0)+1}));if(detailRef.current)detailRef.current.open=true;requestAnimationFrame(()=>{detailRef.current?.scrollIntoView({block:'start'});afterOpen?.();});});}
   function revealDocument(kind:string){requestAnimationFrame(()=>globalThis.document.getElementById('document-reading-'+id+'-'+kind)?.scrollIntoView({block:'start'}));}
-  function go(n:number,afterGo?:()=>void){if(n<3){openMain({step:n===0?'information':'refine',review:n>0});return;}if(n===3)n=4;guard(()=>{analysisNavigation.current=null;if(n!==phase){setFocusQuestionId('');setFocusAnswerId('');setFocusRequirementId('');setBlockerTask(null);setBlockerFocus(undefined);if(n>phase)scrollPositions.current[n]=0;}setPhase(n);session.setItem('ra-phase-'+id,String(n));afterGo?.();});}
+  function go(n:number,afterGo?:()=>void){actionIntent.current++;if(n<3){openMain({step:n===0?'information':'refine',review:n>0});return;}if(n===3)n=4;guard(()=>{analysisNavigation.current=null;if(n!==phase){setFocusQuestionId('');setFocusAnswerId('');setFocusRequirementId('');setBlockerTask(null);setBlockerFocus(undefined);if(n>phase)scrollPositions.current[n]=0;}setPhase(n);session.setItem('ra-phase-'+id,String(n));afterGo?.();});}
   function enterDirect(text?:string){go(1,()=>setDirectEntryDraft(current=>({text:text??session.getItem('ra-chat-draft-'+id)??'',nonce:(current?.nonce||0)+1})));}
   // Locked editors stay mounted. Return to the prerequisite without requiring a
   // hidden, possibly conflicted draft to be saved or discarded first.
   function returnToPrerequisite(n:number){if(n<3){openMain({step:n===0?'information':'refine',review:n>0});return;}go(n);}
   const busyRef=useRef(false);
+  const actionIntent=useRef(0);
+  const actionFlight=useRef<Promise<void>|null>(null);
+  const actionReceiptId=(prepared:PreparedAction)=>JSON.stringify([prepared.projectId,prepared.key]);
+  const actionReceiptSettlements=useRef(new Set<string>());
+  const actionPostControllers=useRef(new Map<string,AbortController>());
+  function settleActionReceipt(prepared:PreparedAction){const receipt=actionReceiptId(prepared);if(actionReceiptSettlements.current.has(receipt))return false;actionReceiptSettlements.current.add(receipt);return true;}
+  useEffect(()=>{
+    actionIntent.current++;
+    analysisNavigation.current=null;prewriteNavigation.current=null;documentPreparationNavigation.current=null;
+    const restored=readActionRecovery(id);
+    setPrdGenerationPreview(null);
+    setActionRecoveryPersistent(restored.prepared?session.isPersistent(actionRecoveryStorageKey(id)):true);
+    actionRecoveryRef.current=restored.prepared;setActionRecovery(restored.prepared);
+    setActionRecoveryNotice('');setActionError(restored.damaged?'恢复信息无法识别，已忽略且没有提交 AI；请回到原对象重新核对后发起。':'');setActionStale(false);
+  },[id]);
   const mainScroll = useRef<HTMLDivElement | null>(null), scrollPositions = useRef<Record<number, number>>({});
   function formalScrollStart() {
     const container=mainScroll.current, details=detailRef.current;
@@ -145,8 +195,8 @@ export function Workspace({ id, active, assistantEntryNonce, assistantEntryTask 
       openMain({step:'refine',review:true});
     }).catch(e=>{intent.resolving=false;onRefreshFail(e);});
   },[tasks,active,busy]);
-  useEffect(()=>{if(!active)preparationController.current?.cancel();},[active]);
-  useEffect(()=>()=>{preparationController.current?.cancel();},[]);
+  useEffect(()=>{if(!active){actionIntent.current++;preparationController.current?.cancel();}},[active]);
+  useEffect(()=>()=>{actionIntent.current++;preparationController.current?.cancel();},[]);
   useEffect(()=>{preparationController.current?.observe(tasks);},[tasks]);
   useEffect(()=>{
     const intent=prewriteNavigation.current,task=tasks.find(value=>value.id===intent?.taskId);
@@ -219,28 +269,81 @@ export function Workspace({ id, active, assistantEntryNonce, assistantEntryTask 
       await refresh().catch(e=>{onRefreshFail(e);activityNotice('修改已保存，但最新页面尚未取得。请重试刷新，不要重复提交。',true);});return result;}
     catch(e){if(e instanceof ApiError&&e.status===409&&e.code==='STALE_REVISION'){await refresh().catch(onRefreshFail);const latest=proof&&projectRef.current&&editValue(projectRef.current,proof);if(proof&&latest!==undefined)throw new DraftConflictError(proof.before,latest,proof.mine);}throw e;}finally{finish();}
   }
-  async function planAction(action: BusinessAction, optionId?: string, target?: Obj, text = '', retryInput?: Partial<ActionInput>) {
-    const current=projectRef.current;
-    if (!current) return;
-    if (actionBlockReason) throw Error(actionBlockReason);
-    let preparingDocument=false;
-    if(action==='document'){
-      const reviewDraft=retryInput?.allow_review_draft===true&&prewriteCanDraft(current.prewrite_review);
-      if(session.getItem(documentPreparationKey)&&!reviewDraft){
-        setDocumentPreparationNotice('AI 补全草稿尚待确认。请先核对并点击“确认并进入交付”，再生成文档。');
-        setDocumentReviewRequested(true);return;
-      }
-      const state=await api<{revision:number;rows:Obj[]}>(root+'/requirement-confirmation/state');
-      if(state.revision!==current.revision||projectRef.current?.revision!==current.revision)throw Error('内容正在更新，请稍后重新生成文档。');
-      const preparation=documentPreparation(current,state.rows,reviewDraft);
-      if(preparation.issues.length){
-        action='organize';text=preparation.instruction;retryInput={draft_request:{mode:'required'}};preparingDocument=true;
-      }
+  function saveActionRecovery(prepared:PreparedAction){
+    const persistent=session.setItem(actionRecoveryStorageKey(prepared.projectId),JSON.stringify(prepared));
+    setActionRecoveryPersistent(persistent);
+    if(projectRef.current?.id!==prepared.projectId)return;
+    actionRecoveryRef.current=prepared;setActionRecovery(prepared);
+  }
+  function clearActionRecovery(prepared:PreparedAction){
+    const storageKey=actionRecoveryStorageKey(prepared.projectId),raw=session.getItem(storageKey);
+    if(raw){
+      try{
+        const stored=JSON.parse(raw) as PreparedAction;
+        if(stored?.projectId===prepared.projectId&&stored.key===prepared.key)session.removeItem(storageKey);
+      }catch{/* Only an exact stored key may be removed. */}
     }
-    const input: ActionInput = { action, message: text, document_type: docType, option_id: optionId || null, max_calls: null, ...(target?{target:{kind:target.kind,id:target.id,...(target.section_id?{section_id:target.section_id}:{})}}:{}),...retryInput,expected_revision:current.revision };
-    const plan = await api<ActionPlan>(root + '/actions/plan', 'POST', input);
-    if(preparingDocument){plan.label='生成文档前，AI 自动补全必填草稿';plan.context_scope+=' 补全后返回确认表，人工核对确认后再生成文档。';}
-    setActionError(''); setActionStale(false); setPending({ input, plan, key: crypto.randomUUID(),documentPreparation:preparingDocument });
+    const current=actionRecoveryRef.current;
+    if(current?.projectId===prepared.projectId&&current.key===prepared.key){actionRecoveryRef.current=null;setActionRecovery(null);}
+  }
+  async function planAction(action: BusinessAction, optionId?: string, target?: Obj, text = '', retryInput?: Partial<ActionInput>) {
+    if(actionRecoveryRef.current)throw Error('上一次 AI 提交结果尚未确认。请刷新任务状态，或点击“继续同一次提交”；不要另建任务。');
+    if(actionFlight.current)return;
+    const current=projectRef.current,selectedDocumentType=docType;
+    if(!current||!currentView.current.active)return;
+    if (actionBlockReason) throw Error(actionBlockReason);
+    const intent=++actionIntent.current;
+    setActionError('');setActionStale(false);setActionRecoveryNotice('');
+    const operation=(async()=>{
+      let preparingDocument=false;
+      if(action==='document'){
+        const reviewDraft=retryInput?.allow_review_draft===true&&prewriteCanDraft(current.prewrite_review);
+        if(session.getItem(documentPreparationKey)&&!reviewDraft){
+          setDocumentPreparationNotice('AI 补全草稿尚待确认。请先核对并点击“确认并进入交付”，再生成文档。');
+          setDocumentReviewRequested(true);return;
+        }
+        const state=await api<{revision:number;rows:Obj[]}>(root+'/requirement-confirmation/state');
+        if(intent!==actionIntent.current||!currentView.current.active)return;
+        if(state.revision!==current.revision||projectRef.current?.revision!==current.revision)throw Error('内容正在更新，本次任务尚未发送。请稍后重新生成文档。');
+        const preparation=documentPreparation(current,state.rows,reviewDraft);
+        if(preparation.issues.length){
+          action='organize';text=preparation.instruction;retryInput={draft_request:{mode:'required'}};preparingDocument=true;
+        }
+      }
+      const input:ActionInput={action,message:text,document_type:selectedDocumentType,option_id:optionId||null,max_calls:null,...(target?{target:{kind:target.kind,id:target.id,...(target.section_id?{section_id:target.section_id}:{}),...(target.kind==='item'&&target.detail_required===true?{detail_required:true}:{})}}:{}),...retryInput,expected_revision:current.revision};
+      const plan=await api<ActionPlan>(root+'/actions/plan','POST',input);
+      if(intent!==actionIntent.current||!currentView.current.active)return;
+      if(plan.missing.length)throw Error(plan.missing.join('；'));
+      if(plan.expected_revision!==input.expected_revision)throw Error('任务底稿版本不一致，本次任务尚未发送。请刷新后重新点击原操作。');
+      if(projectRef.current?.id!==current.id||projectRef.current.revision!==current.revision)throw Error('项目内容已更新，本次任务尚未发送。请核对最新内容后重新点击原操作。');
+      if(preparingDocument){plan.label='生成文档前，AI 自动补全必填草稿';plan.context_scope+=' 补全后返回确认表，人工核对确认后再生成文档。';}
+      const analysisNavigation=input.action==='organize'&&!input.target&&!input.draft_request&&connectedRef.current?.dataset.step!=='refine'&&
+        (currentView.current.phase===0||!detailRef.current?.open)?{connected:!detailRef.current?.open}:undefined;
+      const prepared:PreparedAction={projectId:current.id,input,plan,key:crypto.randomUUID(),documentPreparation:preparingDocument,analysisNavigation,
+        ingestCount:current.messages.filter(m=>m.role==='assistant'&&m.stage==='ingest').length,
+        itemCount:current.items.length,questionCount:current.questions.length};
+      if(input.action==='document'&&input.document_type==='prd'&&plan.document_preview){
+        setPrdGenerationPreview(prepared);return;
+      }
+      await submitAction(prepared,intent);
+    })();
+    actionFlight.current=operation;
+    try{await operation;}finally{if(actionFlight.current===operation)actionFlight.current=null;}
+  }
+  async function confirmPrdGeneration(){
+    const prepared=prdGenerationPreview;
+    if(!prepared||actionFlight.current)return;
+    if(prepared.projectId!==id)throw Error('原项目已切换，未提交 PRD 生成。');
+    if(actionBlockReason)throw Error(actionBlockReason);
+    if(projectRef.current?.revision!==prepared.input.expected_revision)throw Error('项目内容已更新，本次任务尚未发送。请关闭预览，核对最新内容后重新点击原操作。');
+    const intent=++actionIntent.current;
+    setPrdGenerationPreview(null);
+    const operation=(async()=>{
+      if(intent!==actionIntent.current||!currentView.current.active)return;
+      await submitAction(prepared,intent);
+    })();
+    actionFlight.current=operation;
+    try{await operation;}finally{if(actionFlight.current===operation)actionFlight.current=null;}
   }
   async function benchmarkOperation<T>(operation:()=>Promise<T>):Promise<T>{
     if(busyRef.current||running)throw Error('当前操作正在执行，请等待后再对标。');
@@ -254,40 +357,75 @@ export function Workspace({ id, active, assistantEntryNonce, assistantEntryTask 
     await planAction('organize',undefined,undefined,message,{benchmark});
   });
   function referenceSources(referenceUrl?:string){setFocusRefs([]);if(referenceUrl){if(sourceText.trim()){setManualPagePendingUrl(referenceUrl);setManualPageNotice(`已有未保存的文字草稿，已保留。保存该草稿后会预填 ${referenceUrl} 的来源信息。`);}else{setPurpose('reference');setManualPagePendingUrl('');setManualPageUrl(referenceUrl);setManualPageTitle('页面标题待核对');setManualPageActive(true);setManualPageNotice('已预填来源网址和待核对标题；请粘贴你实际看到的网页正文。');}}else if(!sourceText.trim())setPurpose('reference');setSourcesOpen(true);setTimeout(()=>focusBlockerElement(referenceUrl?'source-paste-'+id:'source-file-add-'+id),80);}
-  async function startAction() {
-    if (!pending||busyRef.current) return;
-    if (actionBlockReason) { setActionError(actionBlockReason); return; }
-    if(pending.preparationToken!==undefined){await preparationController.current?.authorize(pending.preparationToken);return;}
-    busyRef.current=true;setBusy(true); setActionError('');
-    const snapshot=projectRef.current;
-    const ingestCount=snapshot?.messages.filter(m=>m.role==='assistant'&&m.stage==='ingest').length||0;
-    try { const task=await api<UserTask>(root + '/actions', 'POST', { ...pending.input, plan_hash: pending.plan.plan_hash, idempotency_key: pending.key, authorize: pending.plan.recipients.some(r => r.needs_authorization) });
-      if(pending.documentPreparation){session.setItem(documentPreparationKey,task.id);documentPreparationNavigation.current={taskId:task.id};setDocumentPreparationNotice('正在为生成文档补全必填草稿，完成后请核对确认。');}
-      if(active&&pending.input.action==='organize'&&!pending.input.target&&!pending.input.draft_request&&connectedRef.current?.dataset.step!=='refine'&&(phase===0||!detailRef.current?.open))analysisNavigation.current={taskId:task.id,ingestCount,itemCount:snapshot?.items.length||0,questionCount:snapshot?.questions.length||0,connected:!detailRef.current?.open};
-      if(pending.input.benchmark)setBenchmarkSubmission({taskId:task.id,message:pending.input.message});
-      if(pending.input.action==='interview'&&task.retry_input?.action==='interview'&&task.retry_input.message===pending.input.message&&
-        JSON.stringify((task.retry_input.attachment_source_ids||[]).slice().sort())===JSON.stringify((pending.input.attachment_source_ids||[]).slice().sort())){
-        setInterviewSubmission({taskId:task.id,message:task.retry_input.message,attachmentSourceIds:task.retry_input.attachment_source_ids||[]});
+  function recordSubmittedTask(prepared:PreparedAction,task:UserTask):boolean{
+    if(projectRef.current?.id!==prepared.projectId)return false;
+    const submitted={...task,retry_input:task.retry_input||prepared.input};
+    setTasks(current=>[...current.filter(t=>t.id!==task.id),submitted]);recordProgressSubmission(submitted);setTasksLoaded(true);
+    return true;
+  }
+  function restoreSubmittedAction(prepared:PreparedAction,task:UserTask){
+    const {input}=prepared;
+    if(prepared.documentPreparation){session.setItem(prepared.projectId+'-document-preparation',task.id);documentPreparationNavigation.current={taskId:task.id};setDocumentPreparationNotice('正在为生成文档补全必填草稿，完成后请核对确认。');}
+    if(prepared.analysisNavigation)analysisNavigation.current={taskId:task.id,ingestCount:prepared.ingestCount,itemCount:prepared.itemCount,questionCount:prepared.questionCount,connected:prepared.analysisNavigation.connected};
+    if(input.benchmark)setBenchmarkSubmission({taskId:task.id,message:input.message});
+    if(input.action==='interview'&&task.retry_input?.action==='interview'&&task.retry_input.message===input.message&&
+      JSON.stringify((task.retry_input.attachment_source_ids||[]).slice().sort())===JSON.stringify((input.attachment_source_ids||[]).slice().sort())){
+      setInterviewSubmission({taskId:task.id,message:task.retry_input.message,attachmentSourceIds:task.retry_input.attachment_source_ids||[]});
+    }
+    if(input.action==='prewrite'||input.action==='document'&&input.document_type==='prd')prewriteNavigation.current={taskId:task.id};
+    if(input.target?.kind==='document')setChapterSubmission({id:task.id,documentId:input.target.id,sectionId:input.target.section_id,message:input.message});
+    if(input.target&&input.target.kind!=='document'){setHelpText('');setHelp(null);}
+  }
+  useEffect(()=>{
+    const prepared=actionRecovery;
+    if(!prepared||prepared.projectId!==id||!tasksLoaded)return;
+    const task=tasks.find(value=>value.idempotency_key===prepared.key);
+    if(!task)return;
+    if(!settleActionReceipt(prepared))return;
+    actionPostControllers.current.get(actionReceiptId(prepared))?.abort();
+    clearActionRecovery(prepared);setActionError('');setActionStale(false);setActionRecoveryNotice('已找到原任务，继续查看。');
+    recordSubmittedTask(prepared,task);setTaskContinuation({id:task.id,retry:false});
+  },[id,tasks,tasksLoaded,actionRecovery]);
+  async function submitAction(prepared:PreparedAction,intent:number) {
+    const {input,plan,key}=prepared,receipt=actionReceiptId(prepared);
+    if(actionReceiptSettlements.current.has(receipt))return;
+    setActionError('');setActionStale(false);setActionRecoveryNotice('');
+    const controller=new AbortController();
+    actionPostControllers.current.set(receipt,controller);
+    setActionPostingReceipt(receipt);
+    saveActionRecovery(prepared);
+    try { const task=await api<UserTask>(root+'/actions','POST',{...input,plan_hash:plan.plan_hash,idempotency_key:key,authorize:true},controller.signal);
+      if(!settleActionReceipt(prepared))return;
+      clearActionRecovery(prepared);
+      const recorded=recordSubmittedTask(prepared,task);
+      if(recorded&&currentView.current.active&&intent===actionIntent.current)restoreSubmittedAction(prepared,task);
+      if(recorded)await refresh().catch(e=>{onRefreshFail(e);activityNotice('任务已提交，最新进度暂未取得；请刷新查看，不要重复发起。',true);}); }
+    catch(e) {
+      if(actionReceiptSettlements.current.has(receipt))return;
+      const uncertain=actionSubmissionUncertain(e);
+      if(uncertain)saveActionRecovery(prepared);else clearActionRecovery(prepared);
+      if(projectRef.current?.id===prepared.projectId){
+        setActionError((e as Error).message+(uncertain?' 本次提交结果尚未确认；可刷新任务状态，或显式继续同一次提交。继续会复用原输入、计划和幂等键，不会另建任务。':''));
+        setActionStale(!uncertain&&e instanceof ApiError&&e.status===409&&['STALE_REVISION','STALE_PLAN'].includes(e.code));
       }
-      const submitted={...task,retry_input:task.retry_input||pending.input};
-      if(pending.input.action==='prewrite'||pending.input.action==='document'&&pending.input.document_type==='prd')prewriteNavigation.current={taskId:task.id};
-      setTasks(current=>[...current.filter(t=>t.id!==task.id),submitted]);recordProgressSubmission(submitted);setTasksLoaded(true);setPending(null);
-      if(pending.input.target?.kind==='document')setChapterSubmission({id:task.id,documentId:pending.input.target.id,sectionId:pending.input.target.section_id,message:pending.input.message});
-      if(pending.input.target&&pending.input.target.kind!=='document'){setHelpText('');setHelp(null);}
-      await refresh().catch(e=>{onRefreshFail(e);activityNotice('任务已提交，最新进度暂未取得；请刷新查看，不要重复发起。',true);}); }
-    catch(e) { setActionError((e as Error).message); setActionStale(e instanceof ApiError && e.status===409 && ['STALE_REVISION','STALE_PLAN'].includes(e.code)); } finally { busyRef.current=false;setBusy(false); }
+    }finally{
+      if(actionPostControllers.current.get(receipt)===controller)actionPostControllers.current.delete(receipt);
+      setActionPostingReceipt(current=>current===receipt?'':current);
+    }
   }
-  async function replanAction() {
-    if(!pending||busyRef.current)return;
-    if(pending.preparationToken!==undefined){await preparationController.current?.replan();return;}
-    const old=pending;
-    busyRef.current=true;setBusy(true);setActionError('');
-    try{await refresh();if(old.documentPreparation)await planAction('document',undefined,undefined,'',{document_type:old.input.document_type});
-      else await planAction(old.input.action,old.input.option_id||undefined,old.input.target,old.input.message,old.input);}
-    catch(e){setActionError((e as Error).message);}
-    finally{busyRef.current=false;setBusy(false);}
+  async function continueActionSubmission(){
+    const prepared=actionRecoveryRef.current;
+    if(!prepared||actionFlight.current)return;
+    if(prepared.projectId!==id)throw Error('原项目已切换，未继续提交。');
+    if(actionBlockReason)throw Error(actionBlockReason);
+    const intent=++actionIntent.current;
+    const operation=(async()=>{
+      if(intent!==actionIntent.current||!currentView.current.active)return;
+      await submitAction(prepared,intent);
+    })();
+    actionFlight.current=operation;
+    try{await operation;}finally{if(actionFlight.current===operation)actionFlight.current=null;}
   }
-  function closeAction(){if(pending?.preparationToken!==undefined)preparationController.current?.cancel();setPending(null);if(actionStale)void act(refresh);}
   function openReviewFindings(documentKind?:string){openDetails(4,documentKind|| (projectRef.current?.documents.prd?'prd':'mrd'),()=>setReviewFocusNonce(n=>n+1));}
   async function ensureIntakeSaved(){const current=projectRef.current;if(current&&!current.product_flow?.[0]?.complete){const intake=(current as Obj).intake||{};await mutate('/intake',{text:intake.text||'',platform:intake.platform||'',preserved:intake.preserved||''});}}
   async function organizeIntake(){const current=projectRef.current;if(current?.sources.some(s=>!s.excluded&&s.excerpts?.length))await ensureIntakeSaved();await planAction('organize');}
@@ -307,6 +445,7 @@ export function Workspace({ id, active, assistantEntryNonce, assistantEntryTask 
   // Document follow-ups retain their reading context; only unrelated work uses
   // the full requirement sheet. The question still needs explicit review.
   function focusDocumentQuestion(kind:string,questionId:string){
+    actionIntent.current++;
     analysisNavigation.current=null;setSelectedDocId('');setDocType(kind);setPhase(4);session.setItem('ra-phase-'+id,'4');
     setConnectedDestination(previous=>({step:'delivery',nonce:(previous?.nonce||0)+1}));
     if(detailRef.current)detailRef.current.open=true;
@@ -378,7 +517,7 @@ export function Workspace({ id, active, assistantEntryNonce, assistantEntryTask 
   });}
   function stageAction(s: string) { const action: Record<string, BusinessAction> = { ingest: 'organize', vision: 'organize', brainstorm: 'explore', clarify: 'clarify', ui: 'prototype', prd: 'document', review: 'review', change: 'change' }; act(() => planAction(action[s] || 'organize')); }
   function recordProgressSubmission(task:UserTask){progress.publish({projectId:id,projectName:projectRef.current?.name||id,tasks:[task],busy:false,uncertain:false},task.id);}
-  function retryUserTask(task?:UserTask){const input=task?.retry_input;if(!input?.action||typeof input.message!=='string'||typeof input.document_type!=='string'||(['clarify','change'].includes(input.action)&&Boolean(input.message)&&!input.target)){activityNotice('无法恢复原任务对象和输入；请回到原对象重新填写后发起。',true);return;}void act(()=>planAction(input.action!,undefined,undefined,'',input));}
+  function retryUserTask(task?:UserTask){const input=task?.retry_input;if(!input?.action||typeof input.message!=='string'||typeof input.document_type!=='string'||(['clarify','change'].includes(input.action)&&Boolean(input.message)&&!input.target)){activityNotice('无法恢复原任务对象和输入；请回到原对象重新填写后发起。',true);return;}const retryInput=task&&task.action==='organize'&&task.intake_resume_available===true&&input.action==='organize'?{...input,intake_resume_task_id:task.id}:input;void act(()=>planAction(input.action!,undefined,undefined,'',retryInput));}
   function recoverTask(task:UserTask){guard(()=>{let restored=false;void act(async()=>{
     if(actionBlockReason||running)throw Error(actionBlockReason||'当前项目仍有任务运行，请稍后恢复。');
     await api(root+'/actions/'+task.id+'/recover-draft','POST',{expected_revision:projectRef.current?.revision});
@@ -416,6 +555,7 @@ export function Workspace({ id, active, assistantEntryNonce, assistantEntryTask 
     onOpen(()=>{afterOpen();if(entering)setTaskContinuation({id:task.id,retry});else if(retry)retryUserTask(task);else viewTaskResult(task);});
   }};
   const actionBlockReason = fatal ? '最新项目内容读取失败，请重试刷新后再发起任务。' : !tasksLoaded ? '正在读取任务状态，请稍候。' : compat.status === 'incompatible' ? '后端缺少必需接口能力（' + compat.missing.join('、') + '），发起动作已暂停；请重启服务并重新加载本标签页' : stale.includes('任务列表') ? (tasksLoaded ? '任务状态读取失败，当前状态待刷新；页面显示的是此前取得的任务记录，发起动作已暂停，请重试刷新' : '任务状态尚未取得，发起动作已暂停；请先重试刷新') : '';
+  const actionRecoveryPending=Boolean(actionRecovery&&actionPostingReceipt===actionReceiptId(actionRecovery));
   preparationDependencies.current={
     active:()=>currentView.current.active,blocked:()=>actionBlockReason,
     status:()=>api<PreparationStatus>(root+'/refinement-preparation'),tasks:()=>api<UserTask[]>(root+'/actions'),
@@ -425,7 +565,7 @@ export function Workspace({ id, active, assistantEntryNonce, assistantEntryTask 
       }finally{busyRef.current=false;setBusy(false);}},
     refresh,record:task=>{setTasks(current=>[...current.filter(t=>t.id!==task.id),task]);recordProgressSubmission(task);setTasksLoaded(true);},
     navigate:consumeIntent=>{guard(()=>{if(!consumeIntent())return;showMain();setConnectedDestination(previous=>({step:'refine',review:true,nonce:(previous?.nonce||0)+1}));});},state:setPreparation,
-    authorization:request=>{setActionError('');setActionStale(false);if(request)setPending(request);else setPending(current=>current?.preparationToken!==undefined?null:current);},
+
     error:(message,isStale)=>{setActionError(message);setActionStale(isStale);},key:()=>crypto.randomUUID(),
     receipt:()=>{try{const raw=session.getItem('ra-refinement-submission-'+id);if(!raw)return null;const value=JSON.parse(raw) as PreparationSubmission;
       return value.input?.action==='organize'&&typeof value.key==='string'&&typeof value.plan?.plan_hash==='string'?value:null;}catch{return null;}},
@@ -445,6 +585,8 @@ export function Workspace({ id, active, assistantEntryNonce, assistantEntryTask 
   }
   const direction = p.options.find(o => o.direction_status === 'selected');
   const phaseAccess=stageAccess(p,phase);
+  const documentReadOnly=!stageAccess(p,4).allowed;
+  const hasReadableDocument=Boolean(p.documents.mrd||p.documents.prd||(artifacts.document_artifact||[]).some((entry:Obj)=>entry.content?.document_type==='mrd'||entry.content?.document_type==='prd'));
   const phaseActions=[['interview','organize'],['organize','explore'],['clarify','change'],['prototype','change'],['document','review'],['review']][phase];
   const latest=tasks.filter(t=>phaseActions.includes(t.action)||Boolean(t.retry_input?.target)&&(phase===1&&t.retry_input?.target?.kind==='item'||phase===2&&t.retry_input?.target?.kind==='question'||phase===4&&t.retry_input?.target?.kind==='document')).slice(-1)[0];
   const localTask=Boolean(latest?.retry_input?.target);
@@ -469,6 +611,8 @@ export function Workspace({ id, active, assistantEntryNonce, assistantEntryTask 
     {staleNotice && <div className="error banner" role="alert">最新状态尚未取得：{staleNotice}<button onClick={retry}>重试</button><button onClick={() => setStaleNotice('')}>关闭</button></div>}
     {!staleNotice && stale.length > 0 && <div className="notice banner" role="status">部分状态未能更新（{stale.join('、')}）；页面显示的是已取得的最近内容。<button onClick={retry}>重试</button></div>}
     {error && <div className="error banner" role="alert">{error}<button onClick={() => act(refresh)}>刷新内容并保留输入</button><button onClick={() => setError('')}>关闭</button></div>}
+    {(actionError||actionRecovery&&!actionRecoveryPending)&&<div className={actionError?'error banner':'notice banner'} role={actionError?'alert':'status'}><span>{actionError||'上一次 AI 提交结果尚未确认；未找到原任务不代表未提交。请刷新任务状态，或显式继续同一次提交。'}{actionRecovery&&!actionRecoveryPending&&!actionRecoveryPersistent&&<b> 恢复信息仅暂存于本页，请勿刷新或关闭。</b>}</span>{actionRecovery&&!actionRecoveryPending&&<><button disabled={busy} onClick={()=>act(continueActionSubmission)}>继续同一次提交</button><button disabled={busy} onClick={retry}>刷新任务状态</button></>}{actionStale&&<span> 内容或配置已变化，输入仍保留。请刷新核对后重新点击原操作，不会自动重新发送。</span>}</div>}
+    {actionRecoveryNotice&&<div className="notice banner" role="status">{actionRecoveryNotice}</div>}
     {taskContinuation&&<div className="notice banner" role="status">已保留所选任务，请从需求助手继续处理。<button disabled={busy||!!actionBlockReason} onClick={continueSelectedTask}>{taskContinuation.retry?'核对并重试所选任务':'继续查看所选任务'}</button></div>}
     {documentPreparationNotice&&<div className="notice banner" role="status">{documentPreparationNotice}</div>}
     <ConnectedWorkspace assistantEntryNonce={assistantEntryNonce} deliveryBlockers={p.confirmation_blockers?.map(localDiscussionBlocker)} workspaceRef={connectedRef} active={active} id={id} project={p} tasks={tasks} busy={busy} running={running} actionBlockReason={actionBlockReason} mutate={mutate}
@@ -478,40 +622,40 @@ export function Workspace({ id, active, assistantEntryNonce, assistantEntryTask 
       onCancelPreparation={()=>preparationController.current?.cancel()}
       onOrganize={(instruction,draftRequest)=>act(()=>planAction('organize',undefined,undefined,instruction||'',draftRequest?{draft_request:draftRequest}:undefined))}
       onClarify={questionId=>act(()=>planAction('clarify',undefined,questionId?{kind:'question',id:questionId}:undefined))}
-      onRecommendRequirement={(requirementId,instruction)=>act(()=>planAction('clarify',undefined,{kind:'item',id:requirementId},instruction))}
+      onRecommendRequirement={(requirementId,instruction,requestDetails)=>act(()=>planAction('clarify',undefined,{kind:'item',id:requirementId,...(requestDetails?{detail_required:true}:{})},instruction))}
       onSources={refs=>{setFocusRefs(refs||[]);setSourcesOpen(true);}}
-      chatPanel={(beforeSend,onDirect,onViewDraft,onPrepareDraft)=><IntakeChat p={p} model={models.model||{}} busy={busy||running||['checking','running','authorization'].includes(preparation.state)} blocked={actionBlockReason} tasks={tasks} status={null}
+      chatPanel={(beforeSend,onDirect,onViewDraft,onPrepareDraft)=><IntakeChat p={p} model={models.model||{}} busy={busy||running||['checking','running'].includes(preparation.state)} blocked={actionBlockReason} tasks={tasks} runs={runs} status={null}
         beforeSend={async()=>{await beforeSend();return projectRef.current||p;}}
         onRefreshProject={async()=>{await refresh();return projectRef.current||p;}}
         onPrepareInterview={async(message,currentProject,attachmentSourceIds)=>{if(projectRef.current?.revision!==currentProject.revision)throw Error('项目内容已更新，请刷新后重新核对本次对话范围。');await planAction('interview',undefined,undefined,message,{attachment_source_ids:attachmentSourceIds});}}
         onRefresh={retry} onStarted={async task=>{setTasks(current=>[...current.filter(t=>t.id!==task.id),task]);recordProgressSubmission(task);await refresh().catch(onRefreshFail);}}
-        onSources={()=>setSourcesOpen(true)} onOrganize={()=>{void beforeSend().then(()=>act(()=>planAction('organize'))).catch(e=>setError((e as Error).message));}}
+        onSources={()=>setSourcesOpen(true)} onSourceRefs={refs=>{setFocusRefs(refs);setSourcesOpen(true);}} onOrganize={()=>{void beforeSend().then(()=>act(()=>planAction('organize'))).catch(e=>setError((e as Error).message));}}
         onDirectSave={saveDirectInput} onDirectEntry={onDirect} go={n=>{if(n===1)onViewDraft();}}
-        onContinue={onPrepareDraft} continuing={['checking','running','authorization'].includes(preparation.state)}
+        onContinue={onPrepareDraft} continuing={['checking','running'].includes(preparation.state)}
         onReferenceSources={referenceSources} onReferenceImport={importBenchmark} onBenchmark={prepareBenchmark} benchmarkSubmission={benchmarkSubmission} interviewSubmission={interviewSubmission}/>}
       onCreateRequirement={()=>setCandidateOpen(true)} onCreateAcceptance={requirementId=>{setAcceptanceRequirement(requirementId||'');setAcceptanceOpen(true);}}
       onDelivery={()=>openDetails(5)} onDocuments={()=>openDetails(4,docType,()=>revealDocument(docType))} onRefresh={retry}
       onPrewrite={()=>act(()=>planAction('prewrite',undefined,undefined,'',{document_type:'prd'}))}
-      onGeneratePrd={allowReviewDraft=>{openDetails(4,'prd');if(allowReviewDraft){void act(async()=>{await mutate('/documents/prd/local-review',{expected_revision:p.revision,idempotency_key:crypto.randomUUID(),review_draft_confirmed:true});revealDocument('prd');});return;}void act(()=>planAction('document',undefined,undefined,'',{document_type:'prd',allow_review_draft:false}));}}
+      onGeneratePrd={allowReviewDraft=>{if(allowReviewDraft){void act(async()=>{const preview=await api<DocumentPreview>(root+'/documents/prd/local-preview','POST',{expected_revision:p.revision});setLocalPrdPreview(preview);});return;}openDetails(4,'prd');void act(()=>planAction('document',undefined,undefined,'',{document_type:'prd',allow_review_draft:false}));}}
       onResolveBlocker={(action,row)=>resolveBlocker(action,row,5)}
       taskPanel={task=><TaskStatus task={task} busy={busy} uncertain={Boolean(fatal)||stale.includes('任务列表')} onRefresh={retry}
         onCancel={()=>act(async()=>{await api(root+'/actions/'+task.id+'/cancel','POST');await refresh();})} onRetry={()=>retryUserTask(task)}
         onRecover={canRecoverDraft(task)?()=>recoverTask(task):undefined} onViewResult={()=>viewTaskResult(task)}/>}/>
     <details ref={detailRef} className="connected-details"><summary>正式文档与确认（按需展开）</summary>
-    <div className="connected-detail-return"><p>在这里阅读文档并处理章节讨论。已有需求确认会保留；需要调整整体范围时可返回完善需求。</p><button type="button" onClick={()=>openMain({step:'refine'})}>修改整体需求</button></div>
+    <div className="connected-detail-return"><p>在这里阅读文档并处理章节讨论。已有需求确认会保留；需要调整整体范围时可返回核对草稿与规则。</p><button type="button" onClick={()=>openMain({step:'refine'})}>修改整体需求</button></div>
     <nav className="connected-formal-nav" aria-label="正式文档与确认"><button type="button" aria-current={phase===4?'page':undefined} onClick={()=>go(4)}>正式文档</button><button type="button" aria-current={phase===5?'page':undefined} onClick={()=>go(5)}>正式确认</button></nav>
     <div className="workflow-grid">
       <section className="workflow-main">
-        <div className="workflow-page" data-phase={phase}><div className="workflow-heading"><div className="task-icon" aria-hidden="true"><Icon name="document"/></div><p className="eyebrow">第 3 / 3 步 · 确认交付 · {phase===5?'确认版本':'核对文档'}</p><h2>{phases[phase]}</h2><p className="muted">{['可以随便聊聊，资料也可随时补充。','纠正理解偏差，确定这次改什么、保留什么。','回答会影响业务行为的问题，未知不会被自动补齐。','对照原页面，核对本次增量与操作意图。','分别阅读并核对 MRD、PRD 的当前版本。','复核范围与交付版本，再由服务端建立确认基线。'][phase]}</p>{phase>0&&phase<3&&<aside className="task-guidance"><Icon name="target"/><div><b>{['先提供已知信息，缺失项稍后澄清','核对整理结果','为什么需要澄清这些问题？'][phase]}</b><p>{['我们将梳理现状、改动目标与约束条件，再由你核对。','分析建议尚非业务决定，请检查现状、目标、保持项和不在本期的范围。','这些问题涉及业务规则、流程和约束，直接影响后续设计、开发与验收。'][phase]}</p></div></aside>}{phase===4&&<aside className="document-version"><span>当前底稿</span><b>v{p.revision}</b><small>{(p as any).document_review_status?.[docType]?.reviewed?(p.product_flow?.[4]?.missing?.length?'此文档已核对 · 仍有交付阻塞':'此文档已核对 · 可继续检查'):'当前文档待核对'}</small></aside>}</div>
+        <div className="workflow-page" data-phase={phase}><div className="workflow-heading"><div className="task-icon" aria-hidden="true"><Icon name="document"/></div><p className="eyebrow">第 3 / 3 步 · 评审与交付文档 · {phase===5?'确认版本':'核对文档'}</p><h2>{phases[phase]}</h2><p className="muted">{['可以随便聊聊，资料也可随时补充。','纠正理解偏差，确定这次改什么、保留什么。','回答会影响业务行为的问题，未知不会被自动补齐。','对照原页面，核对本次增量与操作意图。','分别阅读并核对 MRD、PRD 的当前版本。','复核范围与交付版本，再由服务端建立确认基线。'][phase]}</p>{phase>0&&phase<3&&<aside className="task-guidance"><Icon name="target"/><div><b>{['先提供已知信息，缺失项稍后澄清','核对整理结果','为什么需要澄清这些问题？'][phase]}</b><p>{['我们将梳理现状、改动目标与约束条件，再由你核对。','分析建议尚非业务决定，请检查现状、目标、保持项和不在本期的范围。','这些问题涉及业务规则、流程和约束，直接影响后续设计、开发与验收。'][phase]}</p></div></aside>}{phase===4&&<aside className="document-version"><span>当前底稿</span><b>v{p.revision}</b><small>{(p as any).document_review_status?.[docType]?.reviewed?(p.product_flow?.[4]?.missing?.length?'此文档已核对 · 仍有交付阻塞':'此文档已核对 · 可继续检查'):'当前文档待核对'}</small></aside>}</div>
         <StageLock p={p} phase={phase} busy={busy||running} onGo={returnToPrerequisite} onRefresh={retry}/>{phaseAccess.allowed&&phase!==0&&!(phase===4&&(latest?.action==='document'||latest?.retry_input?.target?.kind==='document'))&&taskStatus}
-        <div hidden={phase!==0}><p className="notice">聊天与直接填写在上方“提供信息”中共用同一项目草稿。</p></div>
-        <BlockerPanel id={'blockers-'+id+'-'+phase} rows={phaseAccess.allowed?currentBlockers:[]} busy={busy||running} onResolve={resolveBlocker} onRefresh={retry}/>
+        <div hidden={phase!==0}><p className="notice">聊天与直接填写在上方“聊清需求想法”中共用同一项目草稿。</p></div>
+        {!blockerTask&&<BlockerPanel id={'blockers-'+id+'-'+phase} rows={phaseAccess.allowed?currentBlockers:[]} busy={busy||running} onResolve={resolveBlocker} onRefresh={retry}/>}
         {phaseAccess.allowed&&blockerTask&&<p className="blocker-return" role="status">正在处理：{blockerTask.title}。<button type="button" disabled={busy||running} onClick={returnToBlockers}>返回阻塞清单</button></p>}
         {phaseAccess.allowed&&returnAnswerId&&(phase===1||phase===2)&&<p className="notice">正在核对回答关联条款。保存并采纳后，可返回原回答重新核对。<button type="button" disabled={busy||running} onClick={returnToAnswer}>返回原回答核对</button></p>}
-        <div className="document-stage" hidden={phase!==4||!stageAccess(p,4).allowed} id={'document-result-'+id}>
-          <DocumentStudio focusReviewNonce={reviewFocusNonce} taskStatus={documentTaskStatus} p={p} docType={docType} setDocType={next=>guard(()=>{setDocType(next);setSelectedDocId('');setDocumentQuestion(undefined);})} setSelectedDocId={next=>{if(next!==selectedDocId)guard(()=>setSelectedDocId(next));}} selectedDocId={selectedDocId} artifacts={artifacts} setTab={navigate} root={root} act={act} mutate={mutate} busy={busy||running} onHelp={openHelp} onGenerate={()=>act(()=>planAction('document'))} onPrewrite={()=>openMain({step:'refine',prewrite:true})} onSource={shared.onSource} onClarify={openQuestion}
+        <div className="document-stage" hidden={phase!==4||(documentReadOnly&&!hasReadableDocument)} id={'document-result-'+id}>
+          <DocumentStudio readOnly={documentReadOnly} focusReviewNonce={reviewFocusNonce} taskStatus={documentTaskStatus} p={p} docType={docType} setDocType={next=>guard(()=>{actionIntent.current++;setDocType(next);setSelectedDocId('');setDocumentQuestion(undefined);})} setSelectedDocId={next=>{if(next!==selectedDocId)guard(()=>setSelectedDocId(next));}} selectedDocId={selectedDocId} artifacts={artifacts} setTab={navigate} root={root} act={act} mutate={mutate} busy={busy||running} onHelp={openHelp} onGenerate={()=>act(()=>planAction('document'))} onPrewrite={()=>openMain({step:'refine',prewrite:true})} onSource={shared.onSource} onClarify={openQuestion}
             discussionPanel={p.documents[docType]&&<DocumentDiscussionPanel summaryOnly onOpenQuestion={openQuestion} project={p} tasks={tasks} runs={runs} document={p.documents[docType]} busy={busy} running={running} mutate={mutate} focusQuestion={documentQuestion} onRefresh={retry} onSources={refs=>shared.onSource(refs||[])} onScope={()=>openMain({step:'refine',scope:true})} onClarify={questionId=>act(()=>planAction('clarify',undefined,{kind:'question',id:questionId,label:p.questions.find(q=>q.id===questionId)?.question||'章节补充问题'}))}/>}/>
-          <ProductCheckpoint onBlocked={blockedCheckpoint} p={p} phase={4} busy={busy||running} mutate={mutate} go={go} getProject={()=>projectRef.current||p}/>
+          {phaseAccess.allowed&&<ProductCheckpoint onBlocked={blockedCheckpoint} p={p} phase={4} busy={busy||running} mutate={mutate} go={go} getProject={()=>projectRef.current||p}/>}
         </div>
         <section hidden={phase!==5||!stageAccess(p,5).allowed} id={'confirmation-'+id}><ConfirmationPanel onResolveBlocker={(action,row)=>resolveBlocker(action,row,5)} onOpenDocument={kind=>openDetails(4,kind)} onClarify={openQuestion} p={p} busy={busy} setBusy={setBusy} setError={setError} setTab={navigate} root={root} act={act} refresh={refresh} onReview={()=>act(()=>planAction('review'))} onResolveReview={()=>openReviewFindings()}/></section>
         </div>
@@ -524,15 +668,17 @@ export function Workspace({ id, active, assistantEntryNonce, assistantEntryTask 
       onSubmit={text=>act(()=>planAction('change',undefined,{kind:'document',id:chapter.id,section_id:chapter.section_id,label:chapter.label},text))}
       onClarify={questionId=>act(()=>planAction('clarify',undefined,{kind:'question',id:questionId,label:p.questions.find(q=>q.id===questionId)?.question||'章节补充问题'}))}
       onSources={refs=>shared.onSource(refs||[])} onScope={()=>{setChapter(null);openMain({step:'refine',scope:true});}}
-      onClose={()=>setChapter(null)} onUpdate={()=>{setChapter(null);void act(()=>planAction('document'));}}
+      onClose={()=>{actionIntent.current++;setChapter(null);}} onUpdate={()=>{setChapter(null);void act(()=>planAction('document'));}}
       onCancel={task=>act(async()=>{await api(root+'/actions/'+task.id+'/cancel','POST');await refresh();})} onRetry={retryUserTask} />}
-    {phaseAccess.allowed&&help&&<div className="drawer-backdrop"><section className="source-drawer context-help" role="dialog" aria-modal="true" aria-label="当前对象的 AI 帮助"><button onClick={()=>guard(()=>setHelp(null))}>关闭帮助</button><p className="eyebrow">只围绕当前对象</p><h2>{help.label}</h2><small>{help.id}</small><p>可在本步核对前求助；结果形成待核对候选，不会自动回答问题、采纳条目或确认范围。</p><label>希望怎样调整或澄清<textarea rows={5} value={helpText} onChange={e=>setHelpText(e.target.value)}/></label><button className="primary" disabled={busy||running||!helpText.trim()} onClick={()=>act(()=>planAction(help.kind==='ui'?'change':'clarify',undefined,help,helpText))}>核对本次讨论任务</button><details><summary>已保存的讨论历史 · {p.messages.length}</summary>{p.messages.map((m,n)=><article key={n}><b>{m.role==='user'?'用户输入':'助手建议'} · {m.stage}</b><p>{m.text}</p></article>)}</details></section></div>}
+    {phaseAccess.allowed&&help&&<div className="drawer-backdrop"><section className="source-drawer context-help" role="dialog" aria-modal="true" aria-label="当前对象的 AI 帮助"><button onClick={()=>guard(()=>setHelp(null))}>关闭帮助</button><p className="eyebrow">只围绕当前对象</p><h2>{help.label}</h2><small>{help.id}</small><p>可在本步核对前求助；结果形成待核对候选，不会自动回答问题、采纳条目或确认范围。</p><label>希望怎样调整或澄清<textarea rows={5} value={helpText} onChange={e=>setHelpText(e.target.value)}/></label><button className="primary" disabled={busy||running||!helpText.trim()} onClick={()=>act(()=>planAction(help.kind==='ui'?'change':'clarify',undefined,help,helpText))}>分析本次讨论</button><details><summary>已保存的讨论历史 · {p.messages.length}</summary>{p.messages.map((m,n)=><article key={n}><b>{m.role==='user'?'用户输入':'助手建议'} · {m.stage}</b><p>{m.text}</p></article>)}</details></section></div>}
     {candidateOpen&&<div className="modal-backdrop"><form className="modal" role="dialog" aria-modal="true" aria-label="补充候选需求" onSubmit={e=>{e.preventDefault();act(saveCandidate);}}><h2>补充一条候选需求</h2><p>保留你的原文和来源；保存不会自动采纳。</p><label>需求名称<input disabled={busy} required maxLength={200} value={candidateTitle} onChange={e=>setCandidateTitle(e.target.value)}/></label><label>需求原文<textarea disabled={busy} required maxLength={6000} value={candidateText} onChange={e=>setCandidateText(e.target.value)}/></label>{error&&<p role="alert">{error}</p>}<div className="toolbar"><button type="button" disabled={busy} onClick={()=>guard(()=>setCandidateOpen(false))}>取消</button><button disabled={busy} className="primary">保存候选</button></div></form></div>}
     {acceptanceOpen&&<div className="modal-backdrop"><form className="modal" role="dialog" aria-modal="true" aria-label="补充关联验收条件" onSubmit={e=>{e.preventDefault();act(saveAcceptance);}}><h2>补充关联验收条件</h2><p>请写明可观察的操作和预期结果。保存为候选，仍需在本步“待采纳候选”中明确采纳。</p><label>关联的本期需求<select required disabled={busy} value={acceptanceRequirement} onChange={e=>setAcceptanceRequirement(e.target.value)}><option value="">选择需求</option>{p.items.filter(i=>i.kind==='requirement'&&i.applies_to==='to_be'&&p.product_context?.scope_ids?.includes(i.id)).map(i=><option key={i.id} value={i.id}>{i.id}｜{i.title}</option>)}</select></label><label>验收名称<input required disabled={busy} maxLength={200} value={acceptanceTitle} onChange={e=>setAcceptanceTitle(e.target.value)}/></label><label>验收原文<textarea required disabled={busy} maxLength={6000} value={acceptanceText} onChange={e=>setAcceptanceText(e.target.value)}/></label>{error&&<p role="alert" className="error">{error}</p>}<div className="toolbar"><button type="button" disabled={busy} onClick={()=>guard(()=>setAcceptanceOpen(false))}>取消</button><button disabled={busy} className="primary">保存验收候选</button></div></form></div>}
     {sourcesOpen && <div className="drawer-backdrop"><section className="source-drawer" role="dialog" aria-modal="true" aria-label="项目资料"><button disabled={busy} onClick={() => setSourcesOpen(false)}>关闭项目资料</button><SourcePanel focusRefs={focusRefs} p={p} models={models} purpose={purpose} setPurpose={setPurpose} sourceText={sourceText} setSourceText={setSourceText} manualPageActive={manualPageActive} manualPageUrl={manualPageUrl} setManualPageUrl={setManualPageUrl} manualPageTitle={manualPageTitle} setManualPageTitle={setManualPageTitle} manualPageNotice={manualPageNotice} onSaveText={saveManualSourceText} url={url} setUrl={setUrl} dynamic={dynamic} setDynamic={setDynamic} busy={busy} act={act} error={error} mutate={mutate} refresh={refresh} root={root} pendingGrant={null} setPendingGrant={() => {}} guided /></section></div>}
     {historyOpen && <div className="drawer-backdrop"><section className="source-drawer" role="dialog" aria-modal="true" aria-label="历史版本"><button onClick={() => setHistoryOpen(false)}>返回当前任务</button><VersionHistory history={history} /><details><summary>完整讨论记录 · {p.messages.length}</summary>{p.messages.map((m,n)=><article className="card" key={n}><b>{m.role==='user'?'用户输入':'助手建议'} · {m.stage}</b><p>{m.text}</p></article>)}</details></section></div>}
     {renameOpen && <div className="modal-backdrop"><form className="modal" role="dialog" aria-label="重命名项目" onSubmit={e => { e.preventDefault(); if (!rename.trim()) return; act(async () => { await mutate('', { name: rename.trim() }, 'PATCH'); setRenameOpen(false); await onProjectsChanged(); }); }}><h2>重命名项目</h2><label>项目名称<input value={rename} onChange={e => setRename(e.target.value)} /></label><button type="button" onClick={() => setRenameOpen(false)}>取消</button><button disabled={!rename.trim() || busy}>保存</button></form></div>}
-    {pending && <ActionDialog plan={pending.plan} input={pending.input} error={actionError} busy={busy} stale={actionStale} onReplan={replanAction} onClose={closeAction} onSubmit={startAction} />}
+    {localPrdPreview&&<LocalPrdPreviewDialog preview={localPrdPreview} error={error} busy={busy} onClose={()=>setLocalPrdPreview(null)} onSubmit={()=>{const preview=localPrdPreview;void act(async()=>{await mutate('/documents/prd/local-review',{expected_revision:preview.input_revision,idempotency_key:crypto.randomUUID(),review_draft_confirmed:true,preview_hash:preview.preview_hash});setLocalPrdPreview(null);openDetails(4,'prd',()=>revealDocument('prd'));});}}/>}
+    {prdGenerationPreview?.plan.document_preview&&<PrdGenerationPreviewDialog preview={prdGenerationPreview.plan.document_preview} error={actionError||error} busy={busy} onClose={()=>setPrdGenerationPreview(null)} onSubmit={()=>void act(confirmPrdGeneration)}/>}
+
     {phaseAccess.allowed && optionDecision && <OptionDecision option={optionDecision.option} action={optionDecision.action} p={p} submit={mutate} onClose={() => setOptionDecision(null)} />}
   </div>;
 }

@@ -66,6 +66,105 @@ class DiscussionProvider(FakeProvider):
                               origin=origin(config), finish_reason='stop')
 
 
+@pytest.mark.parametrize('repair',[False,True])
+def test_wording_only_chapter_feedback_uses_empty_refs_and_preserves_canonical(tmp_path,repair):
+    async def scenario():
+        from app.actions import Actions
+        from app.contracts import validate_response
+        from app.provider import assemble
+        store,before=project(tmp_path,False)
+        target=dict(kind='document',id=before['documents']['prd']['id'],
+            section_id=before['documents']['prd']['content']['sections'][0]['section_id'])
+        good=discussion_response();good.pop('product_context_proposal')
+        good.update(summary='本节建议只纠正叙述措辞，保留已有条款及业务决定。',proposals=[],questions=[])
+        good['result']=dict(changes=[],impacted_refs=[],unimpacted_refs=[],needs_new_confirmation=False,unresolved_effects=[])
+        bad=copy.deepcopy(good);bad['result']['impacted_refs']=[target['id']+'.'+target['section_id']]
+        _,excerpts,_=assemble(before,'change','仅纠正叙述',dict(DEFAULT),tmp_path,discussion_target=target)
+        validate_response(good,'change',before,excerpts)
+        for invalid in (target['id'],target['section_id'],bad['result']['impacted_refs'][0],'DOC-other.MRD-other'):
+            invalid_value=copy.deepcopy(good);invalid_value['result']['impacted_refs']=[invalid]
+            with pytest.raises(Problem) as caught:validate_response(invalid_value,'change',before,excerpts)
+            assert caught.value.code=='REFERENCE_INVALID'
+        class Traced(FakeProvider):
+            async def request(self,c,m,evidence=None):
+                evidence.before_send(c)
+                value,meta=await super().request(c,m,evidence)
+                evidence.response(dumps(value),http_status=200,finish_reason='stop',usage={'total_tokens':10})
+                return value,meta
+        provider=Traced([bad,good] if repair else [good]);workflow=Workflow(store,provider);actions=Actions(store,workflow)
+        feedback='只纠正本节叙述，不改变条款，不新增业务决定。'
+        body=dict(expected_revision=before['revision'],action='change',message=feedback,document_type='prd',target=target,max_calls=2)
+        plan=actions.plan(before['id'],body);task=actions.start(before['id'],body,plan['plan_hash'],'wording-only-discussion')
+        await actions.jobs[task['id']]
+        task=store.get_record(before['id'],task['id'],'user_task');run=store.get_record(before['id'],task['run_ids'][0],'run')
+        assert run['status']!='failed',run
+        assert task['calls']==len(provider.received)==(2 if repair else 1)
+        header=json.loads(provider.received[0][0]['content'].split('可信任务头：',1)[1])
+        contract=header['document_discussion_contract']
+        assert contract['target']==target and target['id'] not in contract['allowed_reference_ids']
+        assert 'impacted_refs=[]' in contract['instruction']
+        if repair:
+            assert '本次章节讨论引用边界' in provider.received[1][-1]['content']
+            assert 'DOC.section' in provider.received[1][-1]['content']
+            first=json.loads((store.folder/'evidence/model-calls'/(run['attempts'][0]['call_id']+'.json')).read_text('utf-8'))
+            assert json.loads(first['final_output'])==bad
+            last=json.loads((store.folder/'evidence/model-calls'/(run['attempts'][-1]['call_id']+'.json')).read_text('utf-8'))
+            audit=last['reference_repair_normalization']
+            assert audit==run['attempts'][-1]['reference_repair_normalization']
+            assert audit['changes'][0]['before']==bad['result']['impacted_refs']
+            assert audit['changes'][0]['after']==[] and json.loads(last['final_output'])==good
+        assert run['response']==good
+        after=store.get(before['id'])
+        for key in ('items','questions','documents','product_context','stage_checks'):
+            assert after[key]==before[key]
+        assert after['sources'][:len(before['sources'])]==before['sources']
+        assert len(after['sources'])==len(before['sources'])+1
+        assert any(feedback in e['text'] for e in after['sources'][-1]['excerpts'])
+        assert run['discussion_result']==dict(item_ids=[],question_ids=[])
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('fault',[None,'non_document_target','other_stage','stale_target','unknown_locator','bare_section',
+    'unknown_item','remove_valid','replace_with_valid','body_change','source_change','question_change','ambiguous_document'])
+def test_document_locator_repair_is_exact_deletion_only(tmp_path,fault):
+    from app.ingest import preserve_response,response_anchor
+    _,p=project(tmp_path,False)
+    document=p['documents']['prd'];target=dict(kind='document',id=document['id'],section_id=document['content']['sections'][0]['section_id'])
+    locator=document['id']+'.'+target['section_id'];stage='change'
+    original=discussion_response();original['result']['impacted_refs']=['RULE-0001',locator]
+    original['result']['unimpacted_refs']=['REQ-0001',document['id']]
+    if fault=='unknown_locator':original['result']['impacted_refs'][1]='DOC-old.PRD-old'
+    if fault=='bare_section':original['result']['impacted_refs'][1]=target['section_id']
+    if fault=='unknown_item':original['result']['impacted_refs'][1]='REQ-missing'
+    repaired=copy.deepcopy(original)
+    repaired['result']['impacted_refs']=['RULE-0001'];repaired['result']['unimpacted_refs']=['REQ-0001']
+    if fault=='non_document_target':target=dict(kind='item',id='REQ-0001')
+    if fault=='other_stage':stage='clarify'
+    if fault=='stale_target':target['id']='DOC-old'
+    if fault=='remove_valid':repaired['result']['impacted_refs']=[]
+    if fault=='replace_with_valid':repaired['result']['impacted_refs']=['RULE-0001','AC-0001']
+    if fault=='body_change':repaired['proposals'][0]['statement']='未经批准改变规范文字'
+    if fault=='source_change':repaired['used_source_refs']=[]
+    if fault=='question_change':repaired['questions']=[]
+    if fault=='ambiguous_document':p['documents']['copy']=copy.deepcopy(document)
+    excerpts=p['sources'][0]['excerpts'];before=copy.deepcopy((p,original,repaired))
+    anchor=response_anchor(original,excerpts,stage,p)
+    if fault=='other_stage':
+        from app.ingest import reference_repair_anchor
+        assert reference_repair_anchor(original,repaired,excerpts,stage,p,document_target=target)==original
+        from app.contracts import validate_response
+        with pytest.raises(Problem):validate_response(repaired,stage,p,excerpts)
+        return
+    if fault:
+        with pytest.raises(Problem) as caught:
+            preserve_response(anchor,repaired,excerpts,stage,original,p,document_target=target)
+        assert caught.value.code=='SEMANTIC_BLOCKED'
+    else:
+        changes=preserve_response(anchor,repaired,excerpts,stage,original,p,document_target=target)
+        assert len(changes)==2 and all(c['rule']=='document-locator-reference-removal-1' for c in changes)
+    assert (p,original,repaired)==before
+
+
 @pytest.mark.parametrize('shared', [False, True])
 @pytest.mark.parametrize('scoped', [False, True])
 @pytest.mark.parametrize('stage', ['change', 'clarify'])

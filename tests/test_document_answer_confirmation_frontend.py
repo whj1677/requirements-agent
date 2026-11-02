@@ -83,8 +83,9 @@ def test_document_preview_and_optional_manual_editor_keep_real_confirmation_gate
         const states=[mode,expanded,{[original.id]:{statement:original.statement,behavior:original.behavior}},
           {},'',[],{},false,review,chosen,'',false,false,'',false,[],{},
           // Detail conflict state belongs to the parent; the optional detailed
-          // editor adds two local expansion states before the witness editor.
-          ...(review===null&&mode==='manual'?[...(expanded?[{},{}]:[]),{}]:[])];
+          // editor adds two expansion states and an empty whole-replacement
+          // snapshot; the witness editor owns field choices and catalog search.
+          ...(review===null&&mode==='manual'?[...(expanded?[{},{},null]:[]),{},'']:[])];
         const {AnswerConfirmation}=await load('src/pm-prototype/AnswerConfirmation.tsx',states);
         const html=renderToStaticMarkup(React.createElement(AnswerConfirmation,{...props,...extra}));
         assert.equal(states.length,0);return html;

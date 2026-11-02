@@ -57,7 +57,7 @@ def test_generation_accepts_evidence_for_each_objects_own_properties():
     ('one_branch', 'DETAIL_FLOW_BRANCH', 'N2'),
     ('outgoing_terminal', 'DETAIL_FLOW_TERMINAL', 'N4'),
 ])
-def test_generated_graph_defects_stay_reviewable_but_cannot_be_confirmed(defect, code, node_id):
+def test_generated_graph_defects_are_rejected_before_canonical_acceptance(defect, code, node_id):
     raw = sample_detail()
     if defect == 'one_branch':
         raw['flow']['nodes'][1]['kind'] = 'decision'
@@ -65,9 +65,13 @@ def test_generated_graph_defects_stay_reviewable_but_cannot_be_confirmed(defect,
         raw['flow']['edges'].append(dict(id='E5', **{'from': 'N4', 'to': 'N2'},
                                         condition='继续核对结果'))
     before = copy.deepcopy(raw)
-    candidate = canonical_detail(raw, {}, {})
-    item = dict(id='REQ-review', detail_contract=candidate)
-    assert raw == before == candidate
+    with pytest.raises(DetailProblem) as generation_error:
+        canonical_detail(raw, {}, {})
+    assert generation_error.value.code == 'BUSINESS_DRAFT_DETAIL_FLOW'
+    assert any(issue['code']==code and issue['object_id']==node_id for issue in generation_error.value.issues)
+    assert raw == before
+    # Older saved drafts remain inspectable but cannot be confirmed either.
+    item = dict(id='REQ-review', detail_contract=raw)
     assert 'requirement_confirmation' not in item
     with pytest.raises(DetailProblem) as error:
         require_complete(item)

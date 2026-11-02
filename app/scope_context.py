@@ -1,5 +1,5 @@
 """Human selected applicability of product scope fields."""
-from .core import require
+from .core import require, digest
 
 INTAKE_FIELDS = ('product', 'module', 'intent')
 SCOPE_FIELDS = ('current_state', 'users', 'value', 'change_scope',
@@ -9,6 +9,21 @@ SCENARIOS = ('unspecified', 'new_product', 'new_module', 'modify_existing')
 DEPENDENCIES = ('unknown', 'independent', 'shared')
 STATES = ('known', 'not_applicable', 'none', 'unknown')
 MAX_NOTE = 2000
+
+
+def context_review_statuses(project):
+    """Response-only human review identity, including deliberately empty values."""
+    values=project.get('product_context') or {}
+    states=project.get('context_field_states') or {}
+    confirmations=project.get('context_confirmations') or {}
+    result={}
+    for field in FIELDS:
+        text=values.get(field,'')
+        proof=confirmations.get(field) or {}
+        result[field]=bool(isinstance(text,str) and isinstance(proof,dict)
+            and proof.get('actor')=='authenticated_local_user'
+            and proof.get('content_hash')==digest(dict(text=text,state=states.get(field))))
+    return result
 
 
 def validate_context_edit(values, profile=None, field_states=None):
@@ -45,12 +60,28 @@ def independent_new_scope(p):
         profile.get('scenario') == 'new_module' and profile.get('dependencies') == 'independent')
 
 
+def additive_module_scope(p):
+    """Only explicit current new requirements waive an existing-flow summary."""
+    if (p.get('scope_profile') or {}).get('scenario') != 'new_module':
+        return False
+    scope = (p.get('product_context') or {}).get('scope_ids') or []
+    roots = {item['id']: item for item in p.get('items', [])
+             if item.get('kind') == 'requirement' and item.get('applies_to') == 'to_be'
+             and item.get('selection_status') in ('candidate', 'selected')
+             and not item.get('superseded_by') and not item.get('target_item_id')}
+    return bool(scope) and all(iid in roots and roots[iid].get('change_type') == 'new'
+                               for iid in scope)
+
+
 def scope_field_rules(p):
     independent = independent_new_scope(p)
+    additive = additive_module_scope(p)
     result = {}
     for field in FIELDS:
         required = field in ('intent', 'users', 'change_scope') or (
             field in ('current_state', 'preserve_scope') and not independent)
+        if field == 'current_state' and additive:
+            required = False
         allowed = ['known', 'unknown']
         if field in ('value', 'priority', 'out_of_scope'):
             allowed.extend(('not_applicable', 'none'))

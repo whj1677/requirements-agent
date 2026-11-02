@@ -54,18 +54,97 @@ def test_scope_draft_respects_saved_values_explicit_absence_and_profile():
         }
       }
       assert.equal(fieldStatus('preserve_scope',{preserve_scope:'人工值'},{preserve_scope:{status:'none'}},shared),'none');
-      const previous={product_context:{intent:'已保存原文'},product_context_proposal:{intent:'模型想改写',users:'模型新建议',priority:'模型优先级'},context_field_states:{intent:{status:'unknown'},users:{status:'unknown'},priority:{status:'not_applicable'}}};
+      const previous={product_context:{intent:'已保存原文'},product_context_proposal:{intent:'模型想改写',users:'模型新建议',priority:'模型优先级'},context_field_states:{intent:{status:'unknown'},priority:{status:'not_applicable'}}};
       const shown=scopeDraft(previous),keys=['intent','users','priority'];
+      const localStates={...previous.context_field_states,users:{status:'unknown'}};
       assert.equal(shown.intent,'已保存原文');
       assert.equal(shown.users,'模型新建议');
       assert.equal(shown.priority,'');
-      const draftStates=scopeSaveStates(previous,shown,previous.context_field_states,newProduct,keys);
+      const draftStates=scopeSaveStates(previous,shown,localStates,newProduct,keys);
       assert.equal(draftStates.users.status,'unknown','draft save must not accept AI suggestion');
-      const confirmedStates=scopeSaveStates(previous,shown,previous.context_field_states,newProduct,keys,true);
+      const confirmedStates=scopeSaveStates(previous,shown,localStates,newProduct,keys,true);
       assert.equal(confirmedStates.users.status,'known','final review accepts visible suggestion');
       assert.equal(confirmedStates.intent.status,'unknown','saved unknown text remains unknown');
       assert.equal(confirmedStates.priority.status,'not_applicable');
       assert.equal(confirmedStates.intent.status,draftStates.intent.status);
+    ''')
+
+
+def test_scope_draft_preserves_current_human_reviewed_empty_unknown_and_absence():
+    run_ts(r'''
+      import assert from 'node:assert/strict';
+      import {build} from 'esbuild';
+      const built=await build({entryPoints:['src/scope-draft.ts'],bundle:true,write:false,format:'esm',platform:'node'});
+      const {scopeDraft,suggestedKeys,scopeSaveStates,scopeLabels}=await import('data:text/javascript;base64,'+Buffer.from(built.outputFiles[0].text).toString('base64'));
+      const profile={scenario:'modify_existing',dependencies:'shared'};
+      for(const field of Object.keys(scopeLabels)){
+        const state={status:'unknown',note:'人工明确留空，未决定该字段'};
+        const p={product_context:{[field]:''},product_context_proposal:{[field]:'旧 AI 建议'},
+          context_field_states:{[field]:state},context_review_statuses:{[field]:true}};
+        const before=structuredClone(p),shown=scopeDraft(p);
+        assert.equal(shown[field],'','a currently reviewed empty unknown must not revive old advice: '+field);
+        assert(!suggestedKeys(p,shown,p.context_field_states).includes(field));
+        assert(!suggestedKeys(p,{...shown,[field]:p.product_context_proposal[field]},p.context_field_states).includes(field),
+          'a currently reviewed field cannot be classified as pending AI adoption: '+field);
+        assert.deepEqual(scopeSaveStates(p,shown,p.context_field_states,profile,[field],true)[field],state,
+          'scope confirmation preserves the complete explicit unknown state: '+field);
+        assert.deepEqual(p,before,'projection consumers must not mutate saved evidence');
+      }
+      for(const [field,status] of [['priority','none'],['priority','not_applicable'],['preserve_scope','not_applicable'],['out_of_scope','none']]){
+        const state={status,note:'已经人工核对的适用性决定'};
+        const p={product_context:{[field]:''},product_context_proposal:{[field]:'不能恢复的旧建议'},
+          context_field_states:{[field]:state},context_review_statuses:{[field]:true}};
+        const shown=scopeDraft(p);
+        assert.equal(shown[field],'',field+' '+status);
+        assert(!suggestedKeys(p,shown,p.context_field_states).includes(field));
+        assert.deepEqual(scopeSaveStates(p,shown,p.context_field_states,profile,[field],true)[field],state);
+      }
+      for(const statuses of [undefined,{}, {priority:false}]){
+        const p={product_context:{priority:''},product_context_proposal:{priority:'首次 AI 优先级建议'},
+          context_field_states:{},...(statuses===undefined?{}:{context_review_statuses:statuses})};
+        const shown=scopeDraft(p);
+        assert.equal(shown.priority,'首次 AI 优先级建议','unreviewed blank fields still receive the first suggestion');
+        assert(suggestedKeys(p,shown,p.context_field_states).includes('priority'));
+      }
+    ''')
+
+
+def test_initial_bulk_draft_does_not_overwrite_current_human_reviewed_summary_states():
+    run_ts(r'''
+      import assert from 'node:assert/strict';
+      import {build} from 'esbuild';
+      const built=await build({entryPoints:['src/pm-prototype/refinement-sheet-state.ts'],bundle:true,write:false,format:'esm',platform:'node'});
+      const {initial,restoreSheet}=await import('data:text/javascript;base64,'+Buffer.from(built.outputFiles[0].text).toString('base64'));
+      const project=(extra={})=>({id:'P-reviewed-empty',revision:8,items:[],questions:[],
+        product_context:{priority:''},product_context_proposal:{priority:'建议：P1'},
+        context_field_states:{priority:{status:'unknown',note:'人工确认本期没有确定优先级'}},
+        ...extra});
+      for(const mode of ['all','required']){
+        for(const [text,status] of [['','unknown'],['','none'],['','not_applicable'],['P1','unknown']]){
+          const state={status,note:'人工原状态及备注应完整保留'};
+          const p=project({product_context:{priority:text},product_context_proposal:{priority:'P1'},
+            context_field_states:{priority:state},context_review_statuses:{priority:true},
+            refinement_completion:{mode}});
+          const before=structuredClone(p),sheet=initial(p,[]);
+          assert.equal(sheet.values.priority,text,mode+' must preserve reviewed text even when empty');
+          assert.deepEqual(sheet.states.priority,state,mode+' cannot promote a reviewed unknown/absence to known');
+          assert.deepEqual(p,before,'initial must not change saved text, state or review evidence');
+        }
+        const unreviewed=project({context_field_states:{},context_review_statuses:{priority:false},refinement_completion:{mode}});
+        const first=initial(unreviewed,[]);
+        assert.equal(first.values.priority,'建议：P1','first-time bulk suggestions remain available');
+        assert.equal(first.states.priority.status,'known','the existing unreviewed suggestion behavior is retained');
+        const withoutProjection=project({context_field_states:{},refinement_completion:{mode}});
+        assert.equal(initial(withoutProjection,[]).values.priority,'建议：P1','legacy responses remain compatible');
+        const reviewed=project({revision:9,context_review_statuses:{priority:true},refinement_completion:{mode}});
+        const fresh=initial(reviewed,[]),restored=restoreSheet(first,first,fresh);
+        assert.equal(restored.values.priority,'','unchanged browser draft follows the newly reviewed empty canonical value');
+        assert.deepEqual(restored.states.priority,reviewed.context_field_states.priority,
+          'refresh/merge preserves the reviewed unknown and its note');
+      }
+      const ordinary=initial(project({context_review_statuses:{priority:true}}),[]);
+      assert.equal(ordinary.values.priority,'');
+      assert.equal(ordinary.states.priority.status,'unknown');
     ''')
 
 

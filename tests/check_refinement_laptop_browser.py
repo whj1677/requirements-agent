@@ -15,7 +15,7 @@ sys.path.insert(0, str(ROOT))
 from tests.check_answer_implementation_browser import enter, run
 from tests.check_detail_prd_browser import seed, TITLE
 
-VIEWPORTS = ((1920, 1080), (1536, 864), (1366, 650), (1280, 720), (1280, 640), (1093, 614), (1093, 550), (946, 540))
+VIEWPORTS = ((846, 620), (1366, 768), (1920, 1080), (1536, 864), (1366, 650), (1280, 720), (1280, 640), (1093, 614), (1093, 550), (1024, 576), (946, 540), (911, 512))
 
 
 def laptop_fixture(store):
@@ -111,7 +111,7 @@ async def exercise(page, store, _initial, _chapter, output, report, expect):
         await work.get_by_role('button', name='保存草稿', exact=True).click()
         await expect(work.locator('.refinement-sheet-footer').get_by_role('status')).to_contain_text('保存在当前浏览器')
         assert store.get(pid) == initial, 'View controls or browser draft save changed server data'
-    report['checks'].append('八种有效视口直达第六条需求；普通/专注/退出三态无横向溢出，底部按钮完整可见且命中；短笔记本普通模式正文至少占窗口一半，编辑字号不低于14px')
+    report['checks'].append('十二种有效视口直达第六条需求；普通/专注/退出三态无横向溢出，底部按钮完整可见且命中；短笔记本普通模式正文至少占窗口一半，编辑字号不低于14px')
     report['checks'].append('专注模式进入和退出均保持同一个输入DOM及精确人工文字；保存草稿不写后端')
 
     await page.set_viewport_size(dict(width=1280, height=640))

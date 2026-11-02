@@ -155,6 +155,39 @@ def test_cross_row_answer_reviewed_once_after_all_changed_targets(tmp_path):
     assert all(stage['complete'] for stage in status(saved)[:3])
 
 
+def test_identical_questions_accept_one_explicit_batch_without_losing_original_ids_or_sources(tmp_path):
+    from app.product_flow import question_view
+    store=Store(tmp_path);p=critical(store,setup(store),related_refs=['REQ-0001'])
+    with store.edit(p['id'],p['revision'],'合成严格重复历史问题') as (draft,_):
+        original=draft['questions'][0]
+        original['source_refs']=copy.deepcopy(item(draft,'REQ-0001')['source_refs'])
+        draft['questions'].append(dict(copy.deepcopy(original),id='Q-duplicate'))
+    p=store.get(p['id']);before=copy.deepcopy(p['questions'])
+    ids=[q['id'] for q in before]
+    assert question_view(p)['duplicate_groups']==[dict(representative_id=ids[0],question_ids=ids)]
+    answer='不能修改对方创建的记录。'
+    body=payload(p,answers=[dict(question_id=qid,answer=answer) for qid in ids])
+    line=next(row for row in body['rows'] if row['requirement_id']=='REQ-0001')
+    line['behavior']['permissions']=answer
+    line['confirmed_question_ids']=ids
+    body['answer_implementations']={qid:[dict(item_id='REQ-0001',field='behavior.permissions',quote=answer)] for qid in ids}
+    with api(store) as client:
+        response=post(client,p,body)
+        assert response.status_code==200,response.text
+        result=response.json();assert result['confirmed'],result
+    saved=store.get(p['id'])
+    assert [q['id'] for q in saved['questions']]==ids
+    assert set(result['receipt']['confirmed_question_ids'])==set(ids)
+    assert saved['sources'][:len(p['sources'])]==p['sources']
+    for old,q in zip(before,saved['questions']):
+        assert q['question']==old['question'] and q['source_refs']==old['source_refs']
+        assert q['answer']==answer and coverage_complete(q) and q['understanding_status']=='applied'
+        assert set(q['answer_applications'])=={'REQ-0001'}
+        assert q['answer_source_refs']
+    assert len(saved['decision_answers'])==2
+    assert all(stage['complete'] for stage in status(saved)[:3])
+
+
 def grouped(store):
     p = setup(store)
     with store.edit(p['id'], p['revision'], '合成两个相关独立业务决定') as (draft, _):

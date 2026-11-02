@@ -1,0 +1,114 @@
+{
+  "schema_version": 1,
+  "local_metadata": true,
+  "source": {
+    "id": "softaworks-agent-toolkit",
+    "repository": "softaworks/agent-toolkit",
+    "repository_url": "https://github.com/softaworks/agent-toolkit",
+    "reviewed_ref": "refs/heads/main",
+    "upstream_commit": "3027f20f3181758385a1bb8c022d4041dfb4de84",
+    "commit_url": "https://github.com/softaworks/agent-toolkit/commit/3027f20f3181758385a1bb8c022d4041dfb4de84",
+    "license": "MIT",
+    "notice": {
+      "status": "not_present_in_scanned_applicable_directories",
+      "scanned_directories": [
+        "",
+        "skills",
+        "skills/mermaid-diagrams",
+        "skills/mermaid-diagrams/references"
+      ]
+    }
+  },
+  "id": "mermaid-diagrams",
+  "name": "mermaid-diagrams",
+  "version": "3027f20f3181758385a1bb8c022d4041dfb4de84",
+  "upstream_commit": "3027f20f3181758385a1bb8c022d4041dfb4de84",
+  "repository": "softaworks/agent-toolkit",
+  "path": "vendor/mermaid-diagrams/SKILL.md",
+  "sha256": "79bca3c767a821a28aa7d83a9673010b2066afa4889923ea5946153c8967e824",
+  "license": "MIT",
+  "files": [
+    {
+      "path": "vendor/mermaid-diagrams/SKILL.md",
+      "upstream_path": "skills/mermaid-diagrams/SKILL.md",
+      "source_url": "https://github.com/softaworks/agent-toolkit/blob/3027f20f3181758385a1bb8c022d4041dfb4de84/skills/mermaid-diagrams/SKILL.md",
+      "raw_url": "https://raw.githubusercontent.com/softaworks/agent-toolkit/3027f20f3181758385a1bb8c022d4041dfb4de84/skills/mermaid-diagrams/SKILL.md",
+      "upstream_commit": "3027f20f3181758385a1bb8c022d4041dfb4de84",
+      "sha256": "79bca3c767a821a28aa7d83a9673010b2066afa4889923ea5946153c8967e824",
+      "git_blob_sha": "6ecbbaf9854ada56cc8e01cde47915e3c34277b7",
+      "bytes": 7479,
+      "kind": "skill"
+    },
+    {
+      "path": "vendor/mermaid-diagrams/references/flowcharts.md",
+      "upstream_path": "skills/mermaid-diagrams/references/flowcharts.md",
+      "source_url": "https://github.com/softaworks/agent-toolkit/blob/3027f20f3181758385a1bb8c022d4041dfb4de84/skills/mermaid-diagrams/references/flowcharts.md",
+      "raw_url": "https://raw.githubusercontent.com/softaworks/agent-toolkit/3027f20f3181758385a1bb8c022d4041dfb4de84/skills/mermaid-diagrams/references/flowcharts.md",
+      "upstream_commit": "3027f20f3181758385a1bb8c022d4041dfb4de84",
+      "sha256": "73b599797659ced9211ab947e3d4aee4f3ef2bfb4c1aefcfd6537276d2a21f96",
+      "git_blob_sha": "1a43c5827457b23152d3de6ba9a0774d7da83a2e",
+      "bytes": 9844,
+      "kind": "reference"
+    },
+    {
+      "path": "vendor/mermaid-diagrams/LICENSE",
+      "upstream_path": "LICENSE",
+      "source_url": "https://github.com/softaworks/agent-toolkit/blob/3027f20f3181758385a1bb8c022d4041dfb4de84/LICENSE",
+      "raw_url": "https://raw.githubusercontent.com/softaworks/agent-toolkit/3027f20f3181758385a1bb8c022d4041dfb4de84/LICENSE",
+      "upstream_commit": "3027f20f3181758385a1bb8c022d4041dfb4de84",
+      "sha256": "4b4447da5344f8b2d3a8a19ba8366d1ac7a24d9ab4690bd04576dc772ddf8321",
+      "git_blob_sha": "fc473440ee9ae27aa3d774bcd3888496ef0fad2d",
+      "bytes": 1072,
+      "kind": "license"
+    }
+  ],
+  "selection": {
+    "flow": {
+      "sections": [
+        {
+          "path": "vendor/mermaid-diagrams/references/flowcharts.md",
+          "heading": "## Best Practices",
+          "heading_line": 402,
+          "start_line": 402,
+          "end_line": 408,
+          "note": "Renderer-supported display conventions only; no new business condition."
+        },
+        {
+          "path": "vendor/mermaid-diagrams/references/flowcharts.md",
+          "heading": "### Branching Decision",
+          "heading_line": 422,
+          "start_line": 422,
+          "end_line": 430,
+          "note": "Illustrative topology only; preserve the application flow schema."
+        },
+        {
+          "path": "vendor/mermaid-diagrams/references/flowcharts.md",
+          "heading": "### Loop Pattern",
+          "heading_line": 432,
+          "start_line": 432,
+          "end_line": 439,
+          "note": "Only use a loop when present in the current confirmed business input."
+        },
+        {
+          "path": "vendor/mermaid-diagrams/references/flowcharts.md",
+          "heading": "### Error Handling",
+          "heading_line": 441,
+          "start_line": 441,
+          "end_line": 450,
+          "note": "Retry is an example, not a product requirement; do not invent retries."
+        }
+      ]
+    }
+  },
+  "excluded_guidance": [
+    {
+      "range": "SKILL.md:1-217",
+      "reason": "Main skill retained unchanged as provenance/reference; no automatic broad triggers, renderer commands, online validation, themes or mandatory diagramming."
+    },
+    {
+      "range": "references/flowcharts.md outside selected ranges",
+      "reason": "No unrelated registration/checkout/CI/CD examples, styling requirements, or additional syntax are needed for the fixed flow stage."
+    }
+  ],
+  "reference_policy": "Only flowcharts.md is vendored. Other linked references are not required by the selected stage slices and are not followed automatically."
+}

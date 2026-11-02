@@ -9,6 +9,23 @@ from .requirements import delivery_items, item_content
 from .product_flow import INTAKE, SCOPE, status as flow_status
 
 NORMATIVE = ('requirement', 'rule', 'acceptance')
+FLOW_RULES = (
+    '流程图每个节点与分支分别核对同一业务对象、同一动作及同一前提的当前原文和真实来源。'
+    '新增、修改、查看是不同动作；即使共用页面或来源段落，也不能互借失败处理、提示原因、手工重试、记录写入或权限规则。'
+    '提示原因、保留输入、保留原数据和允许重试分别核对，不把其中一项有据推成其余均有据。'
+    '仅明确共同适用于多个对象或动作的原句才可共享；某对象新增失败的专有规则不得迁给另一对象或修改失败。'
+    '页面、入口及区域的位置限定也必须由同一动作的原文支持，不能因新增位于某页就推定查看或修改也在该页。'
+    '若原文只明确新增位置，start及分流前所有公共节点都使用不带页面的业务对象名（如“处理记录操作”）；'
+    '不能先“进入某页”再分查看、新增、修改，这会把新增位置强加给全部后续动作。页面名只放在新增分支内，'
+    '查看、修改保留位置中性表达，也不为未知位置新增必须由用户决定的业务问题。'
+    '只读查看须有独立结束或有据的等待路径；空态与列表态都不能强制接续新增或修改。'
+    '新增、修改必须由用户显式选择进入，保留已明确的合法写入分支，不以删去写入分支规避路径问题。'
+    '保留有据的失败反馈和重试，不统一删除，也不为补齐图形而虚造未约定行为；历史流程图不是新业务来源。'
+    '采用紧凑业务图：一个节点表达一个业务动作或真正分流的判断，不将字段清单、每项必填或长度规则逐条展开为节点；'
+    '同一对象同一动作的共同前置校验合并为一个校验节点，具体条件保留在正文与边条件中。'
+    '合并完全相同且来源作用域相同的处理和结束节点，不重复画失败终点；不同动作的反馈或权限不同则不得为精简而合并。'
+    '不新增没有业务分支的占位节点，不为追求节点数量删去真实成功、失败、未知结果、查看结束或有据重试路径。'
+)
 DISCUSSION_APPENDIX_TITLE = '附录：条目身份与历史讨论'
 MRD_NORMATIVE_APPENDIX_TITLE = '附录：对应产品要求'
 REFS = dict(type='array', items=dict(type='string', minLength=1, maxLength=120), maxItems=100, uniqueItems=True)
@@ -18,6 +35,7 @@ SECTION_TITLES = {
     'acceptance':'验收条件', 'discussion':'待核对内容', 'limits':'资料限制与未决事项',
 }
 CLOUD_PRD_SECTIONS = {'interaction':'交互逻辑', 'business_flow':'业务流程说明'}
+EMPTY_BEHAVIOR = ('未知','待确认','资料未说明','未提及异常分支','不适用')
 MRD_SECTION_TITLES_V4 = {
     **SECTION_TITLES,
     'priority':'优先级与决策依据',
@@ -67,6 +85,10 @@ PLAN_SCHEMA_V3['properties']['sections']['items']['properties']['explanations'] 
                       'evidence_refs':EXPLANATION_REFS}}}
 PLAN_SCHEMA_V4 = copy.deepcopy(PLAN_SCHEMA_V3)
 PLAN_SCHEMA_V4['properties']['plan_version'] = {'const':'4'}
+from .requirement_details import DETAIL_SCHEMA
+PLAN_SCHEMA_V4['properties']['flowcharts'] = dict(type='array', maxItems=100, items=dict(
+    type='object', additionalProperties=False, required=['requirement_id','flow'], properties=dict(
+        requirement_id=dict(type='string'), flow=copy.deepcopy(DETAIL_SCHEMA['properties']['flow']))))
 PLAN_SCHEMA_V4['properties']['sections']['items']['properties']['section_key'] = {
     'enum':list(MRD_SECTION_TITLES_V4)+list(CLOUD_PRD_SECTIONS)}
 PLAN_SCHEMA_V4['properties']['sections']['items']['properties']['explanations']['items']['properties']['text']['description'] = (
@@ -83,6 +105,52 @@ def cloud_prd_required(p, kind):
     product = str(p.get('product_context',{}).get('product') or p.get('name','')).lower()
     return (not any(word in product for word in ('不是云平台','非云平台','与云平台无关','not a cloud platform','not cloud platform'))
             and any(word in product for word in ('云平台','cloud platform')))
+
+
+def validate_flowchart(flow, requirement, project):
+    from .requirement_confirmation import confirmation_current, _sources_valid
+    from .detail_rendering import flow_layout
+    require(requirement['id'] in {i['id'] for i in delivery_items(project)}
+            and requirement['kind']=='requirement' and not requirement.get('detail_contract')
+            and confirmation_current(project, requirement), 'REFERENCE_INVALID', '流程图必须绑定当前已确认的基础需求')
+    _sources_valid(project, requirement)
+    errors=list(jsonschema.Draft202012Validator(DETAIL_SCHEMA['properties']['flow']).iter_errors(flow))
+    require(not errors,'SCHEMA_INVALID','流程图结构无效')
+    ids=[edge['id'] for edge in flow['edges']]
+    require(len(ids)==len(set(ids)),'REFERENCE_INVALID','流程连线编号重复')
+    normalized=copy.deepcopy(flow)
+    outgoing={edge['from'] for edge in normalized['edges']}
+    for node in normalized['nodes']:
+        if node['kind']=='end' and node['id'] in outgoing:node['kind']='action'
+    try:flow_layout(normalized)
+    except (ValueError,KeyError,TypeError) as error:
+        require(False,'SEMANTIC_BLOCKED',str(error))
+    return normalized
+
+
+def saved_prd_plan(p):
+    contract=plan_contract(p,'prd')
+    plan=dict(plan_version='4',sections=[dict(section_key='function',context_refs=contract['context_ref_ids'],
+        normative_refs=contract['normative_item_ids'],discussion_refs=[],explanations=[])])
+    if cloud_prd_required(p,'prd'):
+        items={item['id']:item for item in p['items']}
+        for section,fields in (('interaction',('entry','exceptions')),('business_flow',('flow','result'))):
+            explanations=[]
+            for iid in contract['required_detail_requirement_ids']:
+                behavior=items[iid].get('behavior',{})
+                text='\n'.join(behavior[field] for field in fields if behavior.get(field))
+                if text:explanations.append(dict(text=text,evidence_refs=dict(context_refs=[],normative_refs=[iid],business_claim_refs=[])))
+            if explanations:plan['sections'].append(dict(section_key=section,context_refs=[],normative_refs=[],discussion_refs=[],explanations=explanations))
+    return plan
+
+
+def basic_flow_ids(p):
+    from .requirement_confirmation import confirmation_current
+    requirements=[i for i in delivery_items(p) if i['kind']=='requirement']
+    if not requirements or any(i.get('detail_contract') or not confirmation_current(p,i) for i in requirements):return []
+    if any(not str(i.get('behavior',{}).get('flow','')).strip().rstrip('。')
+           or str(i.get('behavior',{}).get('flow','')).strip().rstrip('。') in EMPTY_BEHAVIOR for i in requirements):return []
+    return [i['id'] for i in requirements]
 
 
 def cloud_prd_requirements(p):
@@ -122,7 +190,7 @@ def cloud_prd_gaps(doc, p):
         missing=[label for key,label in BEHAVIOR.items()
                  if not str(item.get('behavior',{}).get(key,'')).strip()
                  or str(item.get('behavior',{}).get(key,'')).strip().rstrip('。')
-                 in ('未知','待确认','资料未说明','未提及异常分支','不适用')]
+                in EMPTY_BEHAVIOR]
         if missing:
             gaps.append('云平台 PRD 的 '+item['id']+' 缺少已核对行为：'+'、'.join(missing)+
                         '；按资料补充交互与流程，确实不适用须说明依据。')
@@ -158,9 +226,21 @@ def verified_context(p):
         return {}
     current=p.get('product_context',{})
     states=p.get('context_field_states') or {}
+    proposal_evidence=p.get('product_context_proposal_evidence') or {}
+    def unresolved(key):
+        text=current.get(key,'')
+        evidence=proposal_evidence.get(key) or {}
+        confirmation=(p.get('context_confirmations') or {}).get(key) or {}
+        confirmed=(confirmation.get('actor')=='authenticated_local_user' and
+            confirmation.get('content_hash')==digest(dict(text=text,state=states.get(key))))
+        # Completion of a page is not evidence that a proposed priority or
+        # permission became a business fact. Keep explicit qualifiers intact.
+        return (isinstance(text,str) and any(word in text for word in ('待确认','待决定','待产品确认'))
+            or evidence.get('text')==text and evidence.get('basis') in ('recommendation','unknown')
+            and evidence.get('evidence_status')=='unreviewed' and not confirmed)
     return {key:copy.deepcopy(current[key]) for key in CONTEXT_LABELS
             if isinstance(current.get(key),str) and current[key].strip()
-            and (states.get(key) or {}).get('status') not in ('unknown','not_applicable','none')}
+            and (states.get(key) or {}).get('status') not in ('unknown','not_applicable','none') and not unresolved(key)}
 
 
 def sourced_acceptance_ids(p):
@@ -243,7 +323,7 @@ def plan_contract(p, kind=None):
                'PRD 解释场景、操作流程、状态、数据、权限、异常和可观察验收；未知行为只写具名待决。')
         explanation_ids=[i['id'] for i in p['items'] if i['id'] in normative_ids
                          and not (kind=='prd' and i.get('detail_contract'))]
-        return dict(version='prd-plan-contract-12',plan_version='4',document_type=kind,
+        return dict(version='prd-plan-contract-16',plan_version='4',document_type=kind,
             example=example,can_generate=example is not None,
             example_notice='仅演示合法引用结构，不是项目答案。' if example else '没有可引用的已核对事实或条目，不可生成。',
             section_keys=([key for key in ('background','users','goal','scope','priority','validation','risks')] if kind=='mrd' else
@@ -256,19 +336,28 @@ def plan_contract(p, kind=None):
             validation_acceptance_ids=sorted(validation_acceptance_ids),
             context_ref_ids=context_ids,normative_item_ids=normative_ids,
             explanation_normative_item_ids=explanation_ids,
+            section_explanation_normative_item_ids={'users':normative_ids} if kind=='prd' else {},
             discussion_item_ids=discussion_ids,business_claim_ref_ids=claim_ids,
-            rules='根节点只有 plan_version=4、sections；每节只有 section_key、context_refs、normative_refs、discussion_refs、explanations。'
+            rules=(FLOW_RULES if kind=='prd' else '')+'根节点为 plan_version=4、sections；PRD为有已确认流程的基础需求生成flowcharts，真实缺口不编造，不新增业务决定。每节只有 section_key、context_refs、normative_refs、discussion_refs、explanations。'
                   '每节至少有一项当前有效引用；explanations 为可选的有来源解释，每项只含 text 和 evidence_refs；'
                   'evidence_refs 必须完整含 context_refs、normative_refs、business_claim_refs，至少一项非空，且仅引用对应白名单。'
                   '每段解释的依据独立绑定；叙述已能登录、查看、导出或其它现有实现时，该段evidence_refs必须引用current_state或相应肯定工程证据。仅引用users或本期要求不能借用其它段的现状证明。章节context_refs的不重复排版约束不限制explanations.evidence_refs重复引用真实依据；现状即使已在背景章展示，使用者章引用其能力时仍须在该段evidence_refs列current_state。'
-                  '解释只写有来源的信息增量，不在各节换词复述同一功能。MRD说明使用者的实际工作路径与问题影响；priority章用已核对priority分析为什么先做及决策依据；validation章依据已选验收或已核对价值，说明试点中可观察的成功判据、验证方式和待补数据。缺少耗时、规模、成功率或收益数字时写具名待决，不编阈值或ROI。risks仅在有据时写依赖、风险和待决。PRD聚焦流程、状态数据、边界和可观察验收。'
+                  '解释只写有来源的信息增量，不在各节换词复述同一功能。MRD说明使用者的实际工作路径与问题影响；priority章用已核对priority分析为什么先做及决策依据；validation章依据已选验收或已核对价值，说明试点中可观察的成功判据、验证方式和待补数据。耗时、规模、成功率或收益数字仅在本期需要且尚未确定时写具名待决，不编阈值或ROI；用户已明确不要求、不适用或排除的指标、规则与范围，必须保留该决定，不能因没有数值改写成待确认，也不能另造同义衡量要求。risks仅在有据时写依赖、风险和待决。PRD聚焦流程、状态数据、边界和可观察验收。'
                   '已核对上下文若已在有该 context_ref 的解释里完整引用原句，不再重复回填展示；原始快照仍保留。'+
                   ('MRD正文分别安排背景、使用者、目标、范围、优先级与试点验证；可用证据不足时不强制生成试点验证或风险章节。priority已核对原句由程序放在优先级章，不要在目标章重述。全部已选规范原文统一在末尾产品要求附录单次展示。'
+                   'MRD归纳角色限制须保留原文的操作与条件范围：管理员不代释放，不能泛化为禁止管理员认领或参与其他未说明的操作；未说明的权限不推断允许或禁止。'
+                   'MRD归纳竞争规则须保留规范条件原文：服务端首个成功不能替换为请求先到、先发或先点击者生效；成功判据与到达顺序不是同一条件，不用常见机制替代已定规则。'
                    if kind=='mrd' else 'PRD的requirement、rule、acceptance原文固定分别进入功能需求、业务规则、验收条件；行为字段同步展示。单条规范解释紧随该条目；有来源的多条规范解释进入独立关联说明章节，避免在最后一条需求下复述整套功能。')+
                   'context_refs、normative_refs 所列原文及 PRD 行为字段会自动展示；explanations 没有新的有用关系或业务影响时用 []，不得换词复述或写组装过程。'
                   '解释只可归纳引用的已核对事实，不能发明数字、目标、权限、状态转换、默认行为或新规则；未知交还澄清候选。工程快照中的现有技术只证明快照现状；未经有权决策采纳，不得写成新功能已确定采用的技术选型或业务规范。'
+                  '本轮成文事实依据仅为当前规范白名单、已确认语境和有效原来源；旧文档解释不能自证为当前事实。'
+                  '角色在某一操作上的限制不授予其它权限或证明其它能力：管理员不代释放不证明管理员能查看告警；未说明的权限不推断允许或禁止，也不为无关权限新增确认要求。'
+                  '原文含建议、推荐、待确认时必须保留其身份，引用存在或条目已选择不能把建议变成已确认事实。'
+                  '操作权限只说明谁可以或不可以执行，不等于按钮隐藏、禁用或入口不存在；已确认的权限与未定的展示属性分别表达，只有资料明确才写具体入口表现。同样，已定展示对象、页面和范围不能因样式未知而删除、改为二选一；常见交互样式只能标为建议或具名待定。'
+                  '现状使用电话跟进不表示本期替代电话；建议记录只读不表示已禁止编辑；建议优先级不表示本期已确定。没有相应用户决定时不得推导这些替换、禁止或优先规则。'
                   'program_rendered_detail_ids中的详细定义由程序生成字段表、交互表、流程图、分支表和状态表；不得在explanations重新写这些字段属性、约束值或流程关系。相关条目只需列入normative_refs。'
-                  '章节外层normative_refs使用normative_item_ids；explanations.evidence_refs.normative_refs只能使用explanation_normative_item_ids。后者不含程序成文的详细定义，任何解释段落都不得引用这些条目；没有独立有效依据的解释使用[]，保留外层引用即可完整成文。'
+                  '章节外层normative_refs使用normative_item_ids；explanations.evidence_refs.normative_refs使用explanation_normative_item_ids，若section_explanation_normative_item_ids有本节键则使用该节白名单。'
+                  '仅PRD的users章允许引用当前详细需求，归纳有依据的角色、操作和条件，保留全部真实引用，正文留在使用者与权限章；不得据此新增权限或重写详细定义。其它章节仍不接受程序成文详细定义的重复解释；没有独立有效依据的解释使用[]，保留外层引用即可完整成文。'
                   'MRD的required_analysis_sections必须分别有至少一段explanations，不能仅列引用或空数组；priority解释为什么先做，validation说明如何观察验收，各自引用对应依据。这些必需分析不适用普通章节可以不解释的规则。'
                   '本期决定的数量边界、冲突拒绝及原子处理等规则仍是本期要求；只有current_state或肯定工程证据明确同一规则已经存在，才可称为既有约束/现行规则。不根据沿用、保持或验收前提推断已经实现。'
                   '已选规范由程序逐字回填，解释不能更改其含义；验收条款的“已有”前提可能指部署后的验收环境，不据此声称当前生产已经实现。候选条款、推断及冲突观察不能成为无标签正文事实。'
@@ -313,6 +402,24 @@ def plan_schema(p,kind):
     """One document type's wire keys; never advertise another type's chapters."""
     schema=copy.deepcopy(PLAN_SCHEMA_V4)
     contract=plan_contract(p,kind)
+    if kind=='prd':
+        flow_ids=basic_flow_ids(p)
+        flow_schema=schema['properties']['flowcharts']['items']['properties']['flow']
+        for group,keys in (('nodes',('id','label','kind')),('edges',('id','from','to','condition'))):
+            row=flow_schema['properties'][group]['items']
+            row['properties']={key:value for key,value in row['properties'].items() if key in keys}
+            row['required']=['id','label','kind'] if group=='nodes' else ['id','from','to']
+        flow_schema['properties']['nodes']['items']['properties']['label'].update(
+            maxLength=24,description='不超过24字的简短动作或判断名称；完整规则保留在正文，分支条件写在连线上。')
+        if flow_ids:
+            schema['required'].append('flowcharts')
+            schema['properties']['flowcharts'].update(minItems=len(flow_ids),maxItems=len(flow_ids))
+            schema['properties']['flowcharts']['items']['properties']['requirement_id']['enum']=flow_ids
+            schema['properties']['sections']['const']=saved_prd_plan(p)['sections']
+        schema['properties']['flowcharts']['description']='为每个没有detail_contract的已确认基础需求画业务流程图，requirement_id引用当前需求。仅根据其原文、behavior与真实来源绘制节点和分支，不新增角色、业务决定或数据状态。节点使用简短动作或判断名称，不塞入整段规则；完整规则由正文保留，分支条件写在边的condition中。按来源区分发起操作、处理中、收到结果，不能把尚未完成的操作写成已完成后才进入处理中。存在无响应超时分支时，中间连线不得强制已收到服务端响应；页面空态判断在需要该记录的操作之前。重试回路必须重新经过原文适用的提交前校验或权限检查，不得回到校验之后的发送步骤。无明确结果或查询异常应保留原有结果，仅当来源明确原状态未知才维持未知，不得将已有成功或失败改成未知。保留来源已明确的处理中限制、成功和失败后的结束恢复、用户主动重试及保持边界；仅画来源支持的步骤，真实缺口不虚造。详细定义已有图不重复绘制。'
+        schema['properties']['flowcharts']['description'] += FLOW_RULES
+    else:
+        schema['properties'].pop('flowcharts',None)
     keys=list(contract['section_keys'])
     if contract['discussion_item_ids']:
         keys.append('discussion')
@@ -327,18 +434,32 @@ def plan_schema(p,kind):
         restrict(properties[field],ids)
     basis=properties['explanations']['items']['properties']['evidence_refs']['properties']
     for field,ids in (('context_refs',contract['context_ref_ids']),
-                      ('normative_refs',contract['explanation_normative_item_ids']),
                       ('business_claim_refs',contract['business_claim_ref_ids'])):
         basis[field]=copy.deepcopy(basis[field])
         restrict(basis[field],ids)
+    # Keep the wire schema and compiler on the same chapter-specific whitelist.
+    # The users exception does not widen any other chapter's explanations.
+    section_rule=schema['properties']['sections']['items']
+    def explanation_rule(ids):
+        refs=copy.deepcopy(REFS);restrict(refs,ids)
+        return {'properties':{'explanations':{'items':{'properties':{
+            'evidence_refs':{'properties':{'normative_refs':refs}}}}}}}
+    overrides=contract.get('section_explanation_normative_item_ids',{})
+    if overrides:
+        section_rule['allOf']=[{'if':{'properties':{'section_key':{'const':key}}},
+            'then':explanation_rule(ids),
+            'else':explanation_rule(contract['explanation_normative_item_ids'])}
+            for key,ids in overrides.items()]
+    else:
+        restrict(basis['normative_refs'],contract['explanation_normative_item_ids'])
     schema['properties']['sections']['items']['properties']['section_key']={'enum':keys}
     if kind=='prd' and contract['required_detail_requirement_ids']:
         required_keys=list(CLOUD_PRD_SECTIONS)
         schema['properties']['sections']['allOf']=[{'contains':{'properties':{
             'section_key':{'const':key}},'required':['section_key']}} for key in required_keys]
-        schema['properties']['sections']['items']['allOf']=[
+        schema['properties']['sections']['items'].setdefault('allOf',[]).extend([
             {'if':{'properties':{'section_key':{'enum':required_keys}}},
-             'then':{'properties':{'explanations':{'minItems':1}}}}]
+             'then':{'properties':{'explanations':{'minItems':1}}}}])
     if kind=='mrd':
         required=[]
         for key in contract['required_analysis_sections']:
@@ -365,7 +486,7 @@ def repair_instruction(error,p,kind=None):
                 'section_key 只能从本次 document_type 对应的 section_keys 选择；discussion 仅在含有效 discussion_refs 时可用；不丢弃非法章节中的有效正文和依据，不删除业务内容来过关。'
                 '不能在解释中新增规则、数值或改变规范原文。工程快照不决定新功能技术选型。'+
                 ('MRD按 required_analysis_sections 分别补优先级和试点验证分析，前者引用已核对priority，后者引用已选验收或已核对value/intent；避免重复目标与范围，缺数字保留未知。'
-                 if kind=='mrd' else 'PRD不输出MRD专用priority、validation、risks章节；有来源的相关正文保留原意和全部有效依据，使用当前合法章节键，程序按依据归章。explanations.evidence_refs.normative_refs只能取explanation_normative_item_ids。若解释引用了程序成文的详细定义，删除重复解释并保留章节外层normative_refs，完整字段、流程和交互仍由程序展示；不得只删引用却保留无依据文字，也不得改挂其他条目或伪造上下文。')+
+                 if kind=='mrd' else 'PRD不输出MRD专用priority、validation、risks章节；有来源的相关正文保留原意和全部有效依据，使用当前合法章节键，程序按依据归章。explanations.evidence_refs.normative_refs使用explanation_normative_item_ids或section_explanation_normative_item_ids中本节白名单。仅users章允许保留引用当前详细需求的角色、操作与条件解释及全部真实依据，正文留在使用者与权限章。其它章节若解释引用了程序成文的详细定义，删除重复解释并保留章节外层normative_refs，完整字段、流程和交互仍由程序展示；不得只删引用却保留无依据文字，也不得改挂其他条目或伪造上下文。')+
                 '空章节省略；未决问题返回澄清阶段。'
                 '\n实际错误：'+error.message+'\n唯一文档计划契约：'+dumps(contract))
     common=('重新输出完整 v2 章节引用对象，只修结构或引用；不重选方向、不补答、不改规则或采纳状态。业务原文由程序回填。'
@@ -416,10 +537,100 @@ def context(p, *, include_sketch=True):
             reference_notice='当前章节参考由可信任务头 content_profile 指定；项目材料与章节参考不是同一对象。'))
 
 
+def preserve_repair_explanation_refs(original,plan,p,kind):
+    """Restore current valid evidence only for unchanged, uniquely matched paragraphs."""
+    result=copy.deepcopy(plan);changes=[]
+    if (kind!='prd' or not isinstance(original,dict) or not isinstance(plan,dict)
+        or original.get('plan_version')!='4' or plan.get('plan_version')!='4'
+        or not isinstance(original.get('sections'),list) or not isinstance(plan.get('sections'),list)):
+        return result,changes
+    contract=plan_contract(p,kind)
+    for index,section in enumerate(result['sections']):
+        if not isinstance(section,dict):continue
+        key=section.get('section_key')
+        old_sections=[s for s in original['sections'] if isinstance(s,dict) and s.get('section_key')==key]
+        new_sections=[s for s in result['sections'] if isinstance(s,dict) and s.get('section_key')==key]
+        if len(old_sections)!=1 or len(new_sections)!=1 or key not in contract['section_keys']:continue
+        old_rows=old_sections[0].get('explanations');new_rows=section.get('explanations')
+        if not isinstance(old_rows,list) or not isinstance(new_rows,list):continue
+        allowed=dict(context_refs=contract['context_ref_ids'],business_claim_refs=contract['business_claim_ref_ids'],
+            normative_refs=contract['section_explanation_normative_item_ids'].get(key,contract['explanation_normative_item_ids']))
+        for position,paragraph in enumerate(new_rows):
+            if not isinstance(paragraph,dict) or not isinstance(paragraph.get('text'),str):continue
+            matches=[e for e in old_rows if isinstance(e,dict) and e.get('text')==paragraph['text']]
+            if len(matches)!=1 or sum(isinstance(e,dict) and e.get('text')==paragraph['text'] for e in new_rows)!=1:continue
+            old_basis=matches[0].get('evidence_refs');new_basis=paragraph.get('evidence_refs')
+            if not isinstance(old_basis,dict) or not isinstance(new_basis,dict):continue
+            for group,refs in allowed.items():
+                old=old_basis.get(group);new=new_basis.get(group)
+                if not isinstance(old,list) or not isinstance(new,list) or not all(isinstance(r,str) for r in old+new):continue
+                valid=[r for r in old if r in refs]
+                missing=list(dict.fromkeys(r for r in valid if r not in new))
+                if missing:
+                    new_basis[group]=list(dict.fromkeys(valid+new))
+                    changes.append(dict(path=['sections',index,'explanations',position,'evidence_refs',group],
+                        section_key=key,restored_refs=missing))
+    return result,changes
+
+
+def semantic_correction(plan,error,p,kind):
+    """One exact explanation slot; no full-plan rewrite or canonical mutation."""
+    match=re.fullmatch(r'sections\[(\d+)\]\.explanations\[(\d+)\]\.text',getattr(error,'semantic_path',''))
+    if not match or plan.get('plan_version')!='4' or not getattr(error,'semantic_issues',None):return None
+    si,ei=map(int,match.groups());section=plan['sections'][si];original=section['explanations'][ei]
+    contract=plan_contract(p,kind)
+    allowed=set(contract.get('section_explanation_normative_item_ids',{}).get(section['section_key'],contract['explanation_normative_item_ids']))
+    schema={'type':'object','additionalProperties':False,'required':['explanation'],
+        'properties':{'explanation':copy.deepcopy(PLAN_SCHEMA_V4['properties']['sections']['items']['properties']['explanations']['items'])}}
+    schema['properties']['explanation']['properties']['text']['description']=(
+        '指定段落纠正后的完整成稿正文；保留有依据内容，改正已指认的无依据断言，不返回写作计划。')
+    guidance={
+        'current_capability_absence':(
+            '该原句把未提供的现状当成已证实的能力缺失。资料列出已有功能或提出新增目标，'
+            '不证明现有系统不能做到其它事情。改写该原句中的现状否定断言；'
+            '可按已确认intent/value表述本期目标，不得保留或换词重述无依据的能力缺失。'),
+        'success_order_condition':(
+            '该原句把服务端首个成功的判据改成先到、先提交或先点击。'
+            '按来源恢复成功这一条件；不能仅凭请求到达次序断定成功或失败。'),
+    }
+    context=verified_context(p)
+    normative={i['id']:normative_evidence(i) for i in p['items'] if i['id'] in allowed}
+    business=verified_business_context(p)
+    evidence_maps=dict(context_refs=context,normative_refs=normative,business_claim_refs=business)
+    packet=dict(path=error.semantic_path,section_key=section['section_key'],original=copy.deepcopy(original),
+        findings=copy.deepcopy(error.semantic_issues),original_evidence=error.semantic_evidence,
+        correction_targets=[dict(quote=f['quote'],dimension=f['dimension'],instruction=guidance.get(f['dimension'],
+            '改正该原句超出来源的条件或事实断言，保留来源实际支持的内容。')) for f in error.semantic_issues],
+        direct_evidence={group:{ref:evidence_maps[group][ref] for ref in original['evidence_refs'][group]
+            if ref in evidence_maps[group]} for group in evidence_maps},
+        context=context,normative=normative,business=business)
+    messages=[dict(role='system',content=(
+        '仅修正指定explanation的来源语义错误，不改章节、其他段落、规范、验收、来源或人工决定。'
+        '依据findings的原句和original_evidence核对同一对象及条件，保持有来源的内容；只把无依据现状、排他/先后判据等改为来源实际支持的表述。'
+        'correction_targets是已定位且必须纠正的断言；逐项改正其quote中的问题，仅改旁句、补引用或原样返回不算纠正。'
+        '允许删去无依据子句并保留同段有依据内容及其引用；不得删除整段合法内容，也不要求产品经理确认无关现状。'
+        'direct_evidence按原引用键列出直接依据；context/normative/business仅为可选的真实补充依据，新增引用也必须支持对应文字。'
+        '缺失资料不证明能力不存在；首成功不等于首提交或先到。不要写修复过程、历史未采纳讨论或新PM问题。'
+        '返回explanation.text和完整evidence_refs，只可使用提供context/normative/business的真实键，不能去掉引用保留无据文字。'
+        '该补丁仍须重新通过全文语义与引用检查。只返回Schema JSON。\n可信任务头：'+dumps(dict(stage='prd',schema=schema)))),
+        dict(role='user',content=[dict(type='text',text=dumps(packet))])]
+    return dict(section=si,explanation=ei,original=copy.deepcopy(original),schema=schema,messages=messages,findings=packet['findings'])
+
+
+def apply_semantic_correction(plan,prepared,patch):
+    require(not list(jsonschema.Draft202012Validator(prepared['schema']).iter_errors(patch)),
+        'PRD_SEMANTIC_CORRECTION_INVALID','段落语义纠正格式不正确，原文档和原候选保留。')
+    value=copy.deepcopy(plan)
+    require(value['sections'][prepared['section']]['explanations'][prepared['explanation']]==prepared['original'],
+        'PRD_SEMANTIC_CORRECTION_INVALID','待纠正段落发生变化，未应用补丁。')
+    value['sections'][prepared['section']]['explanations'][prepared['explanation']]=copy.deepcopy(patch['explanation'])
+    return value
+
+
 def normalize_structured_explanations(plan,p,kind):
     """Recover the explicit layout contract for program-rendered requirements.
 
-    Such references cannot support a second model-written explanation. Preserve
+    Outside the users chapter, these references cannot support a second explanation. Preserve
     their full normative/context bindings on the chapter and let the existing
     compiler emit the exact saved facts. Keep original prose in diagnostics;
     never detach references while retaining unsupported narrative.
@@ -427,8 +638,25 @@ def normalize_structured_explanations(plan,p,kind):
     value=copy.deepcopy(plan);changes=[]
     if kind!='prd' or not isinstance(value,dict) or value.get('plan_version')!='4':return value,changes
     contract=plan_contract(p,kind);rendered=set(contract['program_rendered_detail_ids']);contexts=set(contract['context_ref_ids'])
-    if not rendered or not isinstance(value.get('sections'),list):return value,changes
+    if not isinstance(value.get('sections'),list):return value,changes
+    retained=[]
     for index,section in enumerate(value['sections']):
+        if (isinstance(section,dict)
+                and set(section)=={'section_key','context_refs','normative_refs','discussion_refs','explanations'}
+                and section['section_key'] in contract['section_keys']
+                and section['section_key'] not in contract['required_analysis_sections']
+                and all(section[key]==[] for key in ('context_refs','normative_refs','discussion_refs','explanations'))):
+            changes.append(dict(path=f'sections[{index}]',raw=copy.deepcopy(section),
+                rule='empty-optional-section',reason='可选章节没有内容或引用，省略空标题；条款覆盖仍须校验。'))
+        else:retained.append(section)
+    # Preserve a fully empty response for the normal OUTPUT_EMPTY/schema gate.
+    if retained:value['sections']=retained
+    else:changes=[]
+    if not rendered:return value,changes
+    for index,section in enumerate(value['sections']):
+        # Role/operation/condition explanations retain their actual evidence;
+        # compile_plan still validates every binding and the narrative itself.
+        if isinstance(section,dict) and section.get('section_key')=='users':continue
         if not isinstance(section,dict) or not all(isinstance(section.get(k),list) for k in ('context_refs','normative_refs','explanations')):continue
         if not all(isinstance(ref,str) for ref in section['context_refs']+section['normative_refs']):continue
         kept=[]
@@ -451,6 +679,8 @@ def normalize_structured_explanations(plan,p,kind):
 
 def compile_plan(plan, p, kind, omitted=(), *, include_sketch=True):
     if not include_sketch:p=without_sketch(p)
+    if kind=='prd' and plan.get('plan_version')=='4' and basic_flow_ids(p):
+        plan=dict(plan,sections=saved_prd_plan(p)['sections'])
     version=plan.get('plan_version')
     schema={'2':PLAN_SCHEMA,'3':PLAN_SCHEMA_V3,'4':PLAN_SCHEMA_V4}.get(version,PLAN_SCHEMA_V4)
     errors=list(jsonschema.Draft202012Validator(schema).iter_errors(plan))
@@ -503,6 +733,10 @@ def compile_plan(plan, p, kind, omitted=(), *, include_sketch=True):
         for j,key in enumerate(s['context_refs']):
             at=f'sections[{n}].context_refs[{j}]'
             require(key in contract['context_ref_ids'],'REFERENCE_INVALID',at+' '+key+' 不是当前已核对的非空产品上下文字段')
+            if v4 and kind=='prd':
+                # Checked context has stable reader chapters, regardless of
+                # where the model first uses it as supporting evidence.
+                continue
             if v4 and kind=='mrd' and key=='priority':
                 # Priority is displayed once in its own section even if the
                 # model referenced it while planning another MRD chapter.
@@ -543,7 +777,8 @@ def compile_plan(plan, p, kind, omitted=(), *, include_sketch=True):
                         'SCHEMA_INVALID',f'sections[{n}].explanations[{j}].text 是写作指令而非读者正文；直接写有来源的产品事实或使用 []')
                 require(any(basis.values()),'REFERENCE_INVALID',at+' 缺少已核对依据')
                 for group,allowed_refs in (('context_refs',set(contract['context_ref_ids'])),
-                    ('normative_refs',set(contract.get('explanation_normative_item_ids',contract['normative_item_ids']))),
+                    ('normative_refs',set(contract.get('section_explanation_normative_item_ids',{}).get(
+                        s['section_key'],contract.get('explanation_normative_item_ids',contract['normative_item_ids'])))),
                     ('business_claim_refs',set(contract['business_claim_ref_ids']))):
                     for k,ref in enumerate(basis[group]):
                         require(ref in allowed_refs,'REFERENCE_INVALID',
@@ -552,18 +787,27 @@ def compile_plan(plan, p, kind, omitted=(), *, include_sketch=True):
                                  if group=='normative_refs' and ref in contract.get('program_rendered_detail_ids',[]) else ''))
                 from .semantic_quality import validate_explanation
                 structured_refs=[r for r in basis['normative_refs'] if items[r].get('detail_contract')]
-                require(not (kind=='prd' and structured_refs),'SEMANTIC_BLOCKED',
+                users = v4 and kind=='prd' and s['section_key']=='users'
+                require(not (kind=='prd' and structured_refs and not users),'SEMANTIC_BLOCKED',
                         '已结构化详细定义由程序直接成文，不接受模型重复解释规范值：'+'、'.join(structured_refs))
                 detail = v4 and kind=='prd' and s['section_key'] in CLOUD_PRD_SECTIONS
                 evidence='\n'.join([current_context[r] for r in basis['context_refs']]+[normative_evidence(items[r],include_behavior=detail) for r in basis['normative_refs']]+[verified_business_context(p)[r]['text'] for r in basis['business_claim_refs']])
                 existing='\n'.join([current_context[r] for r in basis['context_refs'] if r=='current_state']+[verified_business_context(p)[r]['text'] for r in basis['business_claim_refs']])
                 scenario='\n'.join([current_context[r] for r in basis['context_refs'] if r!='current_state']+[normative_evidence(items[r],include_behavior=detail) for r in basis['normative_refs']])
+                if users and structured_refs:
+                    from .detail_rendering import detail_plaintext
+                    saved_details='\n'.join(detail_plaintext(items[r],group) for r in structured_refs
+                                            for group in ('fields','interactions','flow','state_transitions'))
+                    evidence+='\n'+saved_details
+                    scenario+='\n'+saved_details
                 validate_explanation(explanation['text'],evidence,existing,at.replace('.evidence_refs','.text'),scenario_evidence=scenario)
                 block=dict(kind='explanation',ref_ids=basis['normative_refs'],
                            evidence_refs=copy.deepcopy(basis),text=explanation['text'])
                 if v4 and kind=='prd':
                     normative=basis['normative_refs']
-                    if detail:
+                    if users:
+                        prd_context_explanations.setdefault('users',[]).append(block)
+                    elif detail:
                         prd_details.setdefault(s['section_key'],[]).append(block)
                     elif len(normative)==1:
                         prd_explanations.setdefault(normative[0],[]).append(block)
@@ -573,7 +817,8 @@ def compile_plan(plan, p, kind, omitted=(), *, include_sketch=True):
                         prd_associations.setdefault(association_kind,[]).append(block)
                     else:
                         context_sections={CONTEXT_SECTION_V4[key] for key in basis['context_refs']}
-                        destination=('background' if basis['business_claim_refs'] or len(context_sections)>1 else
+                        destination=(s['section_key'] if s['section_key'] in context_sections else
+                                     'background' if basis['business_claim_refs'] or len(context_sections)>1 else
                                      next(iter(context_sections)) if context_sections else s['section_key'])
                         prd_context_explanations.setdefault(destination,[]).append(block)
                 else:
@@ -595,9 +840,14 @@ def compile_plan(plan, p, kind, omitted=(), *, include_sketch=True):
         if v4 and kind=='prd' and not blocks and s['explanations']:
             # Referenced explanations are attached to their evidence's section.
             continue
-        if v4 and not blocks and s['context_refs'] and all(key in covered_context for key in s['context_refs']):
+        if v4 and not blocks and s['context_refs'] and (kind=='prd' or all(key in covered_context for key in s['context_refs'])):
             # A later explanation may carry this section's complete context.
             # Omit the now-empty heading instead of demanding a paid repair.
+            continue
+        if (v4 and s['section_key'] not in contract['required_analysis_sections']
+                and not any(s[key] for key in ('context_refs','normative_refs','discussion_refs','explanations'))):
+            # A legal optional heading carries no content to repair. Required
+            # sections and overall reference coverage still validate below.
             continue
         require(blocks,'OUTPUT_EMPTY',f'sections[{n}] 没有可呈现的新引用；不要生成空章节或只重复 context_refs')
         sid=section(title,blocks)
@@ -633,6 +883,7 @@ def compile_plan(plan, p, kind, omitted=(), *, include_sketch=True):
                 section(title,[])
                 target=sections[-1]
             target['blocks'].append(text(CONTEXT_LABELS[key]+'：'+current_context[key]))
+            context_placed[key]=target['section_id']
         if (kind=='mrd' and 'priority' in current_context and
                 'priority' not in missing_context and 'priority' not in covered_context):
             title=MRD_SECTION_TITLES_V4['priority']
@@ -688,6 +939,14 @@ def compile_plan(plan, p, kind, omitted=(), *, include_sketch=True):
             section(PRD_ASSOCIATION_TITLES[association_kind],blocks)
     if kind=='prd':
         from .detail_rendering import detail_block, GROUP_TITLES
+        from .prd_sections import function_inventory_block, risk_register_blocks
+        inventory=function_inventory_block(p)
+        if inventory['ref_ids']:
+            section('主要功能清单',[inventory])
+            inventory_section=sections.pop()
+            function_index=next((index for index,value in enumerate(sections)
+                                 if value['title']==SECTION_TITLES['function']),0)
+            sections.insert(function_index,inventory_section)
         structured=[i for i in delivery_items(p) if i['kind']=='requirement' and i.get('detail_contract')]
         for group,title in GROUP_TITLES.items():
             if not structured:
@@ -698,6 +957,23 @@ def compile_plan(plan, p, kind, omitted=(), *, include_sketch=True):
                 section(title,blocks)
             else:
                 target['blocks'].extend(blocks)
+        charts=plan.get('flowcharts',[]) if v4 else []
+        seen_flows=set()
+        for chart in charts:
+            ref=chart['requirement_id']
+            require(ref in items and ref not in seen_flows,'REFERENCE_INVALID','流程图需求引用不存在或重复：'+ref)
+            normalized_flow=validate_flowchart(chart['flow'],items[ref],p)
+            from .requirement_confirmation import row_fingerprint
+            section(items[ref]['title']+' · 业务流程图',[dict(kind='flowchart',ref_ids=[ref],text=items[ref]['title']+' · 业务流程图',
+                flow=normalized_flow,source_hash=row_fingerprint(p,items[ref]))])
+            seen_flows.add(ref)
+        if not structured and not charts:
+            textual_flow=next((s for s in sections if s['title']==GROUP_TITLES['flow']),None)
+            if textual_flow is not None:
+                textual_flow['blocks'].append(text('当前仅有文字流程说明；尚未生成结构化功能流程图。请在需求详情中核对流程节点、分支与流转条件。'))
+            else:
+                section('功能流程图',[text('当前没有已核对的结构化流程；未生成流程图。请在需求详情中核对流程节点、分支与流转条件。')])
+        section('风险点与待确认',risk_register_blocks(p))
     # The MRD keeps every selected clause after the product body. Split the
     # annex at clause boundaries to respect the compiled document contract.
     # PRD and historical plan versions retain their original clause placement.
@@ -720,8 +996,12 @@ def compile_plan(plan, p, kind, omitted=(), *, include_sketch=True):
     appendix_ids=discussion_order+[i['id'] for i in p['items'] if i['id'] not in coverage
                   and i['id'] not in discussed and not represented_revision(i,items)]
     if appendix_ids:
-        sid=section(DISCUSSION_APPENDIX_TITLE,[discussion(items[r]) for r in appendix_ids])
-        discussion_locations={r:sid for r in appendix_ids}
+        block_limit=SCHEMA['$defs']['prdResult']['properties']['sections']['items']['properties']['blocks']['maxItems']
+        for offset in range(0,len(appendix_ids),block_limit):
+            batch=appendix_ids[offset:offset+block_limit]
+            # Keep the exact internal title: the reader must hide every audit chunk.
+            sid=section(DISCUSSION_APPENDIX_TITLE,[discussion(items[r]) for r in batch])
+            discussion_locations.update({r:sid for r in batch})
     questions=[]
     for q in p['questions']:
         if q.get('prewrite_resolution'):continue
@@ -740,7 +1020,10 @@ def compile_plan(plan, p, kind, omitted=(), *, include_sketch=True):
     ui_notice=context(p)['D_unknowns_limits']['ui']
     material_limits=['材料「'+s['title']+'」尚有读取限制：'+(s.get('failure_reason') or '需核对未读取或不清晰的内容') for s in p['sources'] if not s['excluded'] and s['parse_status']!='read']
     if omitted:material_limits.append('本轮未完整送入的来源片段：'+'、'.join(omitted))
-    planning_limits=(['章节建议未指定的已核对上下文字段：'+'、'.join(missing_context)] if missing_context else [])+(
+    # V4 places these exact originals deterministically above. A model's omitted
+    # layout choice is not missing content after successful local placement.
+    unplaced_context=[key for key in missing_context if key not in context_placed] if v4 else missing_context
+    planning_limits=(['章节建议未指定的已核对上下文字段：'+'、'.join(unplaced_context)] if unplaced_context else [])+(
         ['章节建议未指定的已选规范条目：'+'、'.join(i['id'] for i in missing_normative)] if missing_normative else [])
     pending=section('文档边界与资料限制',[text(ui_notice)]+[
         text(x,block_kind='open_question') for x in dict.fromkeys(material_limits+planning_limits)])

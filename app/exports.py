@@ -42,7 +42,7 @@ def readable_picture_parts(data):
         return parts
 
 
-def add_full_flow_page(doc, picture, title):
+def add_full_flow_page(doc, picture, title, *, view_layout=None, reuse_empty_section=False):
     """Place one complete flow on a landscape page and restore body geometry."""
     from docx.enum.section import WD_ORIENT, WD_SECTION
     from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -76,11 +76,13 @@ def add_full_flow_page(doc, picture, title):
         paragraph.paragraph_format.keep_with_next=False
         return section
 
-    landscape=new_page_section()
+    landscape=doc.sections[-1] if reuse_empty_section else new_page_section()
     landscape.different_first_page_header_footer=False
-    landscape.orientation=WD_ORIENT.LANDSCAPE
-    landscape.page_width=max(geometry['page_width'],geometry['page_height'])
-    landscape.page_height=min(geometry['page_width'],geometry['page_height'])
+    from .detail_rendering import view_fit
+    horizontal=view_layout is None or view_fit(view_layout)['landscape']
+    landscape.orientation=WD_ORIENT.LANDSCAPE if horizontal else WD_ORIENT.PORTRAIT
+    landscape.page_width=max(geometry['page_width'],geometry['page_height']) if horizontal else min(geometry['page_width'],geometry['page_height'])
+    landscape.page_height=min(geometry['page_width'],geometry['page_height']) if horizontal else max(geometry['page_width'],geometry['page_height'])
     for paragraph in headings:
         doc._body._body.insert_element_before(paragraph._p,'w:sectPr')
     if headings:
@@ -90,7 +92,7 @@ def add_full_flow_page(doc, picture, title):
     height=(landscape.page_height-landscape.top_margin-landscape.bottom_margin)/Inches(1)
     # Reserve room for headings, the caption, the inline-image baseline and the
     # closing section-break paragraph; never crop or split the image to fit.
-    height-=.7+.42*len(headings)
+    height-=max(1.6,.7+.42*len(headings)) if view_layout else .7+.42*len(headings)
     with Image.open(io.BytesIO(picture)) as image:
         picture_width=min(width,height*image.width/image.height)
     doc.add_picture(io.BytesIO(picture),width=Inches(picture_width))
@@ -100,7 +102,7 @@ def add_full_flow_page(doc, picture, title):
     paragraph.paragraph_format.space_after=Pt(3)
     paragraph.paragraph_format.line_spacing=1
     paragraph.paragraph_format.keep_with_next=True
-    caption=doc.add_paragraph(title+' · 完整流程图','Document Metadata')
+    caption=doc.add_paragraph(title+(' · 操作分图（原节点/原连线）' if view_layout else ' · 完整流程图'),'Document Metadata')
     caption.alignment=WD_ALIGN_PARAGRAPH.CENTER
     caption.paragraph_format.space_before=Pt(0)
     caption.paragraph_format.space_after=Pt(0)
@@ -135,7 +137,7 @@ async def document_files(p, kind, status='草稿／待产品经理内容确认',
     require(kind not in p.get('stale_document_kinds', []), 'STALE_REVISION', '页面已改变，请重新生成此文档后导出', 409)
     structured = kind=='prd' and any(item.get('detail_contract') or item.get('detail_required') for item in delivery_items(p))
     review_warnings=[]
-    if structured:
+    if structured or mode=='review':
         from .document_reader import export_readiness
         readiness=export_readiness(p,kind,mode=mode)
         require(readiness['ready'],'DOCUMENT_CONTENT_REQUIRED',
@@ -333,21 +335,38 @@ async def document_files(p, kind, status='草稿／待产品经理内容确认',
                                          item_ids=node.get('item_ids',[]),detail_hash=node.get('detail_hash'),kind='table',title=node['title']))
                     spacer=doc.add_paragraph();spacer.paragraph_format.space_after=Pt(3);spacer.paragraph_format.space_before=Pt(0);spacer.paragraph_format.line_spacing=Pt(3)
                 elif node['kind']=='diagram':
-                    from .detail_rendering import flow_png,flow_svg
+                    from .detail_rendering import flow_png,flow_svg,flow_views,view_flow,view_notes,VERSION
+                    display=dict(show_ids=False,columns=3) if node.get('labels_only') else {}
                     try:
-                        picture=flow_png(node['flow'],palette=WORD_FLOW_PALETTE,fit_labels=True)
+                        picture=flow_png(node['flow'],palette=WORD_FLOW_PALETTE,fit_labels=True,**display)
                     except (ValueError,OSError,KeyError,TypeError) as error:
                         require(False,'DETAIL_RENDER_FAILED','流程图导出失败：'+str(error),409)
-                    asset='assets/flow-'+node['detail_hash'][:20]+'.png'
+                    asset='assets/flow-'+node['detail_hash'][:20]+'-'+VERSION+'.png'
                     svg_asset=asset.removesuffix('.png')+'.svg'
-                    files[asset]=picture;files[svg_asset]=flow_svg(node['flow'],node['title'],palette=WORD_FLOW_PALETTE,fit_labels=True)[0].encode('utf-8')
+                    files[asset]=picture;files[svg_asset]=flow_svg(node['flow'],node['title'],palette=WORD_FLOW_PALETTE,fit_labels=True,**display)[0].encode('utf-8')
                     # Self-contained Markdown also works when downloaded alone.
                     import base64
                     md.append('!['+node['title'].replace('[','').replace(']','')+'](data:image/png;base64,'+base64.b64encode(picture).decode('ascii')+')')
-                    add_full_flow_page(doc,picture,node['title'])
+                    add_full_flow_page(doc,picture,node['title']+('（总览，详见操作分图）' if node.get('views') else ''))
                     bindings.append(dict(section_id=s['section_id'],item_id=node['item_id'],
                                          detail_hash=node['detail_hash'],kind='diagram',
                                          asset=asset,asset_hash=hashlib.sha256(picture).hexdigest()))
+                    views=node['views'] if 'views' in node else flow_views(node['flow'],show_ids=not node.get('labels_only'))
+                    for view in views:
+                        projected=view_flow(node['flow'],view)
+                        notes=view_notes(view,labels={n['id']:n['label'] for n in node['flow']['nodes']}
+                            if node.get('labels_only') else None)
+                        view_display=dict(show_ids=False) if node.get('labels_only') else {}
+                        svg,layout=flow_svg(projected,view['title'],palette=WORD_FLOW_PALETTE,fit_labels=True,display_notes=notes,columns=view.get('columns'),**view_display)
+                        image=flow_png(projected,palette=WORD_FLOW_PALETTE,fit_labels=True,display_notes=notes,columns=view.get('columns'),**view_display)
+                        view_asset=asset.removesuffix('.png')+'-'+view['id']+'.png'
+                        files[view_asset]=image;files[view_asset.removesuffix('.png')+'.svg']=svg.encode('utf-8')
+                        md.extend(['### '+view['title'],'!['+view['id']+'](data:image/png;base64,'+base64.b64encode(image).decode('ascii')+')',*notes])
+                        add_full_flow_page(doc,image,view['title'],view_layout=layout,reuse_empty_section=True)
+                        bindings.append(dict(section_id=s['section_id'],item_id=node['item_id'],detail_hash=node['detail_hash'],
+                            renderer_version=VERSION,kind='diagram_view',view_id=view['id'],asset=view_asset,
+                            asset_hash=hashlib.sha256(image).hexdigest(),node_ids=view['node_ids'],edge_ids=view['edge_ids'],continuations=view['continuations'],
+                            reference_nodes=view.get('reference_nodes',{}),edge_conditions=view.get('edge_conditions',[])))
                 elif node['kind']=='detail_error':
                     require(False,'DETAIL_RENDER_FAILED',node['text'],409)
                 else:

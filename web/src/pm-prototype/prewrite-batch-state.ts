@@ -4,6 +4,8 @@ import {requirementBehaviorLabels as fields} from './requirement-fields';
 import {detailPathValue} from './detail-contract';
 
 export const pendingChecks=(p:Project)=>(p.prewrite_review?.findings||[]).filter((f:Obj)=>f.status!=='resolved'&&(f.severity==='blocker'||f.blocks_document||f.requires_confirmation));
+/** Only the synthetic overall blocker is rootless by design; other unmapped findings still block. */
+export const isOverallAssessment=(f:Obj)=>f.id==='PW-assessment'&&!(f.related_refs||[]).length&&!f.question_id;
 export const batchCompletion=(p:Project)=>{
   const c=(p as Obj).refinement_completion;
   return c?.mode==='prewrite'&&c.applied_revision===p.revision?c:null;
@@ -48,7 +50,7 @@ export function initialBatch(p:Project,states:Obj[]):Sheet{
     }else if(item.kind==='acceptance'){
       for(const row of Object.values(sheet.rows)){
         const ac=row.acceptance_items.find(ac=>ac.id===item.target_item_id);
-        if(ac)Object.assign(ac,{statement:item.statement,candidate_id:item.id,ai_suggested:true});
+        if(ac)Object.assign(ac,{statement:item.statement,candidate_id:item.id,ai_suggested:typeof item.generation_evidence?.run_id==='string'&&item.generation_evidence.run_id.trim().length>0});
       }
     }else if(sheet.linked_clauses?.[item.target_item_id||'']){
       Object.assign(sheet.linked_clauses[item.target_item_id!],{statement:item.statement,behavior:{...item.behavior}});
