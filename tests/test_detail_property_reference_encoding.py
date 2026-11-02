@@ -127,7 +127,7 @@ def test_actual_provider_serialization_and_both_decode_audits(tmp_path,monkeypat
         async def respond(request):
             body=json.loads(request.content);bodies.append(body);messages=body.get('messages',body.get('input'))
             result,_=await fake.request({},messages,NoEvidence())
-            if len(bodies)>1:
+            if len(bodies)>2:
                 header=json.loads(messages[0]['content'].split('可信任务头：',1)[1])
                 assert body['text']['format']['schema']==header['schema']
                 result=aliases(result)
@@ -136,14 +136,14 @@ def test_actual_provider_serialization_and_both_decode_audits(tmp_path,monkeypat
         task=workflow.start(p['id'],p['revision'],'clarify','',discussion_target=target(),config_override=config)
         await workflow.tasks[task['id']]
         saved=store.get_record(p['id'],task['id'],'run')
-        assert saved['calls']==saved['request_budget']['used']==len(bodies)==3
+        assert saved['calls']==saved['request_budget']['used']==len(bodies)==4
         assert saved['business_draft_review']['detail_semantic_reviews']['R1']['status']=='passed'
         records=[json.loads((store.folder/'evidence/model-calls'/(a['call_id']+'.json')).read_text('utf-8')) for a in saved['attempts']]
-        for record in records[1:]:
+        for record in records[2:]:
             audit=record['property_reference_decoding']
             assert audit['changes'] and audit['input_hash']==digest(json.loads(record['final_output']))
             assert all(c['path'][-2] in ('candidate_keys','affected_keys') for c in audit['changes'])
-        assert records[2]['review_entry_repair']['preserved_slots']
+        assert records[3]['review_entry_repair']['preserved_slots']
     asyncio.run(run())
 
 

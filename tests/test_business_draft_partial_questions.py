@@ -165,7 +165,7 @@ def test_recommended_behavior_and_acceptance_do_not_answer_critical_decision(tmp
     assert p['questions'][-1]['status'] == 'open' and p['active_baseline_id'] == before['active_baseline_id']
 
 
-def test_question_partial_workflow_uses_one_frozen_call_and_preserves_originals(tmp_path):
+def test_question_partial_workflow_uses_one_generation_and_source_review_and_preserves_originals(tmp_path):
     async def scenario():
         store, before = project(tmp_path)
         row = draft_row(); bad = question(); bad['questions_note'] = None
@@ -176,7 +176,8 @@ def test_question_partial_workflow_uses_one_frozen_call_and_preserves_originals(
         await workflow.tasks[run['id']]
         finished = store.get_record(before['id'], run['id'], 'run')
         assert finished['status'] == 'partial', finished
-        assert finished['calls'] == 1 and finished['repair_count'] == 0 and len(provider.received) == 1
+        assert finished['calls'] == 2 and finished['repair_count'] == 0 and len(provider.received) == 2
+        assert finished['business_draft_review']['business_source_review']['status'] == 'passed'
         after = store.get(before['id'])
         assert after['items'][:len(before['items'])] == before['items']
         assert after['sources'] == before['sources'] and after.get('stage_checks') == before.get('stage_checks')

@@ -64,6 +64,7 @@ def test_ui_context_keeps_business_snapshot_without_duplicate_artifacts(tmp_path
     ctx=json.loads(messages[1]['content'][0]['text'])
     assert ctx['items']==p['items'] and ctx['questions']==p['questions']
     assert ctx['recent_messages'][0]['text']=='保留旧流程，只改筛选'
-    assert 'duplicate' not in json.dumps(ctx) and 'private_large_document' not in json.dumps(ctx)
+    assert all('response' not in message for message in ctx['recent_messages'])
+    assert 'large_output' not in json.dumps(ctx) and 'private_large_document' not in json.dumps(ctx)
     assert ctx['document_status']['prd']['id']=='DOC-OLD'
     jsonschema.validate(header['structure_example'],header['schema'])

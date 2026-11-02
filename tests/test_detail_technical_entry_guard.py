@@ -98,6 +98,14 @@ class OrphanProvider(FakeProvider):
     def __init__(self):super().__init__([])
     async def request(self,config,messages,evidence=None):
         evidence.before_send(config);self.received.append(copy.deepcopy(messages))
+        header=json.loads(messages[0]['content'].split('可信任务头：',1)[1])
+        if header.get('grounding_protocol'):
+            payload=json.loads(messages[1]['content'][0]['text'])
+            assert all(f['path'][0]=='requirements' for f in payload['fields'])
+            result=dict(candidate_hash=payload['candidate_hash'],input_hash=payload['input_hash'],
+                checked_field_ids=[f['id'] for f in payload['fields']],findings=[])
+            evidence.response(dumps(result),http_status=200,finish_reason='stop',usage={'total_tokens':100})
+            return result,dict(finish_reason='stop',usage={'total_tokens':100})
         assert len(self.received)==1,'Invalid detail must not enter a semantic model call or gain another repair'
         row=draft_row();row['detail_contract']=generated_detail()
         row['detail_contract']['fields'][0]['evidence']['empty_value']=dict(status='source',sources=[dict(source='S1',locator='L1')])
@@ -111,7 +119,7 @@ def test_workflow_cannot_mark_orphan_proof_semantically_passed_or_adopt_it(tmp_p
         task=workflow.start(p['id'],p['revision'],'clarify','',discussion_target=target(),config_override=dict(workflow.config('clarify'),max_calls=7))
         await workflow.tasks[task['id']]
         saved=store.get_record(p['id'],task['id'],'run')
-        assert saved['calls']==len(provider.received)==1
+        assert saved['calls']==len(provider.received)==2
         report=saved['business_draft_review']
         assert report['rejected'][0]['issues'][0]['code']=='DETAIL_EVIDENCE_PATH'
         assert not report.get('detail_semantic_reviews')
@@ -142,7 +150,7 @@ def test_real_provider_preserves_presence_dependency_in_responses_request_schema
         p=store.get(p['id'])
         workflow=Workflow(store,provider);task=workflow.start(p['id'],p['revision'],'clarify','',discussion_target=target(),config_override=dict(workflow.config('clarify'),max_calls=7))
         await workflow.tasks[task['id']]
-        assert len(bodies)==1
+        assert len(bodies)==2
         schema=bodies[0]['text']['format']['schema']
         detail=schema['properties']['requirements']['items']['properties']['detail_contract']
         item=detail['properties']['fields']['items']

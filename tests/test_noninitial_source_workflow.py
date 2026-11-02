@@ -86,7 +86,7 @@ def test_source_slots_preserve_unknown_and_candidate_authority_and_per_row_targe
     initial=g.challenge_messages(g.prepare(c,context))
     initial_header=json.loads(initial[0]['content'].split('可信任务头：',1)[1])
     assert set(initial_header)=={'response_protocol','grounding_protocol','schema'}
-    assert initial[0]['content']==g.CHALLENGE_PROMPT+'\n可信任务头：'+dumps(initial_header)
+    assert initial[0]['content']==g.CHALLENGE_PROMPT+'\n'+g.SOURCE_SCOPE_POLICY+'\n可信任务头：'+dumps(initial_header)
     for field in sent['fields']:
         assert [(ref['source'],ref['locator']) for ref in field['own_sources']]==[(ref['source'],ref['locator']) for ref in field['sources']]
     assert any(field['path']==['requirements',0,'acceptance',0] for field in sent['fields'])

@@ -138,7 +138,7 @@ def test_connected_workspace_renders_one_three_step_navigation_without_retired_f
         onDelivery:noWrite,onDocuments:noWrite,onRefresh:noWrite,onResolveBlocker:noWrite,onPrewrite:noWrite,onGeneratePrd:noWrite}));
       const nav=html.match(/<nav[^>]*aria-label="需求工作流程"[^>]*>([\s\S]*?)<\/nav>/)[1];
       assert.equal((nav.match(/<button/g)||[]).length,3);assert.equal((nav.match(/aria-current="step"/g)||[]).length,1);
-      for(const label of ['提供信息','完善需求','确认交付'])assert(nav.includes(label));
+      for(const label of ['聊清需求想法','核对草稿与规则','评审与交付文档'])assert(nav.includes(label));
       assert(!html.includes('需求五步进度'));assert(!html.includes('核对功能草图'));assert(!html.includes('旧草图待处理'));
       assert.equal(JSON.stringify(project),before,'omitting an obsolete visual progress row must preserve internal workflow states');
     ''')

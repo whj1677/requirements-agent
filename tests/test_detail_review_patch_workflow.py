@@ -21,7 +21,10 @@ class PatchProvider(FakeProvider):
     async def request(self,config,messages,evidence=None):
         evidence.before_send(config);self.received.append(copy.deepcopy(messages));self.configs.append(copy.deepcopy(config))
         header=json.loads(messages[0]['content'].split('可信任务头：',1)[1]);payload=json.loads(messages[1]['content'][0]['text'])
-        if header.get('response_protocol')==PROTOCOL:
+        if header.get('grounding_protocol'):
+            result=dict(candidate_hash=payload['candidate_hash'],input_hash=payload['input_hash'],
+                checked_field_ids=[f['id'] for f in payload['fields']],findings=[])
+        elif header.get('response_protocol')==PROTOCOL:
             row=draft_row();row['detail_contract']=generated_detail()
             row['detail_contract']['fields'][0]['evidence']['required']=dict(status='source',sources=[dict(source='S1',locator='L1')])
             result=packet(row)
@@ -40,8 +43,11 @@ class PatchProvider(FakeProvider):
                 path='detail_contract.fields.F1.required';prop=next(p for p in payload['rows'][0]['property_refs'].values() if p['path']==path)
                 check.update(verdict='unclear',candidate_quotes=[dict(path=path,quote=prop['value'])],affected_paths=[path],correction='按现有资料限定必填时机。')
             result=model_response(payload,expanded);self.good.append(copy.deepcopy(result))
-            result['rows'][0]['source_checks'][0]['source_quote_keys']=[]
-            next(c for c in result['rows'][0]['checks'] if c['traces'])['traces'][0]['edge_ids']=['E1','E3','E2']
+            # Current runs allow one protocol repair; the fresh corrected candidate
+            # still receives a complete review, with a valid response this time.
+            if len(self.review_inputs)==1 or self.mode!='correct':
+                result['rows'][0]['source_checks'][0]['source_quote_keys']=[]
+                next(c for c in result['rows'][0]['checks'] if c['traces'])['traces'][0]['edge_ids']=['E1','E3','E2']
         else:
             detail=copy.deepcopy(payload['rows'][0]['detail_contract']);detail['fields'][0]['required']='填写时必填'
             result=correction_response(payload,detail)
@@ -50,8 +56,8 @@ class PatchProvider(FakeProvider):
 
 
 @pytest.mark.parametrize('mode,limit,calls,status',[
-    ('pass',7,3,'passed'),('correct',7,6,'passed'),('bad_patch',7,3,'pending'),
-    ('http_error',7,3,'pending'),('pass',2,2,'pending'),('low_after_correction',5,5,'pending')])
+    ('pass',8,4,'passed'),('correct',8,6,'passed'),('bad_patch',8,4,'pending'),
+    ('http_error',8,4,'pending'),('pass',3,3,'pending'),('low_after_correction',6,6,'pending')])
 def test_entry_patch_is_finite_and_budgeted_with_fresh_candidate_review(tmp_path,mode,limit,calls,status):
     async def run():
         store,p=project(tmp_path);provider=PatchProvider(mode);workflow=Workflow(store,provider)
@@ -68,16 +74,16 @@ def test_entry_patch_is_finite_and_budgeted_with_fresh_candidate_review(tmp_path
             assert first['rows'][0]['candidate_hash']!=second['rows'][0]['candidate_hash']
             assert first['rows'][0]['required_checks']==second['rows'][0]['required_checks']
             assert len(provider.good[0]['rows'][0]['checks'])==len(provider.good[1]['rows'][0]['checks'])
-        assert records[1]['validation_result']=='DETAIL_REVIEW_INVALID'
-        assert records[1]['review_entry_diagnostics']['slots']
-        if mode in ('pass','correct') and calls>2:
-            assert records[2]['review_entry_repair']['full_strict_validation']=='passed'
-            assert records[2]['review_entry_repair']['preserved_slots']
-            assert json.loads(records[2]['final_output'])['protocol']==repair.PROTOCOL
-            assert records[2]['merged_detail_review']!=json.loads(records[2]['final_output'])
+        assert records[2]['validation_result']=='DETAIL_REVIEW_INVALID'
+        assert records[2]['review_entry_diagnostics']['slots']
+        if mode in ('pass','correct') and calls>3:
+            assert records[3]['review_entry_repair']['full_strict_validation']=='passed'
+            assert records[3]['review_entry_repair']['preserved_slots']
+            assert json.loads(records[3]['final_output'])['protocol']==repair.PROTOCOL
+            assert records[3]['merged_detail_review']!=json.loads(records[3]['final_output'])
         if mode=='bad_patch':
-            assert records[2]['review_entry_repair']['full_strict_validation']=='DETAIL_REVIEW_INVALID'
-            assert 'merged_detail_review' in records[2]
+            assert records[3]['review_entry_repair']['full_strict_validation']=='DETAIL_REVIEW_INVALID'
+            assert 'merged_detail_review' in records[3]
         for c,m in zip(provider.configs,provider.received):
             if 'required_checks' in m[1]['content'][0]['text']:
                 assert c['reasoning_effort']=='high' and c['max_tokens']==config['detail_review_options']['max_tokens']
@@ -88,11 +94,11 @@ def test_entry_patch_is_finite_and_budgeted_with_fresh_candidate_review(tmp_path
 def test_cancelled_patch_is_not_adopted_or_replayed(tmp_path):
     async def run():
         store,p=project(tmp_path);provider=PatchProvider('pass');workflow=Workflow(store,provider)
-        task=workflow.start(p['id'],p['revision'],'clarify','',discussion_target=target(),config_override=dict(workflow.config('clarify'),max_calls=7))
+        task=workflow.start(p['id'],p['revision'],'clarify','',discussion_target=target(),config_override=dict(workflow.config('clarify'),max_calls=8))
         provider.on_patch=lambda:store.update_run(p['id'],task['id'],status='cancelled')
         await workflow.tasks[task['id']]
         saved=store.get_record(p['id'],task['id'],'run')
-        assert saved['status']=='cancelled' and saved['calls']==3 and provider.patch_count==1
+        assert saved['status']=='cancelled' and saved['calls']==4 and provider.patch_count==1
         assert not saved.get('result_applied')
         assert store.get(p['id'])['items']==p['items']
     asyncio.run(run())
@@ -122,14 +128,14 @@ def test_real_provider_serializes_finite_patch_schema_and_high_review_options(tm
     monkeypatch.setattr('app.provider.httpx.AsyncClient',lambda **kw:real_client(**kw,transport=httpx.MockTransport(respond)))
     async def run():
         store,p=project(tmp_path);provider=Provider(env_path=tmp_path/'absent.env');provider.keys[origin(DEFAULT)]='synthetic-key'
-        workflow=Workflow(store,provider);config=dict(workflow.config('clarify'),max_calls=7)
+        workflow=Workflow(store,provider);config=dict(workflow.config('clarify'),max_calls=8)
         config.pop('detail_review_transport_protocol',None) # Frozen legacy Chat transport remains covered.
         task=workflow.start(p['id'],p['revision'],'clarify','',discussion_target=target(),config_override=config)
         await workflow.tasks[task['id']]
         saved=store.get_record(p['id'],task['id'],'run')
         assert saved['calls']==len(bodies)==6
         assert saved['business_draft_review']['detail_semantic_reviews']['R1']['status']=='passed'
-        for i in (2,5):
+        for i in (3,):
             messages=bodies[i].get('messages',bodies[i].get('input'))
             header=json.loads(messages[0]['content'].split('可信任务头：',1)[1])
             assert header['response_protocol']==repair.PROTOCOL

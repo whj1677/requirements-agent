@@ -17,15 +17,18 @@ from tests.test_detail_semantics import response,model_response,correction_respo
 
 
 @pytest.mark.parametrize('mode,limit,calls,status',[
-    ('fixed',5,5,'passed'),('human_fixed',5,5,'passed'),('fixed',4,4,'pending'),('fixed',2,2,'pending'),
-    ('twice_invalid',5,3,'pending'),('http_error',5,2,'pending'),('old_plan',5,2,'pending'),('final_invalid',6,5,'pending')])
+    ('fixed',6,6,'passed'),('human_fixed',6,6,'passed'),('fixed',5,5,'pending'),('fixed',3,3,'pending'),
+    ('twice_invalid',6,4,'pending'),('http_error',6,3,'pending'),('old_plan',6,3,'pending'),('final_invalid',7,6,'pending')])
 def test_same_candidate_protocol_retry_has_exact_budget_and_no_http_replay(tmp_path,monkeypatch,mode,limit,calls,status):
     sent=[];review_inputs=[];review_outputs=[];real_client=httpx.AsyncClient
     def respond(request):
         body=json.loads(request.content);messages=body.get('messages',body.get('input'))
         sent.append(copy.deepcopy(messages))
         header=json.loads(messages[0]['content'].split('可信任务头：',1)[1]);payload=json.loads(messages[1]['content'][0]['text'])
-        if header.get('response_protocol')==PROTOCOL:
+        if header.get('grounding_protocol'):
+            value=dict(candidate_hash=payload['candidate_hash'],input_hash=payload['input_hash'],
+                checked_field_ids=[f['id'] for f in payload['fields']],findings=[])
+        elif header.get('response_protocol')==PROTOCOL:
             row=draft_row();row['detail_contract']=generated_detail()
             row['detail_contract']['fields'][0]['evidence']['required']=dict(status='source',sources=[dict(source='S1',locator='L1')])
             value=packet(row)
@@ -67,6 +70,7 @@ def test_same_candidate_protocol_retry_has_exact_budget_and_no_http_replay(tmp_p
         p=store.get(p['id']);provider=Provider(env_path=tmp_path/'absent.env');provider.keys[origin(DEFAULT)]='synthetic-protocol-key'
         workflow=Workflow(store,provider);config=dict(workflow.config('clarify'),max_calls=limit)
         # Frozen legacy plans retain whole-review, run-wide retry semantics.
+        config['detail_correction_policy']='two-corrections-seven-run-calls-1'
         config.pop('detail_review_repair_protocol',None)
         config.pop('detail_property_reference_encoding',None)
         config.pop('detail_unknown_scope_protocol',None)
@@ -81,16 +85,16 @@ def test_same_candidate_protocol_retry_has_exact_budget_and_no_http_replay(tmp_p
         records=[json.loads((store.folder/'evidence/model-calls'/(a['call_id']+'.json')).read_text('utf-8')) for a in saved['attempts']]
         assert records[0]['final_output']
         if mode!='http_error':
-            assert json.loads(records[1]['final_output'])==review_outputs[0]
-            assert records[1]['validation_result']=='DETAIL_REVIEW_INVALID'
-            assert records[1]['semantic_protocol_error']['code']=='DETAIL_REVIEW_INVALID'
+            assert json.loads(records[2]['final_output'])==review_outputs[0]
+            assert records[2]['validation_result']=='DETAIL_REVIEW_INVALID'
+            assert records[2]['semantic_protocol_error']['code']=='DETAIL_REVIEW_INVALID'
         if len(review_inputs)>1:
-            assert review_inputs[0]==review_inputs[1] and sent[1][0]==sent[2][0]
-            diagnostic=json.loads(sent[2][-1]['content'])
+            assert review_inputs[0]==review_inputs[1] and sent[2][0]==sent[3][0]
+            diagnostic=json.loads(sent[3][-1]['content'])
             assert diagnostic['previous_review']==review_outputs[0]
             if mode=='human_fixed':
                 # v3 rejects unknown quote keys in the sent schema before quote resolution.
-                header=json.loads(sent[1][0]['content'].split('可信任务头：',1)[1])
+                header=json.loads(sent[2][0]['content'].split('可信任务头：',1)[1])
                 errors=list(Draft202012Validator(header['schema']).iter_errors(review_outputs[0]))
                 assert len(errors)==1
                 assert list(errors[0].absolute_path)==['rows',0,'checks',0,'human_quote_keys',0]
@@ -100,12 +104,12 @@ def test_same_candidate_protocol_retry_has_exact_budget_and_no_http_replay(tmp_p
                 assert diagnostic['validator_error']['code']=='DETAIL_REVIEW_INVALID'
             else:
                 assert '原绑定=' in diagnostic['validator_error']['message']
-            assert records[1]['authorization']['effective_config']==records[2]['authorization']['effective_config']
+            assert records[2]['authorization']['effective_config']==records[3]['authorization']['effective_config']
         if status=='passed':
             assert len(review_inputs)==3
-            audit=records[2]['quote_reference_resolution']['R1']
+            audit=records[3]['quote_reference_resolution']['R1']
             assert audit['mode']=='frozen_quote_pool_key'
-            assert 'source_quotes' not in json.loads(records[2]['final_output'])
+            assert 'source_quotes' not in json.loads(records[3]['final_output'])
             if mode=='human_fixed':
                 selected=[q for q in audit['selected_quotes'] if q['kind']=='human']
                 assert selected and all(q['material']['kind']=='current_user_words' for q in selected)

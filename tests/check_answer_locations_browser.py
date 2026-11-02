@@ -73,7 +73,8 @@ async def exercise(page, store, initial, chapter, output, report, expect):
     await expect(choice).to_have_value('statement')
     check = target.get_by_role('checkbox', name='我已核对此原文表达了答案', exact=True)
     await expect(check).not_to_be_checked()
-    await check.check()
+    await check.click()
+    await qrow.locator('.sheet-question-history > summary').click()
     await expect(check).to_be_checked()
 
     statement = table.locator('tr[data-cell-key="requirement-'+REQ+'-statement"]').get_by_role('textbox')
@@ -97,13 +98,15 @@ async def exercise(page, store, initial, chapter, output, report, expect):
     await expect(target.get_by_role('blockquote')).to_have_text('合成终端查询原句')
     check = target.get_by_role('checkbox', name='我已核对此原文表达了答案', exact=True)
     await expect(check).not_to_be_checked()
-    await check.check()
+    await check.click()
+    await qrow.locator('.sheet-question-history > summary').click()
     await expect(check).to_be_checked()
     await work.get_by_role('button', name='保存草稿', exact=True).click()
     saved_draft = await page.evaluate('(key) => JSON.parse(sessionStorage.getItem(key))', pid + '-refinement-sheet')
     assert saved_draft['answer_implementations'][Q_PERMISSION] == [dict(
         item_id=REQ, field='detail_contract.fields.F140.meaning', quote='合成终端查询原句')]
     # The selected control must be reachable and not hidden under a sticky header.
+    await check.scroll_into_view_if_needed()
     rect = await check.bounding_box()
     assert rect is not None
     topmost = await page.evaluate('''({x,y}) => { const e=document.elementFromPoint(x,y); return !!e && (e.matches('input[type=checkbox]') || !!e.closest('label.answer-implementation-check')); }''',

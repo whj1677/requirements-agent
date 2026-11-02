@@ -88,17 +88,17 @@ def test_frozen_old_low_and_new_high_keep_same_calls_and_separate_matrix(tmp_pat
             async def request(self,config,messages,evidence=None):
                 configs.append(copy.deepcopy(config));return await super().request(config,messages,evidence=evidence)
         store,p=project(tmp_path);provider=Capture('correct');workflow=Workflow(store,provider)
-        config=dict(workflow.config('clarify'),max_calls=4)
+        config=dict(workflow.config('clarify'),max_calls=5)
         if legacy:
             config.pop('detail_review_reasoning_effort');config.pop('recovery_outcome_checks')
             config['detail_review_options']['reasoning_effort']='low'
         task=workflow.start(p['id'],p['revision'],'clarify','',discussion_target=target(),config_override=config)
         await workflow.tasks[task['id']]
         saved=store.get_record(p['id'],task['id'],'run')
-        assert saved['calls']==saved['request_budget']['used']==4
-        assert [c.get('reasoning_effort') for c in configs]==[None,'low' if legacy else 'high',None,'low' if legacy else 'high']
+        assert saved['calls']==saved['request_budget']['used']==5
+        assert [c.get('reasoning_effort') for c in configs]==[None,None,'low' if legacy else 'high',None,'low' if legacy else 'high']
         assert saved['business_draft_review']['detail_semantic_reviews']['R1']['status']=='passed'
-        for index in (1,3):
+        for index in (2,4):
             plan=json.loads(provider.received[index][1]['content'][0]['text']);dims={c['dimension'] for c in plan['rows'][0]['required_checks']}
             assert bool(dims&set(review.RECOVERY_DIMENSIONS)) is (not legacy)
     asyncio.run(run())

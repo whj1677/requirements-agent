@@ -17,7 +17,7 @@ from tests.provider_transport import reply
 
 @pytest.mark.parametrize('sparse_existing',[False,True])
 @pytest.mark.parametrize('legacy_transport',[False,True])
-@pytest.mark.parametrize('legacy,limit,expected,calls',[(False,4,'passed',4),(False,3,'pending',3),(True,4,'failed',3)])
+@pytest.mark.parametrize('legacy,limit,expected,calls',[(False,5,'passed',5),(False,4,'pending',4),(True,5,'failed',4)])
 def test_correction_json_mode_precondition_budget_and_complete_rereview(tmp_path,monkeypatch,legacy,limit,expected,calls,sparse_existing,legacy_transport):
     requests=[];reviews=[];real_client=httpx.AsyncClient
     if legacy:
@@ -35,7 +35,10 @@ def test_correction_json_mode_precondition_budget_and_complete_rereview(tmp_path
         requests.append(dict(path=request.url.path,body=body))
         if body.get('response_format')=={'type':'json_object'} and 'json' not in json.dumps(messages,ensure_ascii=False).lower():
             return httpx.Response(400,json={'error':{'message':'messages must contain json for json_object'}})
-        if header.get('response_protocol')==PROTOCOL:
+        if header.get('grounding_protocol'):
+            value=dict(candidate_hash=payload['candidate_hash'],input_hash=payload['input_hash'],
+                checked_field_ids=[f['id'] for f in payload['fields']],findings=[])
+        elif header.get('response_protocol')==PROTOCOL:
             row=draft_row();row['detail_contract']=generated_detail()
             if sparse_existing:
                 row['detail_contract']['fields'][0]['evidence']={}
@@ -67,7 +70,7 @@ def test_correction_json_mode_precondition_budget_and_complete_rereview(tmp_path
         saved=store.get_record(p['id'],task['id'],'run')
         assert saved['calls']==saved['request_budget']['used']==len(requests)==calls
         assert saved['business_draft_review']['detail_semantic_reviews']['R1']['status']==expected
-        for review_request in [requests[1]]+([requests[3]] if expected=='passed' else []):
+        for review_request in [requests[2]]+([requests[4]] if expected=='passed' else []):
             body=review_request['body'];messages=body.get('messages',body.get('input'))
             header=json.loads(messages[0]['content'].split('可信任务头：',1)[1])
             if legacy_transport:
@@ -80,20 +83,20 @@ def test_correction_json_mode_precondition_budget_and_complete_rereview(tmp_path
                 assert header['transport_protocol']=='responses-json-schema-v1'
                 assert header['strict_json_protocol']=='detail-review-strict-json-1'
         assert requests[0]['body']['reasoning']=={'effort':'none'}
-        correction=requests[2]
+        correction=requests[3]
         assert correction['path'].endswith('/chat/completions') and correction['body']['response_format']=={'type':'json_object'}
         assert ('json' in json.dumps(correction['body']['messages'],ensure_ascii=False).lower()) is (not legacy)
         evidence=[json.loads((store.folder/'evidence/model-calls'/(a['call_id']+'.json')).read_text('utf-8')) for a in saved['attempts']]
         assert json.loads(evidence[0]['final_output'])['requirements'][0]['detail_contract']['fields'][0]['required']=='必填'
         if legacy:
-            assert evidence[2]['http_status']==400 and evidence[2]['validation_result']=='PARAMETER_UNSUPPORTED'
+            assert evidence[3]['http_status']==400 and evidence[3]['validation_result']=='PARAMETER_UNSUPPORTED'
         else:
-            assert evidence[2]['http_status']==200
+            assert evidence[3]['http_status']==200
             if sparse_existing:
-                assert {a['phase'] for a in evidence[2]['detail_correction_normalizations']}=={'original_candidate','correction_output'}
-                correction_raw=json.loads(evidence[2]['final_output'])['rows'][0]
+                assert {a['phase'] for a in evidence[3]['detail_correction_normalizations']}=={'original_candidate','correction_output'}
+                correction_raw=json.loads(evidence[3]['final_output'])['rows'][0]
                 assert 'detail_contract' not in correction_raw and correction_raw['updates']==[dict(path='detail_contract.fields.F1.required',value='填写时必填')]
-                assert evidence[2]['detail_correction_patch_assembly'][0]['assigned_paths']==['detail_contract.fields.F1.required']
+                assert evidence[3]['detail_correction_patch_assembly'][0]['assigned_paths']==['detail_contract.fields.F1.required']
         if expected=='passed':
             assert len(reviews)==2
             assert reviews[0]['rows'][0]['required_checks']==reviews[1]['rows'][0]['required_checks']

@@ -59,7 +59,7 @@ def test_detail_intent_rejects_other_action_and_non_requirement_item(tmp_path):
     with pytest.raises(Problem):target_context(p,dict(kind='item',id=rule['id'],detail_required=True))
 
 
-@pytest.mark.parametrize('limit',[1,2])
+@pytest.mark.parametrize('limit',[1,2,3,4])
 def test_detail_intent_is_frozen_in_plan_run_and_retry_and_still_only_candidate(tmp_path,limit):
     async def run():
         store,p=project(tmp_path);before=copy.deepcopy(p)
@@ -80,11 +80,15 @@ def test_detail_intent_is_frozen_in_plan_run_and_retry_and_still_only_candidate(
         assert saved['discussion_target']['detail_required'] is True
         assert saved['requirement_recommendation_scope']==task['requirement_recommendation_scope']
         assert saved['calls']==task['calls']==task['request_budget']['used']==limit
-        assert saved['business_draft_review']['detail_semantic_reviews']['R1']['status']==('passed' if limit==2 else 'pending')
+        if limit==1:
+            assert saved['business_source_review']['status']=='pending'
+            assert not saved.get('result_applied') and store.get(p['id'])['items']==before['items']
+            return
+        assert saved['business_draft_review']['detail_semantic_reviews']['R1']['status']==('passed' if limit==4 else 'pending')
         after=store.get(p['id'])
         assert after['items'][:len(before['items'])]==before['items']
         assert after['questions']==before['questions'] and after['documents']==before['documents']
         candidates=[i for i in after['items'][len(before['items']):] if i['kind']=='requirement']
         assert candidates and all(i['selection_status']=='candidate' for i in candidates)
-        assert all(bool(i.get('detail_contract'))==(limit==2) for i in candidates)
+        assert all(bool(i.get('detail_contract'))==(limit==4) for i in candidates)
     asyncio.run(run())

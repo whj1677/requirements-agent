@@ -4,8 +4,6 @@ All /api calls use an isolated create_app; static bytes come from --static-build
 The provider returns synthetic interview JSON and has no network request path.
 """
 
-from tests.browser_navigation import select_project
-
 import argparse
 import asyncio
 import base64
@@ -13,6 +11,7 @@ import io
 import json
 import mimetypes
 import os
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -25,6 +24,7 @@ from playwright.async_api import async_playwright
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from tests.browser_navigation import select_project
 from tests.check_chat_composer_browser import OfflineInterview, composer_geometry, wait_assistant
 from app.main import create_app
 
@@ -72,10 +72,7 @@ async def wait_chat_ready(page):
 
 async def open_chat(page, pid, name, width):
     await page.goto(ORIGIN + '/', wait_until='networkidle')
-    if width <= 700:
-        await select_project(page,pid)
-    else:
-        await page.get_by_role('button', name=name).click()
+    await select_project(page,pid)
     await page.locator('.connected-workspace:visible').get_by_role('button', name='和助手聊需求').click()
     await page.locator('.connected-workspace:visible textarea[aria-label="你的想法"]').wait_for()
 
@@ -100,6 +97,7 @@ async def run(args):
     assert (build / 'index.html').is_file(), f'missing static build: {build}'
     args.output.mkdir(parents=True, exist_ok=True)
     report = {'origin': ORIGIN, 'static_build': str(build), 'checks': [], 'provider_calls': 0,
+              'real_model_calls': 0, 'listener_started': False, 'daily_data_access': False,
               'provider_stages': [], 'page_errors': []}
     previous_data_dir = os.environ.get('RA_DATA_DIR')
     provider = None
@@ -186,26 +184,12 @@ async def run(args):
                     await textarea.fill('请结合这两份文件讨论联系人备注。')
                     await assert_composer_visible(page, (1280, 720))
                     await page.get_by_role('button', name='发送', exact=True).click()
-                    dialog = page.get_by_role('dialog', name='核对本次任务')
-                    await dialog.wait_for()
-                    sources = attachment_sources(store, desktop['id'])
-                    assert len(sources) == 2 and provider.calls == 2
-                    await dialog.locator('.task-source-scope > summary').click()
-                    await dialog.get_by_text('查看来源编号',exact=True).click()
-                    plan_text = await dialog.inner_text()
-                    assert all(source['id'] in plan_text for source in sources)
-                    await page.screenshot(path=str(args.output / 'desktop-document-plan.png'))
-                    await dialog.get_by_role('button', name='返回保留输入').click()
-                    assert await page.locator('.connected-chat .chat-pasted-image').count() == 2
-                    assert await textarea.input_value() == '请结合这两份文件讨论联系人备注。'
-                    await page.get_by_role('button', name='发送', exact=True).click()
-                    dialog = page.get_by_role('dialog', name='核对本次任务')
-                    await dialog.wait_for()
-                    assert len(attachment_sources(store, desktop['id'])) == 2 and provider.calls == 2
-                    assert '分析待处理图片' not in await dialog.inner_text()
-                    await dialog.get_by_role('button', name='授权本次范围并运行').click()
                     await wait_assistant(page, 3)
                     await wait_chat_ready(page)
+                    assert await page.get_by_role('dialog', name='核对本次任务').count() == 0
+                    sources = attachment_sources(store, desktop['id'])
+                    assert len(sources) == 2
+                    assert all(source['parse_status'] in ('read', 'partial') and source['excerpts'] for source in sources)
                     assert provider.calls == 3 and provider.stages[-1] == 'interview'
                     project = store.get(desktop['id'])
                     user = [message for message in project['messages'] if message.get('role') == 'user' and message.get('stage') == 'interview'][-1]
@@ -222,7 +206,7 @@ async def run(args):
                     await wait_chat_ready(page)
                     assert provider.calls == 4 and provider.stages[-1] == 'interview'
                     await page.screenshot(path=str(args.output / 'desktop-documents-sent.png'))
-                    report['checks'].append({'viewport': [1280, 720], 'file_input': 'two documents uploaded once; cancelled plan retained input; confirmed interview and text follow-up'})
+                    report['checks'].append({'viewport': [1280, 720], 'file_input': 'two documents read and sent once without an extra authorization dialog; exact sources included in interview and text follow-up'})
                     await context.close()
 
                     context = await browser.new_context(viewport={'width': 390, 'height': 844})
@@ -241,11 +225,12 @@ async def run(args):
                     await assert_composer_visible(page, (390, 844))
                     await page.screenshot(path=str(args.output / 'mobile-documents-pending.png'))
                     await page.locator('.connected-workspace:visible .connected-steps button').nth(1).click()
-                    await page.get_by_text('聊天框还有未发送的文字或附件。请先发送，或移除本轮输入，再进入完善需求。', exact=True).wait_for()
+                    await page.locator('.connected-workspace:visible').get_by_role('table', name='需求确认表', exact=True).wait_for()
+                    await page.locator('.connected-workspace:visible .connected-steps button').nth(0).click()
                     assert len(attachment_sources(store, mobile['id'])) == 0 and provider.calls == 4
                     assert await page.locator('.connected-chat .chat-pasted-image').count() == 2
-                    # Entering refinement deliberately keeps unsent input in
-                    # the assistant. Project switching exercises save-on-leave.
+                    # Viewing the table preserves unsent input without uploading;
+                    # project switching explicitly exercises save-on-leave.
                     await select_project(page,desktop['id'])
                     leave = page.get_by_role('dialog', name='未保存的修改')
                     await leave.wait_for()
@@ -260,7 +245,7 @@ async def run(args):
                     drawer = page.locator('details.compact-projects')
                     if await drawer.get_attribute('open') is not None:
                         await drawer.locator('summary').click()
-                    await page.locator('.connected-workspace:visible .connected-steps').get_by_role('button', name='提供信息').click()
+                    await page.locator('.connected-workspace:visible .connected-steps').get_by_role('button', name=re.compile(r'^1\s')).click()
                     await page.locator('.connected-workspace:visible').get_by_role('button', name='和助手聊需求').click()
                     await page.locator('.connected-chat .chat-pasted-image').first.wait_for()
                     assert await page.locator('.connected-chat .chat-pasted-image').count() == 2
@@ -269,12 +254,10 @@ async def run(args):
                     await assert_composer_visible(page, (390, 844))
                     await page.screenshot(path=str(args.output / 'mobile-documents-restored.png'))
                     await page.get_by_role('button', name='发送', exact=True).click()
-                    dialog = page.get_by_role('dialog', name='核对本次任务')
-                    await dialog.wait_for()
-                    assert len(attachment_sources(store, mobile['id'])) == 2 and provider.calls == 4
-                    await dialog.get_by_role('button', name='授权本次范围并运行').click()
                     await wait_assistant(page, 1)
                     await wait_chat_ready(page)
+                    assert len(attachment_sources(store, mobile['id'])) == 2
+                    assert await page.get_by_role('dialog', name='核对本次任务').count() == 0
                     assert provider.calls == 5 and provider.stages[-1] == 'interview'
                     history = page.locator('.connected-chat .chat-history-attachments')
                     assert 'dragged.md' in await history.last.inner_text() and 'pasted.docx' in await history.last.inner_text()

@@ -35,7 +35,7 @@ def test_stage_locks_follow_saved_predecessors_and_do_not_trust_old_completion()
       const nav=renderToStaticMarkup(React.createElement(StageNavigation,{p,phase:2,busy:false,intakeLabel:'',onGo:()=>{}}));
       assert(!nav.includes('aria-current="step"'),'a locked remembered page must not look like the active step');
       const lock=renderToStaticMarkup(React.createElement(StageLock,{p,phase:2,busy:false,onGo:()=>{},onRefresh:()=>{}}));
-      assert(lock.includes('完善需求尚有前置内容待核对')&&lock.includes('前往')&&lock.includes('提供信息')&&lock.includes('草稿保留'));
+      assert(lock.includes('核对草稿与规则尚有前置内容待核对')&&lock.includes('前往')&&lock.includes('聊清需求想法')&&lock.includes('草稿保留'));
       assert(!lock.includes('第 3 步暂未解锁'),'internal checkpoints must not reintroduce the old five-step flow');
       assert.deepEqual(p,before);
       assert.equal(stageAccess({messages:[]},1).allowed,false);

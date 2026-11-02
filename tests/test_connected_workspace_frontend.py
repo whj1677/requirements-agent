@@ -69,7 +69,7 @@ function createHarness({nonce=1,savedStep='refine',savedEntry='auto',deferDraft=
       input.props.onChange({target:{value}});await flush();},
     get step(){return view.props['data-step'];},get mode(){return button('和助手聊需求').props['aria-pressed']?'chat':'direct';},
     get draft(){return walk(view,node=>node.type==='textarea'&&node.props.id==='connected-draft-P-entry')[0]?.props.value;},
-    get gate(){return walk(view,node=>node.props?.['aria-label']==='进入完善需求的准备状态').length>0;},
+    get gate(){return walk(view,node=>node.props?.['aria-label']==='打开草稿与规则的准备状态').length>0;},
     beforeChatSend:()=>chatBeforeSend()};
 }
 '''
@@ -92,11 +92,11 @@ def test_shared_workspace_exposes_equal_entry_and_real_save_review_actions():
         onClarify:()=>{},onSources:()=>{},chatPanel:()=>React.createElement('div',{},'真实会话入口'),onCreateRequirement:()=>{},onCreateAcceptance:()=>{},onChooseScope:()=>{},
         onReviewItem:()=>{},onDelivery:()=>{},onDocuments:()=>{},onRefresh:()=>{},onTask:()=>{}
       }));
-      assert(html.includes('提供信息')&&html.includes('完善需求')&&html.includes('确认交付'));
+      assert(html.includes('聊清需求想法')&&html.includes('核对草稿与规则')&&html.includes('评审与交付文档'));
       assert(html.includes('和助手聊需求')&&html.includes('直接填写需求'));
-      assert(html.includes('保存工作底稿')&&html.includes('整理并进入完善需求'));
-      assert(html.includes('不使用 AI，直接完善'));
-      assert(html.includes('助手先根据聊天和资料起草整张需求确认表，包含验收建议；你再确认或修改'));
+      assert(html.includes('保存工作底稿')&&html.includes('整理并核对草稿与规则'));
+      assert(html.includes('不使用 AI，直接核对草稿'));
+      assert(html.includes('随后整理为需求确认表，核对范围、业务规则和验收建议'));
       assert(!html.includes('数据已模拟保存')&&!html.includes('模拟完成'));
     ''')
 
@@ -121,14 +121,14 @@ def test_normal_entry_ignores_old_refinement_delivery_and_direct_mode_without_di
 
 def test_refinement_navigation_never_prepares_models_even_when_inputs_or_tasks_change():
     run_ts(ENTRY_HARNESS + r'''
-      for(const label of ['2完善需求']) {
+      for(const label of ['2核对草稿与规则确认范围、业务规则与验收']) {
         const h=createHarness();await h.flush();
         await h.update({project:{...project,revision:18,sources:[{id:'SRC-single-instruction'}]},
           tasks:[{id:'TASK-single',action:'clarify',status:'partial',label:'完善这条需求建议'}]});
         await h.click(label);assert.equal(h.step,'refine');assert.equal(h.gate,false);
         assert(!h.events.some(event=>event[0]==='prepare'||event[0]==='write'),
           'ordinary navigation must not prepare an AI task or rewrite saved input');
-        await h.click('1提供信息');await h.click(label);assert.equal(h.step,'refine');
+        await h.click('1聊清需求想法聊天或填写底稿，保留已有内容');await h.click(label);assert.equal(h.step,'refine');
         assert(!h.events.some(event=>event[0]==='prepare'));
         await h.suggest();
         assert.equal(h.events.filter(event=>event[0]==='prepare').length,1,
@@ -177,7 +177,7 @@ def test_late_stored_direct_response_cannot_replace_a_new_assistant_entry():
       assert(!h.registry.has('P-entry-connected-draft'));
       assert.equal(await h.beforeChatSend(),project);
       assert(!h.events.some(event=>event[0]==='write'||event[0]==='prepare'));
-      await h.click('不使用 AI，直接完善');
+      await h.click('不使用 AI，直接核对草稿');
       assert.equal(h.step,'refine','manual refinement remains an explicit available path');
       assert(!h.events.some(event=>event[0]==='prepare'),'manual navigation cannot start AI');
     ''')

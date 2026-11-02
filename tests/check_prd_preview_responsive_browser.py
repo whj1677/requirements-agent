@@ -84,9 +84,31 @@ async def workflow_sizes(page, steps, output, report, mode):
     for width, height in VIEWPORTS:
         await page.set_viewport_size(dict(width=width, height=height))
         await expect(steps.get_by_role('button')).to_have_count(3)
-        current = steps.locator('button[aria-current="step"]')
-        await expect(current).to_have_count(1)
-        await expect(current).to_be_in_viewport(ratio=1)
+        for index, phase in enumerate(('information', 'refine', 'delivery')):
+            await steps.get_by_role('button').nth(index).click()
+            current = steps.locator('button[aria-current="step"]')
+            await expect(current).to_have_count(1)
+            await expect(steps.get_by_role('button').nth(index)).to_have_attribute('aria-current', 'step')
+            await current.scroll_into_view_if_needed()
+            await expect(current).to_be_in_viewport(ratio=1)
+            geometry = await steps.evaluate('''nav => [...nav.querySelectorAll('button')].map(button => {
+                const rect = element => { const r=element.getBoundingClientRect();
+                    return {left:r.left,top:r.top,right:r.right,bottom:r.bottom,width:r.width,height:r.height}; };
+                const hint=button.querySelector('small'), title=button.querySelector('b');
+                const hintRect=rect(hint), titleRect=rect(title), buttonRect=rect(button);
+                const after=getComputedStyle(button,'::after'), style=getComputedStyle(button);
+                const lineTop=buttonRect.bottom-parseFloat(style.borderBottomWidth)-parseFloat(after.bottom)-parseFloat(after.height);
+                return {current:button.getAttribute('aria-current')==='step',button:buttonRect,title:titleRect,hint:hintRect,
+                    hintVisible:hintRect.width>0&&hintRect.height>0&&getComputedStyle(hint).visibility!=='hidden',
+                    overlap:Math.min(titleRect.right,hintRect.right)>Math.max(titleRect.left,hintRect.left)
+                        &&Math.min(titleRect.bottom,hintRect.bottom)>Math.max(titleRect.top,hintRect.top),
+                    indicatorHeight:after.height,indicatorBottom:after.bottom,lineTop};
+            })''')
+            report.setdefault('navigation_geometry', []).append(dict(mode=mode, width=width, height=height, phase=phase, buttons=geometry))
+            assert all(not item['hintVisible'] or (not item['overlap'] and item['hint']['bottom']+2 <= min(item['lineTop'], item['button']['bottom']))
+                       for item in geometry), (mode, width, height, phase, geometry)
+            if index == 0:
+                await steps.screenshot(path=str(output / f'{mode}-navigation-first-{width}x{height}.png'))
         for button in await steps.get_by_role('button').all():
             box = await button.bounding_box()
             assert box['x'] >= 0 and box['x'] + box['width'] <= width + 1, (mode, width, box)

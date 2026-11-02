@@ -131,7 +131,7 @@ async def exercise(page, context, store, initial, second, task, output, report, 
     report['checks'].append('reload_ignores_prior_workflow_position_and_starts_chat_without_preparation')
 
     connected = workspace.locator('.connected-workspace')
-    delivery = connected.get_by_role('navigation', name='需求工作流程').get_by_role('button', name=re.compile(r'^3\s*确认交付$'))
+    delivery = connected.get_by_role('navigation', name='需求工作流程').get_by_role('button', name=re.compile(r'^3\s'))
     await delivery.click()
     await expect(connected).to_have_attribute('data-step', 'delivery')
     await connected.get_by_role('button', name='查看与核对正式文档', exact=True).click()
@@ -217,7 +217,7 @@ async def exercise(page, context, store, initial, second, task, output, report, 
 
 async def run(args):
     output, build = args.output.resolve(), args.static_build.resolve()
-    assert output.is_relative_to(ROOT / 'evidence') and not output.exists()
+    assert (output.is_relative_to(ROOT / 'evidence') or output.is_relative_to(ROOT / 'work')) and not output.exists()
     assert (build / 'index.html').is_file()
     output.mkdir(parents=True)
     report = dict(status='running', static_build=str(build), checks=[], api_requests=[], routing_errors=[],

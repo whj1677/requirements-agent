@@ -13,6 +13,7 @@ import io
 import json
 import mimetypes
 import os
+import re
 from pathlib import Path
 import sys
 import tempfile
@@ -166,7 +167,7 @@ async def run(args):
                         before_attachment_ids = {s['id'] for s in store.get(pid)['sources']}
                         await work.get_by_role('button', name='继续核对已有草稿', exact=True).click()
                         await expect(work.get_by_role('table', name='需求确认表', exact=True)).to_be_visible()
-                        await work.get_by_role('navigation', name='需求工作流程').get_by_role('button', name='1 提供信息', exact=True).click()
+                        await work.get_by_role('navigation', name='需求工作流程').get_by_role('button', name=re.compile(r'^1\s')).click()
                         await expect(page.get_by_role('dialog', name='未保存的修改')).not_to_be_visible()
                         await expect(textarea).to_be_visible()
                         await expect(textarea).to_have_value('合成草稿，待发送。')
@@ -178,18 +179,6 @@ async def run(args):
                         report['checks'].append(dict(viewport=label, check='existing draft view and return preserves unsaved text/files; generation remains protected'))
                         await page.screenshot(path=str(output / (label + '-draft-preserved.png')))
 
-                        await work.get_by_role('button', name='发送', exact=True).click()
-                        dialog = page.get_by_role('dialog', name='核对本次任务')
-                        await expect(dialog).to_be_visible()
-                        assert provider.calls == 0
-                        await dialog.get_by_role('button', name='返回保留输入').click()
-                        await expect(textarea).to_have_value('合成草稿，待发送。')
-                        await expect(work.locator('.chat-pasted-image')).to_have_count(2)
-                        sources = [s for s in store.get(pid)['sources'] if s.get('origin') == 'interview_attachment' and s.get('title') in names]
-                        assert len(sources) == 2 and all(s.get('parse_status') in ('read', 'partial') and s.get('excerpts') for s in sources), sources
-                        assert {s['title'] for s in sources} == names, sources
-                        report['checks'].append(dict(viewport=label, check='two files selected, read and task plan cancelled without model call'))
-
                         # Saving on project switch, then reloading, must preserve the exact pending draft.
                         await select_project(page, other)
                         leave = page.get_by_role('dialog', name='未保存的修改')
@@ -197,6 +186,11 @@ async def run(args):
                             await leave.get_by_role('button', name='保存后离开').click()
                             await expect(leave).not_to_be_visible()
                         await expect(page.get_by_role('heading', name='合成切换项目', exact=True)).to_be_visible()
+                        sources = [s for s in store.get(pid)['sources'] if s.get('origin') == 'interview_attachment' and s.get('title') in names]
+                        assert len(sources) == 2 and all(s.get('parse_status') in ('read', 'partial') and s.get('excerpts') for s in sources), sources
+                        assert {s['title'] for s in sources} == names, sources
+                        assert provider.calls == 0
+                        report['checks'].append(dict(viewport=label, check='saving unsent draft reads both files without sending or authorizing an AI task'))
                         await page.reload(wait_until='networkidle')
                         await select_project(page, pid)
                         work = page.locator('.connected-workspace:visible')

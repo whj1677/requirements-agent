@@ -47,7 +47,7 @@ def test_stable_question_id_preserves_risk_answer_and_all_references(tmp_path):
     response=copy.deepcopy(EXAMPLES['clarify'])
     question=response['questions'][0]
     question.update(topic_key=old['topic_key'],related_refs=['REQ-0001'],blocking=True,
-                    question='相接边界是否允许管理员覆盖？')
+                    question='相接边界是否允许管理员覆盖？',source_refs=copy.deepcopy(old['source_refs']))
     response['proposals']=[dict(temp_id='TMP-core-rule',action='add',target_item_id=None,
         kind='rule',title='合成风险规则',statement='该规则仍待产品决定。',applies_to='to_be',
         epistemic_status='proposed',source_refs=[],related_refs=[question['temp_id']])]
@@ -66,7 +66,8 @@ def test_open_same_topic_escalates_without_dangling_ref(tmp_path):
     p=prepared(Store(tmp_path))
     old=p['questions'][0]
     response=copy.deepcopy(EXAMPLES['clarify'])
-    response['questions'][0].update(topic_key=old['topic_key'],related_refs=['REQ-0001'],blocking=True)
+    response['questions'][0].update(topic_key=old['topic_key'],related_refs=['REQ-0001'],blocking=True,
+                                    question=old['question'],source_refs=copy.deepcopy(old['source_refs']))
     response['proposals']=[dict(temp_id='TMP-risk',action='add',target_item_id=None,
         kind='rule',title='合成待确认规则',statement='等待回答。',applies_to='to_be',
         epistemic_status='proposed',source_refs=[],related_refs=[response['questions'][0]['temp_id']])]
@@ -87,7 +88,8 @@ def test_answered_topic_changed_text_or_earlier_gate_needs_new_answer(tmp_path,n
                blocking=True,blocking_stage=3)
     response=copy.deepcopy(EXAMPLES['clarify'])
     response['questions'][0].update(topic_key=old['topic_key'],question=new_text,
-                                   related_refs=['REQ-0001'],blocking=True,blocking_stage=new_stage)
+                                   related_refs=['REQ-0001'],blocking=True,blocking_stage=new_stage,
+                                   source_refs=copy.deepcopy(old['source_refs']))
     apply_response(p,response)
     assert len(p['questions'])==2
     assert p['questions'][0]['answer']=='合成原回答：允许。'

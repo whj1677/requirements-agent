@@ -86,7 +86,7 @@ async def run(args):
                 send=work.get_by_role('button',name='发送',exact=True);await send.scroll_into_view_if_needed();await expect(send).to_be_in_viewport(ratio=1)
                 await page.screenshot(path=str(args.output/'assistant-150-composer.png'))
                 await page.set_viewport_size(dict(width=1366,height=768))
-                await work.get_by_role('navigation',name='需求工作流程').get_by_role('button',name=re.compile('完善需求')).click()
+                await work.get_by_role('navigation',name='需求工作流程').get_by_role('button',name=re.compile(r'^2\s')).click()
                 guard=page.get_by_role('dialog',name='未保存的修改',exact=True)
                 if await guard.count():await guard.get_by_role('button',name='放弃修改',exact=True).click()
                 table=work.get_by_role('table',name='需求确认表',exact=True);await expect(table).to_be_visible()

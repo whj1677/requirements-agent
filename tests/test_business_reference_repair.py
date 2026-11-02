@@ -52,7 +52,7 @@ def test_workflow_repairs_once_and_leaves_confirmation_to_user(tmp_path, invalid
                 evidence.response(json.dumps(value), http_status=200, finish_reason='stop', usage={})
                 return value, meta
             plan = json.loads(messages[1]['content'][0]['text'])
-            if 'rows' in plan:return await super().request(config,messages,evidence)
+            if 'rows' in plan or 'fields' in plan:return await super().request(config,messages,evidence)
             self.requests.append({'stage':'repair','role':'business_reference_repair'})
             pair = plan['allowed'][0]
             patch = {'references': [{'slot': i, 'source': 'S99' if invalid else pair['source'],
@@ -71,7 +71,7 @@ def test_workflow_repairs_once_and_leaves_confirmation_to_user(tmp_path, invalid
         task = actions.start(before['id'], body, plan['plan_hash'], 'reference-repair-test', True)
         await actions.jobs[task['id']]
         task = store.get_record(before['id'], task['id'], 'user_task'); after = store.get(before['id'])
-        expected=['business_generation','business_reference_repair']+([] if invalid else ['detail_source_review'])
+        expected=['business_generation','business_reference_repair']+([] if invalid else ['business_source_review','detail_source_review','detail_source_challenge'])
         assert [r['role'] for r in provider.requests]==expected
         assert len(provider.requests)==task['calls']==len(expected)
         assert sum(r['role']=='business_reference_repair' for r in provider.requests)==1

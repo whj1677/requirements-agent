@@ -36,10 +36,14 @@ class BatchProvider(Provider):
     async def request(self,config,messages,evidence=None):
         header=json.loads(messages[0]['content'].split('可信任务头：')[1]);context=json.loads(messages[1]['content'][0]['text'])
         detail_review=bool({'source_quotes','quote_pool_hash'} & header['schema'].get('properties',{}).keys()) and 'rows' in context
-        role='detail_source_review' if detail_review else 'prewrite_review' if header['stage']=='review' else 'business_generation'
-        self.requests.append(dict(stage=header['stage'],role=role,draft_request=header.get('refinement_completion')))
+        grounding=header.get('grounding_protocol')=='intake-grounding-challenge-2'
+        role=('business_source_review' if header.get('source_only') else 'detail_source_challenge') if grounding else 'detail_source_review' if detail_review else 'prewrite_review' if header['stage']=='review' else 'business_generation'
+        self.requests.append(dict(stage=header.get('stage','clarify'),role=role,draft_request=header.get('refinement_completion')))
         p=self.project()
-        if detail_review:
+        if grounding:
+            value=dict(candidate_hash=context['candidate_hash'],input_hash=context['input_hash'],
+                       checked_field_ids=[field['id'] for field in context['fields']],findings=[])
+        elif detail_review:
             # Protocol simulation only: keys and source quotes come from this request.
             from tests.test_detail_semantics import model_response
             value=model_response(context)
@@ -209,8 +213,8 @@ async def run(args):
                         await keep.click()
                     confirm=batch.get_by_role('button',name='确认全部修改并复检',exact=True);await expect(confirm).to_be_enabled(timeout=180000 if real else 20000)
                     draft_calls=len(provider.requests)
-                    assert (1<=draft_calls<=2 if real else draft_calls==2) and provider.requests[0]['draft_request']['mode']=='prewrite'
-                    if not real:assert [r['role'] for r in provider.requests]==['business_generation','detail_source_review']
+                    assert (1<=draft_calls<=4 if real else draft_calls==4) and provider.requests[0]['draft_request']['mode']=='prewrite'
+                    if not real:assert [r['role'] for r in provider.requests]==['business_generation','business_source_review','detail_source_review','detail_source_challenge']
                     drafted=store.get(pid);assert drafted['questions']==initial['questions'] and drafted['documents']==initial['documents']
                     assert drafted['items'][:len(initial['items'])]==initial['items']
                     for width,height in ((1366,768),(1280,720),(1093,614)):
@@ -245,7 +249,7 @@ async def run(args):
                         assert report['real_prewrite_status'] in ('passed','needs_confirmation')
                     else:
                         await expect(work.get_by_text('可以继续生成 PRD。',exact=True)).to_be_visible(timeout=20000)
-                        assert len(provider.requests)==3 and [r['role'] for r in provider.requests]==['business_generation','detail_source_review','prewrite_review']
+                        assert len(provider.requests)==5 and [r['role'] for r in provider.requests]==['business_generation','business_source_review','detail_source_review','detail_source_challenge','prewrite_review']
                     report.update(status='passed',model_requests=len(provider.requests),model_requests_by_stage=provider.requests,confirmation_requests=len([r for r in report['api_events'] if r['method']=='POST' and r['path'].endswith('/refinement-confirmation')]),checks=['所有检查点默认同表显示','打开与取消零调用','一次批量起草','旧内容与回答在确认前不变','共享条款合并','一次确认全部回答与条款','仅整批复检一次','笔记本底部按钮可见'])
                     await page.screenshot(path=str(args.output/'03-passed.png'))
                 except Exception as error:

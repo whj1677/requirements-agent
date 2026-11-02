@@ -67,12 +67,11 @@ def test_current_dispute_can_recheck_through_actions_without_answering_question(
     document=saved_prd_plan(saved)
     task,provider,plan=run_action(store,saved,[document],action='document')
     assert not plan['missing'] and plan['prewrite_policy']['reused']
-    # This minimal frozen plan leaves context placement to the compiler. Its
-    # explicit partial result is independent of the stage gate being tested.
-    assert task['status']=='partial' and task['calls']==len(provider.received)==1,task
+    # The saved plan includes the confirmed context; a disputed finding does
+    # not prevent the now-complete document from being generated.
+    assert task['status']=='succeeded' and task['calls']==len(provider.received)==1,task
     written=store.get(project['id'])
-    assert written['documents']['prd']['limitations']==[
-        '章节建议未指定的已核对上下文字段：'+'、'.join(document['sections'][0]['context_refs'])]
+    assert written['documents']['prd']['limitations']==[]
     assert written['stage_checks']==project['stage_checks']
     assert export_readiness(written,'prd')['ready']
     files=asyncio.run(document_files(written,'prd'))

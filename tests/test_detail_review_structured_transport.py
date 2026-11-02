@@ -33,7 +33,7 @@ def test_factories_preserve_exact_schemas_and_legacy_defaults(tmp_path):
     assert (plan,packet)==before
 
 
-@pytest.mark.parametrize('mode,limit,expected', [('pass',7,3),('pass',2,2),('http',7,3),('cancel',7,3),('missing_hash',7,3)])
+@pytest.mark.parametrize('mode,limit,expected', [('pass',7,4),('pass',3,3),('http',7,4),('cancel',7,4),('missing_hash',7,4)])
 def test_actual_provider_routes_both_review_and_patch_without_fallback(tmp_path,monkeypatch,mode,limit,expected):
     import httpx
     from tests.provider_transport import reply
@@ -47,7 +47,7 @@ def test_actual_provider_routes_both_review_and_patch_without_fallback(tmp_path,
         async def respond(request):
             body=json.loads(request.content);bodies.append(body)
             messages=body.get('messages',body.get('input'));h=header(messages)
-            if len(bodies)>1:
+            if len(bodies)>2:
                 assert request.url.path.endswith('/responses')
                 assert body['text']['format']['schema']==h['schema']
                 assert h['strict_json_protocol']=='detail-review-strict-json-1'
@@ -64,7 +64,7 @@ def test_actual_provider_routes_both_review_and_patch_without_fallback(tmp_path,
         saved=store.get_record(p['id'],task['id'],'run')
         assert len(bodies)==saved['calls']==saved['request_budget']['used']==expected
         records=[json.loads((store.folder/'evidence/model-calls'/(a['call_id']+'.json')).read_text('utf-8')) for a in saved['attempts']]
-        for record in records[1:]:
+        for record in records[2:]:
             effective=record['authorization']['effective_config']
             assert effective['detail_review_transport_protocol']==TRANSPORT and effective['timeout']==300
             if record.get('final_output'):assert record['response_protocol']=='responses' and 'syntax_normalization' not in record
@@ -108,7 +108,7 @@ def test_marked_unsupported_effective_configuration_fails_before_review_send(tmp
         task=workflow.start(p['id'],p['revision'],'clarify','',discussion_target=target(),config_override=config)
         await workflow.tasks[task['id']]
         saved=store.get_record(p['id'],task['id'],'run')
-        assert len(provider.received)==saved['calls']==1
+        assert len(provider.received)==saved['calls']==2
         assert 'DETAIL_REVIEW_TRANSPORT_INVALID' in dumps(saved)
     asyncio.run(run())
 
@@ -116,9 +116,9 @@ def test_marked_unsupported_effective_configuration_fails_before_review_send(tmp
 def test_plan_freezes_transport_and_requirement_next_step_keeps_partial_prefix(tmp_path):
     async def run():
         store,p=project(tmp_path);provider=PatchProvider('bad_patch');workflow=Workflow(store,provider);actions=Actions(store,workflow)
-        body=dict(expected_revision=p['revision'],action='clarify',message='',document_type='prd',target=target(),max_calls=3)
+        body=dict(expected_revision=p['revision'],action='clarify',message='',document_type='prd',target=target(),max_calls=4)
         plan=actions.plan(p['id'],body)
-        assert plan['detail_review_transport']['clarify']['protocol']==TRANSPORT and plan['max_calls']==3
+        assert plan['detail_review_transport']['clarify']['protocol']==TRANSPORT and plan['max_calls']==4
         task=actions.start(p['id'],body,plan['plan_hash'],'strict-next-step',False)
         await actions.jobs[task['id']]
         finished=store.get_record(p['id'],task['id'],'user_task')

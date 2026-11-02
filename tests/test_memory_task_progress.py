@@ -24,7 +24,7 @@ class SuspendedProvider(Provider):
         header=json.loads(messages[0]['content'].split('可信任务头：',1)[1])
         if header.get('response_protocol')=='project-langmem-1':
             value={'tool_calls':[] if self.empty else [dict(name='EvidenceMemory',args=dict(
-                source_id=e['source_id'],excerpt_id=e['id'],quote=e['text'])) for e in self.excerpts]}
+                source_id=e['source_id'],excerpt_id=e['id'])) for e in self.excerpts]}
         else:
             self.dispatched.set();await self.release.wait()
             value=dict(schema_version='1.1',stage='interview',summary='合成进度检查',proposals=[],questions=[],

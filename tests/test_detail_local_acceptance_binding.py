@@ -143,18 +143,19 @@ def test_reference_fix_still_requires_complete_review_and_shared_budget(tmp_path
                 evidence.response(dumps(result),http_status=200,finish_reason='stop',usage={'total_tokens':100})
                 return result,dict(finish_reason='stop',usage={'total_tokens':100})
             result,meta=await super().request(config,messages,evidence)
-            if json.loads(messages[0]['content'].split('可信任务头：',1)[1]).get('response_protocol')==PROTOCOL:
+            header=json.loads(messages[0]['content'].split('可信任务头：',1)[1])
+            if header.get('response_protocol')==PROTOCOL and not header.get('grounding_protocol'):
                 result['requirements'][0]['detail_contract']['interactions'][0]['acceptance_refs']=['A1','A2']
                 evidence.response(dumps(result),http_status=200,finish_reason='stop',usage={'total_tokens':100})
             return result,meta
     async def run():
         store,p=project(tmp_path);provider=Provider();workflow=Workflow(store,provider)
-        task=workflow.start(p['id'],p['revision'],'clarify','',discussion_target=target(),config_override=dict(workflow.config('clarify'),max_calls=5))
+        task=workflow.start(p['id'],p['revision'],'clarify','',discussion_target=target(),config_override=dict(workflow.config('clarify'),max_calls=6))
         await workflow.tasks[task['id']]
         saved=store.get_record(p['id'],task['id'],'run');report=saved['business_draft_review']
         assert provider.binding_calls==1
-        if mode=='invalid_patch':assert saved['calls']==2 and provider.review_count==0 and report['detail_preflight']['status']=='failed'
+        if mode=='invalid_patch':assert saved['calls']==3 and provider.review_count==0 and report['detail_preflight']['status']=='failed'
         else:
-            assert saved['calls']==(5 if mode=='still_bad' else 3)
+            assert saved['calls']==(6 if mode=='still_bad' else 4)
             assert report['detail_semantic_reviews']['R1']['status']==('failed' if mode=='still_bad' else 'passed')
     asyncio.run(run())

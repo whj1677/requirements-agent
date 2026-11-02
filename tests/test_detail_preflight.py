@@ -141,14 +141,14 @@ def test_workflow_preflight_keeps_full_review_and_bounded_failure(tmp_path,mode)
                         if prop['key'] not in check['candidate_keys']:check['candidate_keys'].append(prop['key'])
                 evidence.response(dumps(result),http_status=200,finish_reason='stop',usage={'total_tokens':100})
             header=json.loads(messages[0]['content'].split('可信任务头：',1)[1])
-            if header.get('response_protocol')==PROTOCOL:
+            if header.get('response_protocol')==PROTOCOL and not header.get('grounding_protocol'):
                 field=result['requirements'][0]['detail_contract']['fields'][0]
                 field['default_value']='无';field['evidence']['default_value']=dict(status='source')
                 evidence.response(dumps(result),http_status=200,finish_reason='stop',usage={'total_tokens':100})
             return result,meta
     async def run():
         store,p=project(tmp_path);provider=Provider();workflow=Workflow(store,provider)
-        config=dict(workflow.config('clarify'),max_calls=1 if mode=='budget' else 5)
+        config=dict(workflow.config('clarify'),max_calls=1 if mode=='budget' else 6)
         task=workflow.start(p['id'],p['revision'],'clarify','',discussion_target=target(),config_override=config)
         await workflow.tasks[task['id']]
         saved=store.get_record(p['id'],task['id'],'run')
@@ -158,12 +158,12 @@ def test_workflow_preflight_keeps_full_review_and_bounded_failure(tmp_path,mode)
         assert provider.preflight_count==1
         audit=saved['business_draft_review']['detail_preflight']
         if mode in ('bad_patch','unchanged','bad_source'):
-            assert audit['status']=='failed' and provider.review_count==0 and saved['calls']==2
+            assert audit['status']=='failed' and provider.review_count==0 and saved['calls']==3
         else:
             result=saved['business_draft_review']['detail_semantic_reviews']['R1']
             assert result['status']==('failed' if mode=='still_bad' else 'passed')
             assert provider.review_count==(2 if mode in ('correct','still_bad') else 1)
-            assert saved['calls']==(5 if mode in ('correct','still_bad') else 3)
+            assert saved['calls']==(6 if mode in ('correct','still_bad') else 4)
     asyncio.run(run())
 
 
@@ -175,10 +175,11 @@ def test_cancel_during_preflight_preserves_project_and_closes_evidence(tmp_path)
         store,p=project(tmp_path);started=asyncio.Event()
         class Blocking(SemanticProvider):
             async def request(self,config,messages,evidence=None):
-                if self.received:
+                if 'source_binding_missing' in messages[1]['content'][0]['text']:
                     evidence.before_send(config);self.received.append(copy.deepcopy(messages))
                     started.set();await asyncio.Event().wait()
                 result,meta=await super().request(config,messages,evidence)
+                if 'requirements' not in result:return result,meta
                 field=result['requirements'][0]['detail_contract']['fields'][0]
                 field['default_value']='无';field['evidence']['default_value']=dict(status='source')
                 evidence.response(dumps(result),http_status=200,finish_reason='stop',usage={'total_tokens':100})
@@ -189,9 +190,9 @@ def test_cancel_during_preflight_preserves_project_and_closes_evidence(tmp_path)
         await asyncio.wait_for(started.wait(),5)
         running=workflow.tasks[task['id']];workflow.cancel(p['id'],task['id']);await running
         saved=store.get_record(p['id'],task['id'],'run')
-        assert saved['status']=='cancelled' and saved['calls']==2 and provider.review_count==0
+        assert saved['status']=='cancelled' and saved['calls']==3 and provider.review_count==0
         assert store.get(p['id'])==p
         records=[json.loads((store.folder/'evidence/model-calls'/(a['call_id']+'.json')).read_text('utf-8')) for a in saved['attempts']]
         assert records[0]['detail_preflight']['status']=='cancelled'
-        assert records[1]['validation_result']=='CANCELLED' and records[1]['ended_at']
+        assert records[2]['validation_result']=='CANCELLED' and records[2]['ended_at']
     asyncio.run(run())

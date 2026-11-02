@@ -46,7 +46,7 @@ async def open_documents(page, pid):
     await select_project(page, pid)
     workspace = page.locator('.project-workspace:not([hidden])')
     connected = workspace.locator('.connected-workspace')
-    await connected.get_by_role('navigation', name='需求工作流程').get_by_role('button', name=re.compile(r'^3\s*确认交付$')).click()
+    await connected.get_by_role('navigation', name='需求工作流程').get_by_role('button', name=re.compile(r'^3\s')).click()
     await connected.get_by_role('button', name='查看与核对正式文档', exact=True).click()
     details = workspace.locator('details.connected-details')
     await expect(details).to_have_attribute('open', '')

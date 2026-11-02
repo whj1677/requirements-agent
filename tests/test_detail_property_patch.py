@@ -95,15 +95,15 @@ def test_workflow_freezes_patch_protocol_and_preserves_full_legacy(tmp_path,old_
     from tests.test_requirement_recommendation import project,target
     async def run():
         store,p=project(tmp_path);provider=SemanticProvider('correct');workflow=Workflow(store,provider)
-        config=dict(workflow.config('clarify'),max_calls=4)
+        config=dict(workflow.config('clarify'),max_calls=5)
         if old_snapshot:config.pop('detail_correction_protocol_version')
         task=workflow.start(p['id'],p['revision'],'clarify','',discussion_target=target(),config_override=config)
         await workflow.tasks[task['id']]
         saved=store.get_record(p['id'],task['id'],'run')
-        assert saved['calls']==saved['request_budget']['used']==4
+        assert saved['calls']==saved['request_budget']['used']==5
         assert saved['business_draft_review']['detail_semantic_reviews']['R1']['status']=='passed'
-        payload=json.loads(provider.received[2][1]['content'][0]['text'])
+        payload=json.loads(provider.received[3][1]['content'][0]['text'])
         assert payload['correction_protocol']==(1 if old_snapshot else 2)
-        schema=json.loads(provider.received[2][0]['content'].split('可信任务头：',1)[1])['schema']
+        schema=json.loads(provider.received[3][0]['content'].split('可信任务头：',1)[1])['schema']
         assert ('detail_contract' in schema['properties']['rows']['items']['properties']) is old_snapshot
     asyncio.run(run())
