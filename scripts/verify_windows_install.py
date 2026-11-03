@@ -15,6 +15,7 @@ import json
 import os
 from pathlib import Path
 import socket
+import sqlite3
 import subprocess
 import sys
 import time
@@ -606,20 +607,65 @@ def seed_business_data():
     return pid, source['id']
 
 
-def business_snapshot(pid, source_id):
-    result = {}
+def business_snapshot(pid, source_id, data):
+    # Compare saved business state, not version-dependent GET display projections.
+    database = (Path(data) / 'requirements.sqlite3').resolve()
+    with sqlite3.connect(database.as_uri() + '?mode=ro', uri=True) as db:
+        db.row_factory = sqlite3.Row
+        db.execute('BEGIN')
+        row = db.execute('SELECT revision,payload FROM projects WHERE id=?', (pid,)).fetchone()
+        require(row is not None, 'SAVED_PROJECT_MISSING')
+        project = json.loads(row['payload'])
+        require(project.get('revision') == row['revision'], 'SAVED_PROJECT_REVISION_MISMATCH')
+        history = [dict(r) for r in db.execute(
+            'SELECT revision,reason,created,payload FROM revisions WHERE project_id=? ORDER BY revision DESC', (pid,))]
+        records = [dict(r) for r in db.execute(
+            'SELECT id,project_id,kind,payload,created FROM records WHERE project_id=? ORDER BY id', (pid,))]
+        settings = {r['id']: json.loads(r['payload']) for r in db.execute('SELECT id,payload FROM settings ORDER BY id')}
+    responses = {}
     for name, path in [('project', f'/api/projects/{pid}'), ('history', f'/api/projects/{pid}/history'),
                        ('models', '/api/models')]:
-        status, result[name] = request_json(path)
+        status, responses[name] = request_json(path)
         require(status == 200, 'BUSINESS_SNAPSHOT_UNREADABLE')
-    require(result['project'].get('id') == pid and len(result['history']) >= 2, 'BUSINESS_HISTORY_MISSING')
-    model = result['models']['model']
+    require(project.get('id') == responses['project'].get('id') == pid and len(history) >= 2, 'BUSINESS_HISTORY_MISSING')
+    # Every persisted top-level field is still exposed unchanged for this seeded
+    # project (no questions or image containers with nested view projections).
+    require(all(responses['project'].get(k) == value for k, value in project.items()), 'PROJECT_API_STORAGE_MISMATCH')
+    require(responses['history'] == history, 'HISTORY_API_STORAGE_MISMATCH')
+    for slot in ('model', 'vision'):
+        if slot in settings:
+            require(all(responses['models'][slot].get(k) == value for k, value in settings[slot].items()),
+                    'MODEL_API_STORAGE_MISMATCH')
+    model = responses['models']['model']
     require(model.get('key_configured') is True and model.get('key_source') == 'protected_store' and
             not model.get('key_storage_error'), 'PERSISTED_KEY_UNREADABLE')
     status, body, _ = request(f'/api/projects/{pid}/sources/{source_id}/file')
     require(status == 200 and body == SYNTHETIC_ATTACHMENT, 'SAVED_ATTACHMENT_UNREADABLE')
-    result['attachment_sha256'] = hashlib.sha256(body).hexdigest()
-    return result
+    for record in history + records:
+        record['payload'] = json.loads(record['payload'])
+    return dict(project=project, history=history, records=records, models=settings,
+                protected_key_source=model['key_source'], attachment_sha256=hashlib.sha256(body).hexdigest())
+
+
+def changed_paths(before, after, path=''):
+    """Report field locations only, never values or persisted credentials."""
+    if isinstance(before, dict) and isinstance(after, dict):
+        return [p for key in sorted(before.keys() | after.keys())
+                for p in ([path + '/' + key] if key not in before or key not in after
+                          else changed_paths(before[key], after[key], path + '/' + key))]
+    if isinstance(before, list) and isinstance(after, list):
+        if len(before) != len(after):
+            return [path + '/length']
+        return [p for i, (left, right) in enumerate(zip(before, after))
+                for p in changed_paths(left, right, path + '/' + str(i))]
+    return [] if before == after else [path]
+
+
+def verify_business_preserved(before, after, report):
+    for name in before:
+        if before[name] != after[name]:
+            report['changed_business_paths'] = changed_paths(before[name], after[name], '/' + name)
+            raise VerificationFailure('UPGRADE_CHANGED_' + name.upper())
 
 
 def install_command(installer, install, log, shortcuts=False):
@@ -716,7 +762,7 @@ def verify(installer, output, upgrade_from=None, shortcuts=False, running_upgrad
         verify_shutdown_security(desktop['csrf'])
         report['checks']['direct_business_http_and_shutdown_security'] = True
         project_id, source_id = seed_business_data()
-        before = business_snapshot(project_id, source_id)
+        before = business_snapshot(project_id, source_id, home / 'data')
         require(any(row.get('id') == project_id for row in request_json('/api/projects')[1]),
                 'SYNTHETIC_PROJECT_NOT_LISTED')
         shutdown_owned(service, expected_instance)
@@ -775,9 +821,8 @@ def verify(installer, output, upgrade_from=None, shortcuts=False, running_upgrad
         _desktop, projects = verify_business_http(expected_instance)
         require(any(row.get('id') == project_id and row.get('name') == before['project']['name'] for row in projects),
                 'UPGRADE_LOST_SYNTHETIC_PROJECT')
-        after = business_snapshot(project_id, source_id)
-        for name in before:
-            require(after[name] == before[name], 'UPGRADE_CHANGED_' + name.upper())
+        after = business_snapshot(project_id, source_id, home / 'data')
+        verify_business_preserved(before, after, report)
         require(all((home / relative).is_file() and sha256(home / relative) == digest
                     for relative, digest in credential_files.items()), 'UPGRADE_CHANGED_CREDENTIAL_FILES')
         if shortcuts:
@@ -788,7 +833,7 @@ def verify(installer, output, upgrade_from=None, shortcuts=False, running_upgrad
         report['checks']['upgrade_preserves_project_history_attachment_config_and_protected_key'] = True
         report['preserved_data'] = dict(project_json='identical', history_entries=len(after['history']),
                                        history='identical', attachment_sha256=after['attachment_sha256'],
-                                       model_config='identical', key_source=after['models']['model']['key_source'],
+                                       model_config='identical', key_source=after['protected_key_source'],
                                        credential_files=len(credential_files))
         shutdown_owned(service, expected_instance)
         service = None

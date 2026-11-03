@@ -729,18 +729,53 @@ def test_synthetic_project_attachment_config_and_protected_key_survive_reopen(tm
     with TestClient(create_app(folder, env_path=tmp_path / 'absent.env')) as client:
         bridge(client)
         pid, sid = verifier.seed_business_data()
-        before = verifier.business_snapshot(pid, sid)
+        before = verifier.business_snapshot(pid, sid, folder)
+        original_request_json = verifier.request_json
+        def with_new_display_fields(path, *args, **kwargs):
+            status, value = original_request_json(path, *args, **kwargs)
+            if path == f'/api/projects/{pid}':
+                value.update(context_review_statuses={'new_display': True}, question_view={'new_display': True})
+            if path == '/api/models':
+                value['model']['intake_runtime'] = {'new_display': True}
+            return status, value
+        monkeypatch.setattr(verifier, 'request_json', with_new_display_fields)
+        assert verifier.business_snapshot(pid, sid, folder) == before
     credentials = {p.name: p.read_bytes() for p in (folder / '.credentials').glob('*.dpapi')}
     assert credentials and all(b'installer-synthetic-key' not in value for value in credentials.values())
     with TestClient(create_app(folder, env_path=tmp_path / 'absent.env')) as client:
         bridge(client)
-        assert verifier.business_snapshot(pid, sid) == before
+        assert verifier.business_snapshot(pid, sid, folder) == before
         next((folder / '.credentials').glob('*.dpapi')).write_bytes(b'invalid-synthetic-key-file')
         with pytest.raises(verifier.VerificationFailure, match='PERSISTED_KEY_UNREADABLE'):
-            verifier.business_snapshot(pid, sid)
+            verifier.business_snapshot(pid, sid, folder)
     assert len(before['history']) >= 2
-    assert before['models']['model']['key_source'] == 'protected_store'
+    assert before['protected_key_source'] == 'protected_store'
     assert before['models']['model']['model'] == 'synthetic-never-called'
+
+
+@pytest.mark.parametrize('field,path', [
+    ('project', '/project/items/0/statement'),
+    ('answers', '/project/questions/0/answer'),
+    ('history', '/history/0/payload/name'),
+    ('records', '/records/0/payload/action'),
+    ('models', '/models/model/model'),
+])
+def test_upgrade_rejects_saved_business_changes_without_disclosing_values(field, path):
+    import copy
+    before = dict(project={'items': [{'statement': 'original'}], 'questions': [{'answer': 'original'}]},
+                  history=[{'payload': {'name': 'original'}}], records=[{'payload': {'action': 'original'}}],
+                  models={'model': {'model': 'original'}})
+    after = copy.deepcopy(before)
+    parts = path.strip('/').split('/')
+    target = after
+    for part in parts[:-1]:
+        target = target[int(part)] if isinstance(target, list) else target[part]
+    target[parts[-1]] = 'private changed value'
+    report = {}
+    with pytest.raises(verifier.VerificationFailure, match='UPGRADE_CHANGED_'):
+        verifier.verify_business_preserved(before, after, report)
+    assert report['changed_business_paths'] == [path]
+    assert 'private changed value' not in str(report)
 
 
 @pytest.mark.parametrize('scenario', ['reinstall', 'upgrade', 'changed-data', 'same-version-source',
@@ -811,7 +846,7 @@ def test_installation_flow_distinguishes_reinstall_from_upgrade_and_detects_data
 
     baseline = dict(project={'id': 'P-synthetic', 'name': '合成', 'items': [{'statement': 'preserve original'}]},
                     history=[{'revision': 1}, {'revision': 0}], models={'model': {'key_source': 'protected_store'}},
-                    attachment_sha256='synthetic-hash')
+                    protected_key_source='protected_store', attachment_sha256='synthetic-hash')
     def snapshot(*_):
         value = copy.deepcopy(baseline)
         if changed_data and state['upgraded']:
@@ -877,6 +912,7 @@ def test_installation_flow_distinguishes_reinstall_from_upgrade_and_detects_data
     elif changed_data:
         assert report['status'] == 'INSTALLATION_VERIFICATION_FAILED'
         assert report['failure_code'] == 'UPGRADE_CHANGED_PROJECT'
+        assert report['changed_business_paths'] == ['/project/items/0/statement']
     else:
         assert report['status'] == 'DIRECT_INSTALLATION_VERIFIED'
         assert report['shutdown_attempts'] == [{'http_status': 200, 'code': None}] * 2
