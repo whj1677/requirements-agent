@@ -200,3 +200,119 @@ def test_model_document_task_can_start_after_local_review_and_legacy_task(tmp_pa
         assert len(provider.received)==1
         assert store.get(p['id'])['documents']['prd']['base_document_id']==local['artifact_id']
     asyncio.run(run())
+
+
+def test_saved_basic_requirements_over_model_limits_keep_full_text_and_references(tmp_path):
+    import asyncio
+    import io
+    import jsonschema
+    from docx import Document
+    from app.prd import saved_prd_plan, plan_schema, compile_plan
+    from app.contracts import validate_response
+    from app.exports import document_files
+    from app.requirement_confirmation import row_fingerprint
+
+    store, p = setup(tmp_path)
+    with store.edit(p['id'], p['revision'], '多个已确认基础需求', bump=False) as (current, _):
+        template = current['items'][0]
+        template.pop('detail_contract'); template.pop('detail_required')
+        template['behavior'] = dict(actor='管理员', entry='打开联系人详情。', data='联系人姓名。',
+            permissions='管理员可编辑。', flow='编辑并保存。', exceptions='失败时保留姓名。', result='显示姓名。')
+        template['behavior']['flow'] = '编辑姓名。' * 1200  # 6000 chars, the saved field limit
+        template['behavior']['result'] = '保存姓名。' * 1200
+        current['items'] = [copy.deepcopy(template) for _ in range(13)]
+        for index, item in enumerate(current['items'], 1):
+            item['id'] = f'REQ-{index:04d}'
+            if index > 1:
+                item['behavior']['flow'] = '编辑并保存。'
+                item['behavior']['result'] = '显示姓名。'
+            item['requirement_confirmation']['content_hash'] = row_fingerprint(current, item)
+        apply_result(current, review(current), 'RUN-CAPACITY')
+    p = store.get(p['id'])
+    plan = saved_prd_plan(p)
+    wire = plan_schema(p, 'prd')
+    # The model-facing fixed sections must be valid despite their saved size.
+    charts = [dict(requirement_id=i['id'], flow=dict(nodes=[], edges=[])) for i in p['items']]
+    jsonschema.Draft202012Validator(wire).validate(dict(plan, flowcharts=charts))
+    response = compile_plan(plan, p, 'prd', include_sketch=False)
+    validate_response(response, 'prd', p, [e for s in p['sources'] for e in s['excerpts']])
+    generated = generate(store, p['id'], body(p))
+    assert generated['receipt']['model_calls'] == 0
+    project = generated['project']; doc = project['documents']['prd']
+    assert doc['model_calls'] == 0
+    for title, fields in (('交互逻辑', ('entry', 'exceptions')), ('业务流程说明', ('flow', 'result'))):
+        blocks = [b for s in doc['content']['sections'] if s['title'] == title
+                  for b in s['blocks'] if b['kind'] == 'explanation']
+        for item in p['items']:
+            matching = [b for b in blocks if b['evidence_refs']['normative_refs'] == [item['id']]]
+            assert ''.join(b['text'] for b in matching) == '\n'.join(item['behavior'][f] for f in fields)
+            assert all(b['ref_ids'] == [item['id']] and len(b['text']) <= 12001 for b in matching)
+    assert all(len(s['blocks']) <= 100 for s in doc['content']['sections'])
+    assert export_readiness(project, 'prd')['ready']
+    files = asyncio.run(document_files(project, 'prd'))
+    word = Document(io.BytesIO(files['PRD.docx']))
+    full = p['items'][0]['behavior']['flow'] + '\n' + p['items'][0]['behavior']['result']
+    assert full in '\n'.join(paragraph.text for paragraph in word.paragraphs)
+    assert full in files['PRD.md'].decode('utf-8')
+
+
+def test_fifty_one_basic_requirements_split_normative_sections_with_coverage(tmp_path):
+    from app.prd import compile_plan, saved_prd_plan
+    from app.contracts import validate_response
+    from app.requirement_confirmation import row_fingerprint
+
+    _, p = setup(tmp_path)
+    template = p['items'][0]
+    template.pop('detail_contract'); template.pop('detail_required')
+    template['behavior'] = dict(actor='管理员', entry='打开详情。', data='姓名。',
+        permissions='管理员可编辑。', flow='编辑并保存。', exceptions='失败时保留姓名。', result='显示姓名。')
+    p['items'] = [copy.deepcopy(template) for _ in range(51)]
+    for index, item in enumerate(p['items'], 1):
+        item['id'] = f'REQ-{index:04d}'
+        item['requirement_confirmation']['content_hash'] = row_fingerprint(p, item)
+    response = compile_plan(saved_prd_plan(p), p, 'prd', include_sketch=False, saved_content=True)
+    validate_response(response, 'prd', p, [e for source in p['sources'] for e in source['excerpts']])
+    doc = response['result']
+    chapters = [section for section in doc['sections'] if section['title'] == '功能需求']
+    assert [len(section['blocks']) for section in chapters] == [100, 2]
+    coverage = {entry['item_id']: entry['section_ids'] for entry in doc['coverage']}
+    for item in p['items']:
+        matches = [(section, index) for section in chapters for index, block in enumerate(section['blocks'])
+                   if block['kind'] == 'requirement' and block['ref_ids'] == [item['id']]]
+        assert len(matches) == 1
+        section, index = matches[0]
+        assert section['blocks'][index + 1]['ref_ids'] == [item['id']]
+        assert coverage[item['id']] == [section['section_id']]
+
+
+@pytest.mark.parametrize('mixed', [False, True])
+def test_saved_capacity_with_unknown_flow_or_mixed_details(tmp_path, mixed):
+    from app.requirement_confirmation import row_fingerprint
+    from app.prd import basic_flow_ids
+
+    store, p = setup(tmp_path)
+    with store.edit(p['id'], p['revision'], '混合需求与未知流程', bump=False) as (current, _):
+        detail = copy.deepcopy(current['items'][0])
+        template = current['items'][0]
+        template.pop('detail_contract'); template.pop('detail_required')
+        template['behavior'] = dict(actor='管理员', entry='打开详情。', data='姓名。',
+            permissions='管理员可编辑。', flow='编辑并保存。' if mixed else '未知',
+            exceptions='失败时保留姓名。', result='显示姓名。')
+        current['items'] = [copy.deepcopy(template) for _ in range(13)]
+        if mixed:
+            detail['id'] = 'REQ-0014'
+            current['items'].append(detail)
+        for index, item in enumerate(current['items'], 1):
+            item['id'] = f'REQ-{index:04d}'
+            item['requirement_confirmation']['content_hash'] = row_fingerprint(current, item)
+        apply_result(current, review(current), 'RUN-MIXED-CAPACITY')
+    p = store.get(p['id'])
+    assert not basic_flow_ids(p)
+    result = generate(store, p['id'], body(p))
+    assert result['receipt']['model_calls'] == 0
+    doc = result['project']['documents']['prd']['content']
+    for title in ('交互逻辑', '业务流程说明'):
+        refs = [ref for section in doc['sections'] if section['title'] == title
+                for block in section['blocks'] if block['kind'] == 'explanation'
+                for ref in block['evidence_refs']['normative_refs']]
+        assert set(refs) == {item['id'] for item in p['items'][:13]}

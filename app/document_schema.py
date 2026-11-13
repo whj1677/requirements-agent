@@ -24,6 +24,9 @@ SCHEMA['$defs']['Finding']['properties'].update(
 # These blocks are compiled locally from item snapshots, never requested from
 # the model's plan schema. Historical document blocks remain byte-compatible.
 _document_blocks = SCHEMA['$defs']['prdResult']['properties']['sections']['items']['properties']['blocks']['items']['oneOf']
+# Saved behavior fields allow 6000 characters each; cloud PRD joins two
+# with one newline. Model-authored plan text remains capped independently.
+next(block for block in _document_blocks if block.get('properties', {}).get('kind', {}).get('const') == 'explanation')['properties']['text']['maxLength'] = 12001
 _document_blocks.append(dict(type='object',additionalProperties=False,
     required=['kind','ref_ids','text','flow','source_hash'],properties=dict(
         kind={'const':'flowchart'},ref_ids=dict(type='array',minItems=1,maxItems=1,items=dict(type='string')),
@@ -39,7 +42,10 @@ _document_blocks.append(dict(type='object', additionalProperties=False,
 _document_blocks.append(dict(type='object', additionalProperties=False,
     required=['kind','ref_ids','text','title','table_role','columns','rows','column_weights'], properties={
         'kind':{'const':'table'},
-        'ref_ids':{'type':'array','items':{'type':'string'},'maxItems':100,'uniqueItems':True},
+        # Saved questions can accumulate links across multiple legal updates.
+        # References are bounded by the current project's existing IDs in
+        # validate_response; retain every link without duplicating risk rows.
+        'ref_ids':{'type':'array','items':{'type':'string'},'uniqueItems':True},
         'text':{'type':'string','maxLength':200},
         'title':{'type':'string','minLength':1,'maxLength':200},
         'table_role':{'enum':['function_inventory','risk_register']},

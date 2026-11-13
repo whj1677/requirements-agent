@@ -455,6 +455,22 @@ def plan_contract(p, kind=None):
         'example 仅示范引用结构；can_generate=false 时不可生成，不把 null 或空结构当作章节建议。')
 
 
+def saved_sections_schema(schema, sections):
+    """Fit only deterministic saved sections; free model plans stay bounded."""
+    rule = schema['properties']['sections']
+    rule['maxItems'] = max(rule['maxItems'], len(sections))
+    props = rule['items']['properties']
+    for field in ('normative_refs', 'discussion_refs'):
+        props[field]['maxItems'] = max(props[field]['maxItems'],
+            max((len(section[field]) for section in sections), default=0))
+    explanations = props['explanations']
+    explanations['maxItems'] = max(explanations['maxItems'],
+        max((len(section['explanations']) for section in sections), default=0))
+    text = explanations['items']['properties']['text']
+    text['maxLength'] = max(text['maxLength'],
+        max((len(e['text']) for section in sections for e in section['explanations']), default=0))
+
+
 def plan_schema(p,kind):
     """One document type's wire keys; never advertise another type's chapters."""
     schema=copy.deepcopy(PLAN_SCHEMA_V4)
@@ -472,7 +488,9 @@ def plan_schema(p,kind):
             schema['required'].append('flowcharts')
             schema['properties']['flowcharts'].update(minItems=len(flow_ids),maxItems=len(flow_ids))
             schema['properties']['flowcharts']['items']['properties']['requirement_id']['enum']=flow_ids
-            schema['properties']['sections']['const']=saved_prd_plan(p)['sections']
+            saved_sections=saved_prd_plan(p)['sections']
+            saved_sections_schema(schema,saved_sections)
+            schema['properties']['sections']['const']=saved_sections
         schema['properties']['flowcharts']['description']='为每个没有detail_contract的已确认基础需求画业务流程图，requirement_id引用当前需求。仅根据其原文、behavior与真实来源绘制节点和分支，不新增角色、业务决定或数据状态。节点使用简短动作或判断名称，不塞入整段规则；完整规则由正文保留，分支条件写在边的condition中。按来源区分发起操作、处理中、收到结果，不能把尚未完成的操作写成已完成后才进入处理中。存在无响应超时分支时，中间连线不得强制已收到服务端响应；页面空态判断在需要该记录的操作之前。重试回路必须重新经过原文适用的提交前校验或权限检查，不得回到校验之后的发送步骤。无明确结果或查询异常应保留原有结果，仅当来源明确原状态未知才维持未知，不得将已有成功或失败改成未知。保留来源已明确的处理中限制、成功和失败后的结束恢复、用户主动重试及保持边界；仅画来源支持的步骤，真实缺口不虚造。详细定义已有图不重复绘制。'
         schema['properties']['flowcharts']['description'] += FLOW_RULES
     else:
@@ -734,12 +752,16 @@ def normalize_structured_explanations(plan,p,kind):
     return value,changes
 
 
-def compile_plan(plan, p, kind, omitted=(), *, include_sketch=True):
+def compile_plan(plan, p, kind, omitted=(), *, include_sketch=True, saved_content=False):
     if not include_sketch:p=without_sketch(p)
-    if kind=='prd' and plan.get('plan_version')=='4' and basic_flow_ids(p):
+    saved_sections = kind=='prd' and plan.get('plan_version')=='4' and (saved_content or bool(basic_flow_ids(p)))
+    if saved_sections:
         plan=dict(plan,sections=saved_prd_plan(p)['sections'])
     version=plan.get('plan_version')
     schema={'2':PLAN_SCHEMA,'3':PLAN_SCHEMA_V3,'4':PLAN_SCHEMA_V4}.get(version,PLAN_SCHEMA_V4)
+    if saved_sections:
+        schema=copy.deepcopy(schema)
+        saved_sections_schema(schema,plan['sections'])
     errors=list(jsonschema.Draft202012Validator(schema).iter_errors(plan))
     details=[''.join('['+str(x)+']' if isinstance(x,int) else ('.' if j else '')+x for j,x in enumerate(e.absolute_path)) or '根节点' for e in errors]
     def error_message(e):
@@ -775,6 +797,30 @@ def compile_plan(plan, p, kind, omitted=(), *, include_sketch=True):
         return sid
     def text(value,refs=None,block_kind='narrative'):
         return dict(kind=block_kind,ref_ids=refs or [],text=value)
+    narrative_schema=next(block for block in SCHEMA['$defs']['prdResult']['properties']['sections']['items']
+        ['properties']['blocks']['items']['oneOf'] if 'narrative' in block['properties']['kind'].get('enum',[]))
+    text_limit=narrative_schema['properties']['text']['maxLength']
+    block_limit=SCHEMA['$defs']['prdResult']['properties']['sections']['items']['properties']['blocks']['maxItems']
+    def text_blocks(value,refs=None,block_kind='narrative'):
+        # Saved answers include their related clause snapshots and provenance.
+        # Keep every character; splitting audit blocks must not truncate either.
+        return [text(value[offset:offset+text_limit],refs,block_kind)
+                for offset in range(0,len(value),text_limit)] or [text('',refs,block_kind)]
+    def grouped_sections(title,groups,introduction=None):
+        leading=[text(introduction)] if introduction else []
+        blocks=list(leading)
+        capacity=block_limit-len(leading)
+        for group in groups:
+            # Keep one question/history record together when it fits. Audit
+            # titles stay exact so every continuation remains an internal view.
+            for offset in range(0,len(group),capacity):
+                part=group[offset:offset+capacity]
+                if len(blocks)+len(part)>block_limit:
+                    section(title,blocks)
+                    blocks=list(leading)
+                blocks.extend(part)
+        if len(blocks)>len(leading):
+            section(title,blocks)
     def provenance(i):
         return '；来源：'+ ('、'.join(r['source_id']+'/'+r['excerpt_id'] for r in i.get('source_refs',[])) or '未提供')
     def discussion(i):
@@ -967,7 +1013,11 @@ def compile_plan(plan, p, kind, omitted=(), *, include_sketch=True):
         for item in missing_normative:coverage[item['id']]=[sid]
     if v4 and kind=='prd':
         for key,blocks in prd_details.items():
-            section(CLOUD_PRD_SECTIONS[key],blocks)
+            limit=SCHEMA['$defs']['prdResult']['properties']['sections']['items']['properties']['blocks']['maxItems']
+            # A missing-flow notice may be appended to the first flow section.
+            if key=='business_flow': limit-=1
+            for offset in range(0,len(blocks),limit):
+                section(CLOUD_PRD_SECTIONS[key],blocks[offset:offset+limit])
         prd_order.extend(i['id'] for i in p['items'] if allowed(i,p) and i['id'] not in prd_seen)
         for item_kind,title in (('requirement',SECTION_TITLES['function']),
                                 ('rule',SECTION_TITLES['rules']),
@@ -981,11 +1031,18 @@ def compile_plan(plan, p, kind, omitted=(), *, include_sketch=True):
                 target=sections[-1]
             else:
                 sid=target['section_id']
+            block_limit=SCHEMA['$defs']['prdResult']['properties']['sections']['items']['properties']['blocks']['maxItems']
             normative_blocks=[]
             for item in ordered:
-                normative_blocks.append(dict(kind=item_kind,ref_ids=[item['id']],text=None))
-                normative_blocks.append(text(f'{item["id"]}：{item["epistemic_status"]}；草稿采纳不代表业务负责人批准'+provenance(item),[item['id']]))
-                normative_blocks.extend(prd_explanations.get(item['id'],[]))
+                group=[dict(kind=item_kind,ref_ids=[item['id']],text=None),
+                       text(f'{item["id"]}：{item["epistemic_status"]}；草稿采纳不代表业务负责人批准'+provenance(item),[item['id']])]
+                group.extend(prd_explanations.get(item['id'],[]))
+                if (normative_blocks or target['blocks']) and len(target['blocks'])+len(normative_blocks)+len(group)>block_limit:
+                    target['blocks'][:0]=normative_blocks
+                    sid=section(title,[])
+                    target=sections[-1]
+                    normative_blocks=[]
+                normative_blocks.extend(group)
                 coverage[item['id']]=[sid]
             target['blocks'][:0]=normative_blocks
         for association_kind,explanations in prd_associations.items():
@@ -996,10 +1053,10 @@ def compile_plan(plan, p, kind, omitted=(), *, include_sketch=True):
             section(PRD_ASSOCIATION_TITLES[association_kind],blocks)
     if kind=='prd':
         from .detail_rendering import detail_block, GROUP_TITLES
-        from .prd_sections import function_inventory_block, risk_register_blocks
-        inventory=function_inventory_block(p)
-        if inventory['ref_ids']:
-            section('主要功能清单',[inventory])
+        from .prd_sections import function_inventory_blocks, risk_register_blocks
+        inventory=function_inventory_blocks(p)
+        if inventory:
+            section('主要功能清单',inventory)
             inventory_section=sections.pop()
             function_index=next((index for index,value in enumerate(sections)
                                  if value['title']==SECTION_TITLES['function']),0)
@@ -1030,7 +1087,7 @@ def compile_plan(plan, p, kind, omitted=(), *, include_sketch=True):
                 textual_flow['blocks'].append(text('当前仅有文字流程说明；尚未生成结构化功能流程图。请在需求详情中核对流程节点、分支与流转条件。'))
             else:
                 section('功能流程图',[text('当前没有已核对的结构化流程；未生成流程图。请在需求详情中核对流程节点、分支与流转条件。')])
-        section('风险点与待确认',risk_register_blocks(p))
+        grouped_sections('风险点与待确认',[[block] for block in risk_register_blocks(p)])
     # The MRD keeps every selected clause after the product body. Split the
     # annex at clause boundaries to respect the compiled document contract.
     # PRD and historical plan versions retain their original clause placement.
@@ -1068,11 +1125,11 @@ def compile_plan(plan, p, kind, omitted=(), *, include_sketch=True):
             applied=any(r in items and items[r].get('selection_status')=='selected'
                         for r in q.get('applied_item_ids',q.get('applied_requirement_ids',[]))) and q.get('understanding_status')=='applied'
             state='已应用于当前草稿条款' if applied else '已有回答，关联条款修订待核对采纳'
-            questions.append(text(f'【{state}；不代表业务负责人批准】{q["question"]}\n回答：{q["answer"]}\n回答来源：'+('、'.join(answer_sources) or '未找到独立回答来源，见问题记录')+f'\n关联条目当前快照：{related or "无关联条目"}'+provenance(q),[q['id']]))
+            questions.append(text_blocks(f'【{state}；不代表业务负责人批准】{q["question"]}\n回答：{q["answer"]}\n回答来源：'+('、'.join(answer_sources) or '未找到独立回答来源，见问题记录')+f'\n关联条目当前快照：{related or "无关联条目"}'+provenance(q),[q['id']]))
         else:
             state='已拆分，具体子问题见工作台' if q.get('superseded_by') else '本期范围外，仍未知' if q.get('out_of_scope_reason') else '尚未决定'
-            questions.append(text(q['question']+'（'+state+'）'+provenance(q),[q['id']], 'open_question'))
-    if questions:section('已有回答与未决问题',questions)
+            questions.append(text_blocks(q['question']+'（'+state+'）'+provenance(q),[q['id']], 'open_question'))
+    if questions:grouped_sections('已有回答与未决问题',questions)
     prof=profile(kind,p.get('reference_mode')=='builtin')
     ui_notice=context(p)['D_unknowns_limits']['ui']
     material_limits=['材料「'+s['title']+'」尚有读取限制：'+(s.get('failure_reason') or '需核对未读取或不清晰的内容') for s in p['sources'] if not s['excluded'] and s['parse_status']!='read']
@@ -1086,9 +1143,9 @@ def compile_plan(plan, p, kind, omitted=(), *, include_sketch=True):
         text(x,block_kind='open_question') for x in dict.fromkeys(material_limits+planning_limits)])
     historical=historical_notes(p)
     if historical:
-        section('历史分析提示（非当前事实）',[
-            text('以下保留历史来源，可能已被后续材料更新；不作为本版材料数量、模板或业务确认状态。')]+[
-            text(f'第{h["round"]}轮 · {h["stage"]} · {h["created"] or "时间未记录"}\n'+'\n'.join(h['limitations'])) for h in historical])
+        grouped_sections('历史分析提示（非当前事实）',[
+            text_blocks(f'第{h["round"]}轮 · {h["stage"]} · {h["created"] or "时间未记录"}\n'+'\n'.join(h['limitations'])) for h in historical],
+            introduction='以下保留历史来源，可能已被后续材料更新；不作为本版材料数量、模板或业务确认状态。')
     maps=build_reference_mapping(p,kind,sections,coverage,verified_context=current_context,
                                  pending_section_id=pending,discussion_locations=discussion_locations)
     document=dict(document_type=kind,content_profile_id=prof['id'],content_profile_version=prof['version'],title=p['name'],

@@ -1053,13 +1053,14 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
         if values.get('intake_resume_task_id') is None:values.pop('intake_resume_task_id',None)
         return actions.plan(pid,values)
 
+    # 同步编排交给 FastAPI 线程池，避免占用服务事件循环。
     @app.post('/api/projects/{pid}/documents/prd/local-preview')
-    async def local_prd_preview(pid:str,body:dict):
+    def local_prd_preview(pid:str,body:dict):
         from .local_prd import preview
         return preview(store,pid,body)
 
     @app.post('/api/projects/{pid}/documents/prd/local-review')
-    async def local_prd_review(pid:str,body:dict):
+    def local_prd_review(pid:str,body:dict):
         from .local_prd import generate
         return generate(store,pid,body)
 

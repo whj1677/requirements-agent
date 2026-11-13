@@ -55,7 +55,7 @@ def test_complete_flow_is_one_media_image_in_landscape_with_its_heading(tmp_path
         media=[n for n in archive.namelist() if n.startswith('word/media/')]
         assert len(media)==1 and archive.read(media[0])==png
     assert document.styles['Normal'].font.size.pt==11
-    assert all(run.font.size.pt==10 for table in document.tables for row in table.rows
+    assert all(run.font.size.pt==11 for table in document.tables for row in table.rows
                for cell in row.cells for paragraph in cell.paragraphs for run in paragraph.runs)
     assert p==before
 
