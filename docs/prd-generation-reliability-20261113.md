@@ -219,3 +219,42 @@ Schema 错误说明也按实际 block `kind` 选择 `oneOf` 分支。8001 字符
 三处旧排版断言与修复前实现不符，已维护为既有样式：`document-reading-13`、封面的 11pt/18pt 两行排版、流程表格的 11pt 字号。没有为此修改产品排版；原有正文、版本、图像完整性和分页断言保留。
 
 修复继续使用隔离 Store、冻结模型输入和模拟人工判断；实际运行生成、reader、Word/Markdown、正式确认、baseline 与 ZIP 导出。没有调用真实模型、写入日常数据、启动第二个工作台或更新用户 Windows 客户端。需求理解质量和实机浏览器验收仍需真实项目补充。
+
+### 修复后最终验证
+
+修复代码与回归用例固定在提交 [`4492ece1e5968ffbd02dc6c66237077eca059c13`](https://github.com/whj1677/requirements-agent/commit/4492ece1e5968ffbd02dc6c66237077eca059c13)，树为 `1ae5e6709e7b9cb7e2222a94e4e8310fe8f78e23`。本节为随后补充的测试记录，不再修改产品代码或用例。
+
+| 验证 | 实际结果 | 说明 |
+| --- | --- | --- |
+| 55 个相关测试文件的集成运行 | 788 通过、1 失败、5 未执行；88.38 秒 | 唯一失败来自新建 201 条需求用例的空 `behavior={}` 夹具，被既有交互定义门禁正确拒绝；未放宽产品门禁 |
+| 修正夹具后的 201 条需求专项 | 1 通过；141.49 秒 | 仅给夹具补齐 7 个有效且非空的行为字段；完整运行 `compile_plan → validate_response`，保留 201 条需求、200＋1 行分表和 1826 条参考映射；漏项、重复、正文改写、重复映射和无效映射反例均被拒绝 |
+| 干净提交上的三个新增回归文件 | 23 通过、1 未执行；23.74 秒 | 在上述代码提交上确认工作区与暂存区均无改动后执行；只排除已单独通过的耗时 201 条需求用例，避免重复运行 |
+
+这些集合相互重叠，不将通过数累加。当前 16 个容量用例均已取得通过结果：最初集成运行中 15 个通过，修正夹具后的剩余 1 个单独通过。干净提交复核覆盖这 15 个容量用例、3 个交接一致性用例和 5 个响应性/并发幂等用例。201 条需求用例的最终文件 blob 为 `4ccc3dbfd20dc3417337245e00963506a97068b8`，与代码提交一致；本节没有把“先失败、再单项通过”写成一次全绿运行。
+
+关键复现命令（分别运行常规回归与耗时容量专项）：
+
+```bash
+RA_DATA_DIR="$PWD/work/product-reliability-rounds/import-repair8-clean" \
+  .venv/bin/python -m pytest -q --tb=short \
+  tests/test_prd_saved_capacity.py \
+  tests/test_handoff_consistency.py \
+  tests/test_local_prd_responsiveness.py \
+  -k 'not test_inventory_row_chunks_preserve_complete_coverage_and_reject_tampering'
+
+RA_DATA_DIR="$PWD/work/product-reliability-rounds/import-capacity-201" \
+  .venv/bin/python -m pytest -q --tb=short \
+  tests/test_prd_saved_capacity.py::test_inventory_row_chunks_preserve_complete_coverage_and_reject_tampering
+```
+
+新增回归还验证了：102 条基础需求完整检查和本机成文；4000 字符需求加 4000 字符回答无损保存并成文；99/100/101 条历史记录和非阻断问题；同一问题经真实保存累计关联 101 个事项；跨续章问答去重；角色文件详细定义、全部表行、当前未决状态与冻结基线一致；同键同请求并发只生成一份产物和回执。未知引用、重复引用、覆盖不足、版本过期和同键不同内容仍按原规则拒绝。
+
+以下 5 个依赖浏览器的用例未完成，也没有计入通过数：
+
+- `test_current_ui_context_and_discussion_image_without_adoption`
+- `test_md_docx_canonical_and_actual_embedded_image`
+- `test_mrd_picture_follows_layout_mapping_not_description`
+- `test_two_functions_keep_distinct_images_and_sections`
+- `test_no_current_ui_and_cropped_picture_are_explicit`
+
+本环境缺少可用的 Playwright 浏览器运行条件：相关执行曾因 Chromium 可执行文件缺失失败，替代安装/启动也未得到可用结果。以上属于验证缺口；这轮没有声称浏览器端、Windows 客户端、真实模型或用户实际失败项目已验收，也没有进行合并或部署。
