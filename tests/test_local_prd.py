@@ -19,7 +19,103 @@ def setup(tmp_path, pending=False):
 
 
 def body(p,**extra):
-    return dict(expected_revision=p['revision'],idempotency_key='local-prd-test-001',review_draft_confirmed=True,**extra)
+    from app.document_preview import build_prd_preview
+    return dict(expected_revision=p['revision'],idempotency_key='local-prd-test-001',
+        review_draft_confirmed=True,preview_hash=build_prd_preview(p)['preview_hash'],**extra)
+
+
+@pytest.mark.parametrize('unknown', [False, True])
+def test_cloud_basic_requirement_uses_confirmed_behavior_without_model(tmp_path, unknown):
+    from app.requirement_confirmation import row_fingerprint
+    store, p = setup(tmp_path)
+    with store.edit(p['id'], p['revision'], '合成无详细定义的云平台需求', bump=False) as (current, _):
+        req = current['items'][0]
+        req.pop('detail_contract'); req.pop('detail_required')
+        req['behavior'] = dict(actor='管理员', entry='在联系人详情点击编辑。',
+            data='联系人姓名为文本。', permissions='仅管理员可编辑，只读角色不能编辑。',
+            flow='编辑姓名后点击保存。', exceptions='只读角色点击编辑时拒绝操作并保持原姓名。',
+            result='保存后显示当前联系人姓名。')
+        current['sources'][0]['excerpts'][0]['text'] = '\n'.join(req['behavior'].values())
+        if unknown: req['behavior']['exceptions'] = '未知'
+        req['requirement_confirmation']['content_hash'] = row_fingerprint(current, req)
+        apply_result(current, review(current), 'RUN-FROZEN-BASIC')
+    p = store.get(p['id']); before = copy.deepcopy(p)
+    result = generate(store, p['id'], body(p)); doc = result['project']['documents']['prd']
+    assert doc['model_calls'] == 0 and result['receipt']['model_calls'] == 0
+    assert result['project']['items'] == before['items']
+    assert result['project']['sources'] == before['sources']
+    assert result['project']['prewrite_review'] == before['prewrite_review']
+    if unknown:
+        from app.prd import cloud_prd_gaps
+        assert any('缺少已核对行为' in message for message in cloud_prd_gaps(doc['content'], result['project']))
+        assert not export_readiness(result['project'], 'prd')['ready']
+    sections = {s['title']: s for s in doc['content']['sections']}
+    for title, fields in (('交互逻辑', ('entry', 'exceptions')), ('业务流程说明', ('flow', 'result'))):
+        blocks = [b for b in sections[title]['blocks'] if b['kind'] == 'explanation']
+        assert len(blocks) == 1
+        assert blocks[0]['text'] == '\n'.join(p['items'][0]['behavior'][f] for f in fields)
+        assert blocks[0]['evidence_refs']['normative_refs'] == [p['items'][0]['id']]
+    if not unknown:
+        import asyncio, io, zipfile
+        from app.prd import compile_plan, plan_schema
+        from app.response_application import apply_response
+        from app.exports import document_files
+        from app.contracts import validate_response
+        flow=dict(nodes=[dict(id='start',label='开始编辑',kind='start'),
+            dict(id='edit',label=req['behavior']['flow'],kind='end'),
+            dict(id='end',label=req['behavior']['result'],kind='end')],
+            edges=[dict(id='e1',**{'from':'start','to':'edit'}),dict(id='e2',condition='用户点击保存后显示已保存的联系人姓名',**{'from':'edit','to':'end'})])
+        current=result['project'];iid=current['items'][0]['id']
+        plan=dict(plan_version='4',sections=[dict(section_key='function',context_refs=[],
+            normative_refs=[i['id'] for i in current['items'] if i['selection_status']=='selected'],discussion_refs=[],explanations=[])],
+            flowcharts=[dict(requirement_id=iid,flow=flow)])
+        for key,fields in (('interaction',('entry','exceptions')),('business_flow',('flow','result'))):
+            plan['sections'].append(dict(section_key=key,context_refs=[],normative_refs=[],discussion_refs=[],
+                explanations=[dict(text='\n'.join(req['behavior'][f] for f in fields),
+                    evidence_refs=dict(context_refs=[],normative_refs=[iid],business_claim_refs=[]))]))
+        wire=plan_schema(current,'prd')
+        assert 'flowcharts' in wire['required']
+        assert wire['properties']['flowcharts']['minItems']==wire['properties']['flowcharts']['maxItems']==1
+        assert wire['properties']['flowcharts']['items']['properties']['requirement_id']['enum']==[iid]
+        assert set(wire['properties']['flowcharts']['items']['properties']['flow']['properties']['nodes']['items']['properties'])=={'id','label','kind'}
+        assert 'const' in wire['properties']['sections']
+        plan['sections'][0]['explanations']=[dict(text='无据模型解释不得进入基础PRD',evidence_refs=dict(context_refs=[],normative_refs=[iid],business_claim_refs=[]))]
+        bad=copy.deepcopy(plan);bad['flowcharts'][0]['flow']['edges'][0]['to']='absent'
+        with pytest.raises(Problem):compile_plan(bad,current,'prd',include_sketch=False)
+        bad=copy.deepcopy(plan);bad['flowcharts'][0]['requirement_id']='ABSENT'
+        with pytest.raises(Problem):compile_plan(bad,current,'prd',include_sketch=False)
+        response=compile_plan(plan,current,'prd',include_sketch=False)
+        assert '无据模型解释' not in str(response)
+        generated=next(b for s in response['result']['sections'] for b in s['blocks'] if b['kind']=='flowchart')['flow']
+        assert generated['edges']==flow['edges']
+        assert [n['label'] for n in generated['nodes']]==[n['label'] for n in flow['nodes']]
+        assert generated['nodes'][1]['kind']=='action' and flow['nodes'][1]['kind']=='end'
+        validate_response(response,'prd',current,[e for s in current['sources'] for e in s['excerpts']])
+        from app.contracts import validate_document
+        tampered=copy.deepcopy(response['result'])
+        next(b for s in tampered['sections'] for b in s['blocks'] if b['kind']=='flowchart')['source_hash']='0'*64
+        with pytest.raises(Problem,match='流程图来源版本已变化'):validate_document(tampered,current,'prd')
+        with store.edit(current['id'],current['revision'],'保存正常PRD响应',bump=False) as (draft,_):apply_response(draft,response)
+        current=store.get(p['id'])
+        saved=generate(store,p['id'],dict(body(current),idempotency_key='local-preserve-flow-001'))['project']
+        assert saved['items']==current['items'] and saved['documents']['prd']['model_calls']==0
+        charts=[b for s in saved['documents']['prd']['content']['sections'] for b in s['blocks'] if b['kind']=='flowchart']
+        assert len(charts)==1 and charts[0]['flow']==generated
+        import xml.etree.ElementTree as ET
+        reading=reader_document(saved['documents']['prd'])
+        nodes=[node for section in reading['sections'] for node in section['reading_nodes']]
+        diagram=next(node for node in nodes if node['kind']=='diagram')
+        labels=[text.text or '' for text in ET.fromstring(diagram['svg']).iter('{http://www.w3.org/2000/svg}text')]
+        assert not any(code in label for label in labels for code in ('start','edit','end','e1','e2'))
+        assert any('…' in label for label in labels)
+        table=next(node for node in nodes if node['kind']=='table' and node['title']=='流程分支条件')
+        assert table['columns']==['起点','终点','条件']
+        assert [row[-1] for row in table['rows']]==[flow['edges'][1]['condition']]
+        assert diagram['flow']['edges']==flow['edges']
+        files=asyncio.run(document_files(saved,'prd'))
+        assert b'data:image/png;base64,' in files['PRD.md']
+        with zipfile.ZipFile(io.BytesIO(files['PRD.docx'])) as package:
+            assert any(name.startswith('word/media/') and name.endswith('.png') for name in package.namelist())
 
 
 @pytest.mark.parametrize('pending',[False,True])
@@ -60,6 +156,20 @@ def test_local_generation_does_not_bypass_guards_or_partially_write(tmp_path,fau
     with pytest.raises(Problem):generate(store,p['id'],request)
     assert store.get(p['id'])==before
     assert not store.records(p['id'],'document_artifact') and not store.records(p['id'],'local_prd_receipt')
+
+
+def test_local_preview_is_read_only_and_stale_preview_cannot_generate(tmp_path):
+    from app.local_prd import preview
+    store,p=setup(tmp_path);before=copy.deepcopy(p)
+    result=preview(store,p['id'],dict(expected_revision=p['revision']))
+    assert result['preview_hash']==body(p)['preview_hash']
+    assert store.get(p['id'])==before
+    request=body(p)
+    with store.edit(p['id'],p['revision'],'模拟预览后内容变化',bump=False) as (current,_):
+        current['items'][0]['statement']='预览后新增的业务变化。'
+    with pytest.raises(Problem) as caught:generate(store,p['id'],request)
+    assert caught.value.code=='STALE_PREVIEW'
+    assert not store.records(p['id'],'document_artifact')
 
 
 def test_idempotency_key_cannot_silently_refer_to_newer_content(tmp_path):

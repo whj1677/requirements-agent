@@ -19,7 +19,31 @@ class BusinessProvider(FakeProvider):
     async def request(self, config, messages, evidence=None):
         header = json.loads(messages[0]['content'].split('可信任务头：', 1)[1])
         assert header['response_protocol'] == PROTOCOL
-        result, meta = await super().request(config, messages, evidence)
+        if header.get('grounding_protocol')=='intake-grounding-coverage-1':
+            self.received.append(copy.deepcopy(messages))
+            payload=json.loads(messages[1]['content'][0]['text'])
+            result=dict(candidate_hash=payload['candidate_hash'],input_hash=payload['input_hash'],
+                checked_input_ids=[row['id'] for row in payload['inputs']],
+                checked_question_ids=[row['id'] for row in payload['questions']],findings=[])
+            meta=dict(usage={'prompt_tokens':1,'completion_tokens':1},finish_reason='stop')
+        elif header.get('grounding_protocol')=='intake-grounding-challenge-2':
+            self.received.append(copy.deepcopy(messages))
+            payload=json.loads(messages[1]['content'][0]['text'])
+            result=dict(candidate_hash=payload['candidate_hash'],input_hash=payload['input_hash'],
+                checked_field_ids=[field['id'] for field in payload['fields']],findings=[])
+            meta=dict(usage={'prompt_tokens':1,'completion_tokens':1},finish_reason='stop')
+        elif header.get('grounding_protocol')=='intake-grounding-1':
+            # These legacy fixtures exercise persistence/transport, not the
+            # reviewer model. Supply an explicitly synthetic protocol reply;
+            # test_intake_grounding separately exercises rejection and repair.
+            from app.intake_grounding import prepare
+            from tests.test_intake_grounding import review
+            self.received.append(copy.deepcopy(messages))
+            payload=json.loads(messages[1]['content'][0]['text'])
+            result=review(prepare(payload['candidate'],payload['context']))
+            meta=dict(usage={'prompt_tokens':1,'completion_tokens':1},finish_reason='stop')
+        else:
+            result, meta = await super().request(config, messages, evidence)
         if evidence:
             evidence.response(dumps(result), http_status=200, finish_reason='stop', usage=meta['usage'])
         return result, meta
@@ -45,7 +69,8 @@ def test_business_workflow_preserves_originals_and_isolates_bad_row(tmp_path, st
         await workflow.tasks[run['id']]
         run = store.get_record(frozen['id'], run['id'], 'run')
         assert run['status'] == 'partial', run
-        assert run['calls'] == 1 and len(provider.received) == 1
+        expected_calls=3 if stage=='ingest' else 2
+        assert run['calls'] == expected_calls and len(provider.received) == expected_calls
         assert run['repair_count'] == 0
         after = store.get(frozen['id'])
         assert after['items'][:len(frozen['items'])] == frozen['items']
@@ -114,7 +139,7 @@ def test_business_workflow_keeps_six_independent_questions_across_two_valid_rows
         completed = store.get_record(frozen['id'], run['id'], 'run')
         assert completed['status'] == 'awaiting_user', completed
         assert completed['result_applied'] is True
-        assert completed['calls'] == 1 and completed['repair_count'] == 0
+        assert completed['calls'] == 3 and completed['repair_count'] == 0
         after = store.get(frozen['id'])
         report = after['business_draft_reviews'][-1]
         assert len(report['accepted']) == 2 and not report['rejected']

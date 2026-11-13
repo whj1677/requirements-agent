@@ -67,7 +67,7 @@ def test_customer_browser_runtime_ignores_external_overrides(tmp_path, monkeypat
 def test_build_inputs_do_not_collect_working_directory_secrets(tmp_path):
     required = ['requirements.lock.txt', 'app/version.py', 'scripts/desktop.py', 'scripts/build_windows.py',
                 'web/package.json', 'web/package-lock.json', 'web/index.html', 'web/tsconfig.json',
-                'web/vite.config.ts',
+                'web/vite.config.ts', 'skills/requirements-material-review/SKILL.md',
                 'docs/user-guide.md', 'docs/windows-installation.md']
     for name in required + ['app/licensing.py', 'app/license_trust.py', 'web/src/main.tsx',
                             'app/activation.py', 'app/desktop_gateway.py', 'web/src/activation/index.html',

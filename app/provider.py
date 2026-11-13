@@ -1,4 +1,5 @@
 """Model credentials, HTTP transport and bounded response decoding."""
+import asyncio
 import copy
 import json
 import time
@@ -17,6 +18,7 @@ from .request_context import (STAGES, assemble, input_metrics, request_schema,
                               answer_binding_tasks, response_boundary)
 
 DEFAULT = dict(name='DeepSeek 官方', base_url='https://api.deepseek.com', model='deepseek-flash',
+               intake_engine='direct',
                key_env='RA_DEEPSEEK_API_KEY', vision='documented', json_mode=True, timeout=120,
                max_calls=None, max_tokens=48000, context_chars=520000, action_seconds=300,
                thinking_disabled=True, review_thinking=True, documented_at='2026-09-27', local_allowed=False, proxy='', input_price=None, output_price=None,
@@ -186,6 +188,41 @@ def structured_response_schema(messages):
     return schema
 
 
+def intake_grounding_fence(content, messages, meta, evidence):
+    """Remove only a whole JSON fence for the trusted intake review/patch header."""
+    if not (isinstance(content,str) and content.lstrip().startswith('```') and evidence
+            and meta.get('finish_reason')=='stop'
+            and (meta.get('response_protocol')!='responses' or meta.get('response_status')=='completed')
+            and evidence.value.get('http_status')==200
+            and not evidence.limitations and evidence.value.get('final_output')==content
+            and messages and messages[0].get('role')=='system'):
+        return None
+    from .core import strict_model_json
+    system=messages[0].get('content')
+    if not isinstance(system,str) or '可信任务头：' not in system:return None
+    try:header=strict_model_json(system.split('可信任务头：',1)[1])
+    except ValueError:return None
+    if not isinstance(header,dict) or header.get('grounding_protocol') not in ('intake-grounding-1','intake-grounding-patch-1','intake-grounding-patch-2','intake-grounding-challenge-1','intake-grounding-challenge-2','intake-grounding-coverage-1'):
+        return None
+    if header.get('response_protocol')!='business-draft-v1' or not isinstance(header.get('schema'),dict):return None
+    import re,hashlib
+    match=re.fullmatch(r'([ \t\r\n]*```json[ \t]*\r?\n)([\s\S]*?)(\r?\n```[ \t\r\n]*)',content)
+    if match is None or '```' in match[2]:
+        raise Problem('SCHEMA_INVALID','初稿核对结果不是唯一完整 JSON 围栏；原始结果已保留。',model_repair_allowed=False)
+    derived=match[2]
+    try:value=strict_model_json(derived)
+    except ValueError as error:
+        raise Problem('SCHEMA_INVALID','初稿核对围栏内不是严格完整 JSON；原始结果已保留。',model_repair_allowed=False) from error
+    if not isinstance(value,dict):
+        raise Problem('SCHEMA_INVALID','初稿核对必须返回完整 JSON 对象。',model_repair_allowed=False)
+    sha=lambda text:hashlib.sha256(text.encode('utf-8')).hexdigest()
+    audit=dict(rule='intake-grounding-single-json-fence-1',raw_sha256=sha(content),
+        derived_sha256=sha(derived),derived_content=derived,removed_prefix=match[1],removed_suffix=match[3])
+    evidence.value['transport_normalization']=copy.deepcopy(audit)
+    evidence.save()
+    meta['transport_normalization']=audit
+    return derived
+
 def responses_usage(usage):
     """Preserve documented numeric usage, with aliases for existing billing."""
     if not isinstance(usage, dict):
@@ -253,6 +290,79 @@ def responses_result(raw):
                               response_model=raw.get('model')), rejection
 
 
+class _ObservedResponseStream(httpx.AsyncByteStream):
+    """Observe byte timing only; never retain response chunks or reasoning."""
+    def __init__(self, stream, diagnostics):
+        self.stream, self.diagnostics = stream, diagnostics
+
+    async def __aiter__(self):
+        async for chunk in self.stream:
+            self.diagnostics.received(len(chunk))
+            yield chunk
+
+    async def aclose(self):
+        await self.stream.aclose()
+
+
+class _TransportDiagnostics:
+    def __init__(self, evidence, route, started):
+        self.evidence, self.started = evidence, started
+        self.value = dict(protocol='responses' if route == '/responses' else 'chat_completions',
+                          stream=False, phase='not_sent', received_bytes=0)
+        self.last_saved = started
+
+    def elapsed(self):
+        return round(time.monotonic()-self.started, 3)
+
+    def save(self):
+        if self.evidence is not None:
+            self.evidence.value['transport'] = copy.deepcopy(self.value)
+            self.evidence.save()
+        self.last_saved = time.monotonic()
+
+    async def headers(self, response):
+        self.value.update(phase='reading_response_body', http_status=response.status_code,
+                          headers_elapsed_seconds=self.elapsed())
+        if response.is_stream_consumed:
+            # Mock transports may supply an already buffered response.
+            self.received(len(response.content))
+        else:
+            response.stream = _ObservedResponseStream(response.stream, self)
+        self.save()
+
+    def received(self, size):
+        if not size:
+            return
+        elapsed = self.elapsed()
+        first = 'first_byte_elapsed_seconds' not in self.value
+        self.value.setdefault('first_byte_elapsed_seconds', elapsed)
+        self.value.update(last_byte_elapsed_seconds=elapsed,
+                          received_bytes=self.value['received_bytes']+size)
+        if first or time.monotonic()-self.last_saved >= 5:
+            self.save()
+
+    def failed(self, error):
+        # Names only: exception messages can contain URLs, credentials or inputs.
+        allowed = {'ConnectTimeout', 'ReadTimeout', 'WriteTimeout', 'PoolTimeout',
+                   'ConnectError', 'ReadError', 'WriteError', 'CloseError',
+                   'RemoteProtocolError', 'LocalProtocolError', 'ProxyError',
+                   'UnsupportedProtocol', 'DecodingError', 'TooManyRedirects',
+                   'TimeoutException', 'HTTPError', 'CancelledError',
+                   'TimeoutError', 'ConnectionResetError', 'ConnectionAbortedError',
+                   'BrokenPipeError', 'OSError', 'SSLError', 'SSLCertVerificationError'}
+        names, seen = [], set()
+        current = error
+        while current is not None and id(current) not in seen and len(names) < 8:
+            seen.add(id(current))
+            name = type(current).__name__
+            names.append(name if name in allowed else 'OtherError')
+            current = current.__cause__ or current.__context__
+        self.value.update(exception_type=names[0], cause_types=names[1:],
+                          elapsed_seconds=self.elapsed())
+        if isinstance(error, asyncio.CancelledError):
+            self.value['cancelled'] = True
+
+
 class Provider:
     business_draft_protocol = 'business-draft-v1'
 
@@ -310,11 +420,22 @@ class Provider:
         endpoint = origin(config)
         business_schema = business_draft_schema(messages) if endpoint == 'https://api.deepseek.com' else None
         response_schema = (business_schema or structured_response_schema(messages)) if endpoint == 'https://api.deepseek.com' else None
+        strict_review_json=False
+        if messages and messages[0].get('role')=='system' and isinstance(messages[0].get('content'),str) and '可信任务头：' in messages[0]['content']:
+            try:header=json.loads(messages[0]['content'].split('可信任务头：',1)[1])
+            except (ValueError,TypeError):header={}
+            if not isinstance(header,dict):header={}
+            if header.get('strict_json_protocol') is not None:
+                require(header['strict_json_protocol']=='detail-review-strict-json-1' and header.get('stage')=='review'
+                    and header.get('transport_protocol')=='responses-json-schema-v1' and response_schema is not None
+                    and config.get('json_mode') and config['model'] in ('deepseek-flash','deepseek-v4-pro'),
+                    'DETAIL_REVIEW_TRANSPORT_INVALID','严格详细审查传输配置不匹配；未发送请求。')
+                strict_review_json=True
         if response_schema is not None:
             # DeepSeek documents json_schema here; Chat Completions only has json_object.
             body = dict(model=config['model'], input=responses_input(messages),
                         max_output_tokens=config['max_tokens'], stream=False,
-                        reasoning={'effort': 'none' if config.get('thinking_disabled') else 'high'},
+                        reasoning={'effort': 'none' if config.get('thinking_disabled') else config.get('reasoning_effort','high')},
                         text={'format': {'type': 'json_schema', 'name': 'business_draft_v1' if business_schema is not None else 'requirements_runtime_v1', 'schema': response_schema}})
             route = '/responses'
         else:
@@ -323,21 +444,41 @@ class Provider:
                 body['response_format'] = {'type': 'json_object'}
             if endpoint == 'https://api.deepseek.com':
                 body['thinking'] = {'type': 'disabled' if config.get('thinking_disabled') else 'enabled'}
+                if not config.get('thinking_disabled') and config.get('reasoning_effort'):
+                    body['reasoning_effort']=config['reasoning_effort']
             route = '/chat/completions'
         started = time.monotonic()
+        diagnostics = _TransportDiagnostics(evidence, route, started)
         try:
-            async with httpx.AsyncClient(timeout=config['timeout'], follow_redirects=False, trust_env=False, proxy=config.get('proxy') or None) as client:
+            async with httpx.AsyncClient(timeout=config['timeout'], follow_redirects=False, trust_env=False, proxy=config.get('proxy') or None,
+                                         event_hooks={'response': [diagnostics.headers]}) as client:
                 if config.get('max_calls') is not None:
                     require(evidence is not None and getattr(evidence,'request_budget',None) is not None
                             and hasattr(evidence,'before_send'),
                             'BUDGET_AUTH_REQUIRED', '有限请求上限必须绑定已授权任务计数器；未发送请求', 409)
                 if evidence and hasattr(evidence,'before_send'):
                     evidence.before_send(config)
+                diagnostics.value['phase'] = 'awaiting_response_headers'
+                diagnostics.save()
                 response = await client.post(config['base_url'].rstrip('/') + route, json=body, headers={'Authorization': 'Bearer ' + key})
-        except httpx.TimeoutException:
-            raise Problem('TIMEOUT', '模型请求超时；已发请求可能计费')
-        except httpx.HTTPError:
-            raise Problem('NETWORK_ERROR', '无法连接模型接收端')
+                diagnostics.value.update(phase='response_body_complete', elapsed_seconds=diagnostics.elapsed())
+        except httpx.TimeoutException as error:
+            diagnostics.failed(error)
+            message = ('模型接收端已响应，但等待完整结果超时；已发请求可能计费'
+                       if 'http_status' in diagnostics.value else
+                       '等待模型接收端响应超时；已发请求可能计费')
+            raise Problem('TIMEOUT', message)
+        except httpx.HTTPError as error:
+            diagnostics.failed(error)
+            message = ('模型接收端已响应，但接收完整结果时连接中断；本次未取得完整结果'
+                       if 'http_status' in diagnostics.value else
+                       '未取得模型接收端响应，连接或传输失败')
+            raise Problem('NETWORK_ERROR', message)
+        except asyncio.CancelledError as error:
+            diagnostics.failed(error)
+            raise
+        finally:
+            diagnostics.save()
         codes = {400:'PARAMETER_UNSUPPORTED', 401:'AUTH_FAILED', 403:'AUTH_FAILED', 402:'PROVIDER_QUOTA', 404:'MODEL_UNSUPPORTED', 429:'RATE_LIMITED'}
         if evidence and response.status_code != 200:
             evidence.response(http_status=response.status_code, elapsed_seconds=round(time.monotonic()-started, 3))
@@ -382,11 +523,14 @@ class Provider:
         require(meta['finish_reason'] != 'length', 'OUTPUT_TRUNCATED', '模型单次输出截断；请分段生成或调整模型单次输出上限')
         require(isinstance(content, str) and content.strip(), 'OUTPUT_EMPTY', '模型返回空内容')
         require(key not in content, 'SECURITY_BLOCKED', '模型输出包含凭据信息，已拒绝保存')
+        framed=intake_grounding_fence(content,messages,meta,evidence)
         # Never persist hidden reasoning; only final response is processed.
         try:
             from .core import strict_model_json, DuplicateJsonMember
-            value = strict_model_json(content)
+            value = strict_model_json(framed if framed is not None else content)
         except json.JSONDecodeError as error:
+            if strict_review_json:
+                raise Problem('SCHEMA_INVALID',f'严格详细审查结果不是完整 JSON：第 {error.lineno} 行，第 {error.colno} 列，字符偏移 {error.pos}；原始结果已保留，不执行本地语法修复。')
             stage=evidence.value.get('stage') if evidence else None
             if (evidence and meta.get('finish_reason') == 'stop'
                     and (response_schema is None or meta.get('response_status') == 'completed')
@@ -434,6 +578,21 @@ class Provider:
             evidence.value['syntax_normalization']=copy.deepcopy(meta['syntax_normalization'])
             evidence.save()
         except DuplicateJsonMember:
+            if strict_review_json:
+                raise Problem('SCHEMA_INVALID','严格详细审查 JSON 有重复键；原始结果已保留，不执行本地语法修复。')
+            if (evidence and evidence.value.get('stage') == 'review'
+                    and meta.get('finish_reason') == 'stop'
+                    and (response_schema is None or meta.get('response_status') == 'completed')
+                    and evidence.value.get('final_output') == content and not evidence.limitations):
+                from .model_json import review_perspective_objects
+                recovered = review_perspective_objects(content, response_schema or request_schema('review'))
+                if recovered is not None:
+                    value, changes = recovered
+                    meta['syntax_normalization'] = dict(rule='review-perspective-object-boundaries-1',
+                        changes=changes, raw_hash=digest(content), derived_hash=digest(value))
+                    evidence.value['syntax_normalization'] = copy.deepcopy(meta['syntax_normalization'])
+                    evidence.save()
+                    return value, meta
             from .model_json import identical_members
             # Review uses the same complete-evidence, typed equality proof as
             # ingest/vision. This only removes identical syntax repetition;

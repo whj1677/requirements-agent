@@ -70,14 +70,15 @@ def test_changed_or_unconfirmed_preview_never_writes_partial_changes(tmp_path,fa
 
 
 @pytest.mark.parametrize('suffix',['','（保持旧值并标注失效 / 清空显示无数据）'])
-def test_exact_required_question_metadata_is_made_blocking_without_rewriting_content(tmp_path,suffix):
+def test_required_decision_cannot_silently_promote_warning(tmp_path,suffix):
     _,p=scenario(tmp_path);value=review(p,blocker=True);f=value['findings'][0]
     f.update(severity='warning',decision_question='断链数据如何展示？');value['result']['required_decisions']=[f['decision_question']+suffix]
     original=copy.deepcopy(value);fixed,changes=normalize_decisions(p,value)
-    assert value==original and len(changes)==1
-    assert fixed['findings'][0]['severity']=='blocker'
+    assert value==original and not changes
+    assert fixed['findings'][0]['severity']=='warning'
     assert fixed['findings'][0]['message']==f['message'] and fixed['findings'][0]['related_refs']==f['related_refs']
-    validate_result(p,fixed)
+    with pytest.raises(Problem) as error:validate_result(p,fixed)
+    assert error.value.code=='PREWRITE_SEVERITY_CONFLICT'
 
 
 def test_unknown_question_never_gets_guessed_association_and_context_quotes_resolve(tmp_path):

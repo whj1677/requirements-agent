@@ -29,11 +29,22 @@ def test_single_syntax_repair_preserves_business_and_stops(monkeypatch, tmp_path
         if fault == 'truncated': first['status'] = 'incomplete'
         if fault == 'cut_literal': first = completed('{"summary":"半句')
         replies = [first, completed(malformed if fault=='second_invalid' else json.dumps(fixed, ensure_ascii=False))]
-        requests=[]; client=httpx.AsyncClient
+        requests=[]; generation_requests=[]; client=httpx.AsyncClient
         def respond(request):
-            requests.append(json.loads(request.content))
-            assert len(requests)<=2, 'No recursive repairs'
-            return httpx.Response(200,json=replies[len(requests)-1])
+            body=json.loads(request.content);requests.append(body)
+            messages=body.get('input',body.get('messages'))
+            header=json.loads(messages[0]['content'].split('可信任务头：',1)[1])
+            payload=json.loads(messages[1]['content'][0]['text'])
+            protocol=header.get('grounding_protocol')
+            if protocol in ('intake-grounding-coverage-1','intake-grounding-challenge-2'):
+                result=dict(candidate_hash=payload['candidate_hash'],input_hash=payload['input_hash'],findings=[])
+                if protocol=='intake-grounding-coverage-1':
+                    result.update(checked_input_ids=[r['id'] for r in payload['inputs']],checked_question_ids=[r['id'] for r in payload['questions']])
+                else:result['checked_field_ids']=[r['id'] for r in payload['fields']]
+                return httpx.Response(200,json=completed(json.dumps(result,ensure_ascii=False)))
+            generation_requests.append(body)
+            assert len(generation_requests)<=2, 'No recursive main/format repairs'
+            return httpx.Response(200,json=replies[len(generation_requests)-1])
         monkeypatch.setattr('app.provider.httpx.AsyncClient',lambda **kw: client(**kw,transport=httpx.MockTransport(respond)))
         provider=Provider(env_path=tmp_path/'absent.env');provider.keys[origin(DEFAULT)]='synthetic-test-key'
         store.setting('model',dict(DEFAULT,max_calls=1 if fault=='budget' else None))
@@ -43,7 +54,8 @@ def test_single_syntax_repair_preserves_business_and_stops(monkeypatch, tmp_path
         await workflow.tasks[run['id']]
         result=store.get_record(before['id'],run['id'],'run')
         expected=1 if fault in ('truncated','cut_literal','budget') else 2
-        assert len(requests)==expected, result
+        assert len(generation_requests)==expected, result
+        assert len(requests)==expected+(2 if fault=='comma' else 0), result
         after=store.get(before['id'])
         assert after['documents']==before['documents'] and after.get('active_baseline_id')==before.get('active_baseline_id')
         assert after['questions']==before['questions']

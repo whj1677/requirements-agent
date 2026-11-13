@@ -43,7 +43,16 @@ def test_rendered_blockers_expose_name_reason_and_each_real_action():
       const rows=[{key:'a',code:'behavior_fields_missing',title:'各学科学习档案',message:'REQ-1 尚缺字段',detail:'尚缺：入口及前置条件、权限约束',actions:[{kind:'behavior',label:'补全业务行为',item_id:'REQ-1',fields:['entry','permissions']}]},{key:'b',code:'acceptance_missing',title:'各学科学习档案',message:'REQ-1 缺验收',detail:'缺少已采纳的关联验收条件。',actions:[{kind:'add_acceptance',label:'补充关联验收条件',item_id:'REQ-1'}]}];
       const render=(busy=false)=>renderToStaticMarkup(React.createElement(BlockerPanel,{id:'blockers-P-2',rows,busy,onResolve:()=>assert.fail('render must not write')}));
       const html=render();assert(html.includes('当前阶段阻塞清单'));assert(html.includes('各学科学习档案'));assert(html.includes('入口及前置条件'));assert(html.includes('补全业务行为'));assert(html.includes('补充关联验收条件'));assert(!html.includes('REQ-1 尚缺字段'));assert.equal((html.match(/class="blocker-group"/g)||[]).length,1);
-      assert.equal((render(true).match(/disabled=""/g)||[]).length,3);
+      const buttons=markup=>[...markup.matchAll(/<button\b[^>]*>[\s\S]*?<\/button>/g)].map(match=>match[0]);
+      const actions=rows.flatMap(row=>row.actions),available=buttons(html),locked=buttons(render(true));
+      assert.equal(available.length,actions.length,'render one real processing entry per supplied action');
+      assert.equal(locked.length,actions.length,'busy rendering retains every real processing entry');
+      for(const action of actions){
+        const enabled=available.find(button=>button.includes(action.label));
+        const disabled=locked.find(button=>button.includes(action.label));
+        assert(enabled&&!enabled.includes('disabled=""'),'idle action stays available: '+action.label);
+        assert(disabled&&disabled.includes('disabled=""'),'busy state blocks this exact action: '+action.label);
+      }
       assert.equal(renderToStaticMarkup(React.createElement(BlockerPanel,{id:'none',rows:[],busy:false,onResolve:()=>{}})),'');
     ''')
 
@@ -56,4 +65,27 @@ def test_blocked_continue_reports_count_and_returns_latest_list_without_submissi
       const p={revision:9,product_flow:{2:{available:true,missing:['REQ-SECRET 缺字段','REQ-SECRET 缺验收'],blockers:[{actions:[{kind:'behavior',item_id:'REQ-SECRET'}]}],content_hash:'hash'}}};let received;
       await assert.rejects(()=>confirmCheckpoint({phase:2,revision:9,read:async()=>p,blocked:latest=>received=latest,check:async()=>assert.fail('blocked must not confirm stage')}),error=>error.message.includes('2 项')&&error.message.includes('阻塞清单')&&!error.message.includes('REQ-SECRET'));
       assert.equal(received,p);
+    ''')
+
+
+def test_document_and_delivery_blockers_name_the_exact_target_without_changing_routes():
+    run_ts(r'''
+      import assert from 'node:assert/strict';import {build} from 'esbuild';import {createRequire} from 'node:module';
+      const require=createRequire(import.meta.url),React=require('react'),{renderToStaticMarkup}=require('react-dom/server');
+      const built=await build({stdin:{contents:"export {publicBlocker,publicStep} from './src/workflow-labels';export {BlockerPanel} from './src/blockers';",resolveDir:process.cwd()},bundle:true,write:false,format:'cjs',platform:'node',jsx:'automatic',external:['react','react-dom/server']});
+      const module={exports:{}};new Function('require','module','exports',built.outputFiles[0].text)(require,module,module.exports);
+      const {publicBlocker,publicStep,BlockerPanel}=module.exports;
+      for(const [step,title,code] of [[5,'评审 MRD 与 PRD','prerequisite_stage'],[6,'确认交付版本','stage_incomplete']]){
+        const row={key:'exact-stage-'+step,code,title:'旧阶段标题',message:'旧阶段说明',
+          actions:[{kind:'stage',step,label:'旧阶段入口'},{kind:'source',label:'查看来源'}]};
+        const before=structuredClone(row),shown=publicBlocker(row);
+        assert.equal(publicStep(step).number,3);assert.equal(publicStep(step).title,'评审与交付文档');
+        assert.equal(shown.title,title);assert(shown.message.includes(title));
+        assert(shown.actions[0].label.includes(title));assert(!shown.actions[0].label.includes('评审与交付文档'));
+        assert.deepEqual(shown.actions[0],{...row.actions[0],label:shown.actions[0].label},'only the stage action label changes');
+        assert.equal(shown.key,row.key);assert.equal(shown.code,row.code);assert.equal(shown.actions[1],row.actions[1]);
+        const html=renderToStaticMarkup(React.createElement(BlockerPanel,{id:'precise-'+step,rows:[row],busy:false,onResolve:()=>assert.fail('render cannot navigate or write')}));
+        assert(html.includes(title)&&html.includes(shown.actions[0].label));assert(!html.includes('前往评审与交付文档'));
+        assert.deepEqual(row,before,'public wording never mutates the supplied blocker identity or routing');
+      }
     ''')

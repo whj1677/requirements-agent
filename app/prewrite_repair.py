@@ -31,7 +31,7 @@ def prepare(project, response):
                 f.get('decision_question')==decision or any(ref in decision for ref in f['related_refs'])
                 or len(blockers)==1 and len(decisions)==1) for f in blockers):continue
         choices=[fi for fi,f in enumerate(response['findings'])
-                 if f.get('decision_question') and _clause_refs(project,f.get('related_refs',[]))]
+                 if f.get('severity')=='blocker' and f.get('decision_question') and _clause_refs(project,f.get('related_refs',[]))]
         if not choices:return None
         unbound.append(dict(decision=di,text=decision,allowed_findings=choices))
     if not slots and not unbound:return None

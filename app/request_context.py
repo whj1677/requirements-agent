@@ -217,12 +217,26 @@ def response_boundary(schema):
             for key,child in node['properties'].items():visit(child,path+'.'+key,seen)
         if 'items' in node:visit(node['items'],path+'[]',seen)
     visit(schema,'$')
-    return dict(object_keys=paths,input_only=['semantic_checks','semantic_document_checks','document_quote_witnesses','input_counting_checks','counting_option_examples','counting_definition_facts','result_condition_facts','generation_evidence','excerpts','source_status','recent_messages'],
+    return dict(object_keys=paths,input_only=['semantic_checks','semantic_document_checks','document_quote_witnesses','input_counting_checks','counting_option_examples','counting_definition_facts','result_condition_facts','context_projection','quote_ref','detail-delta-1','generation_evidence','excerpts','source_status','recent_messages'],
         instruction='响应不是输入上下文的副本。每层对象只写schema规定字段，不添加*_note、诊断、说明元字段或上下文原样副本。root及各嵌套对象按object_keys输出，required字段不能遗漏。业务说明写已有合法说明字段；格式修复保持已有业务原文，summary和limitations不改写。'
         '返回严格JSON，不用Markdown包围。数组项的对象闭合后再闭合数组；questions是数组，decision_points是各父问题内部的数组；不能把父问题对象与questions数组的闭合次序颠倒。输出前逐层核对所有括号、逗号和转义，不拼接残缺JSON。')
 
 
-def assemble(p, stage, user_message, config, folder, kind='prd', generation_target=None, pending_images_only=False, benchmark=None, vision_for_interview=False, requirement_recommendation_scope=None, draft_request=None):
+def document_discussion_contract(project,target):
+    from .actions import target_context
+    target_context(project,target)
+    allowed={item['id'] for item in project['items']}|{q['id'] for q in project['questions']}
+    if project.get('ui'):allowed|={page['page_id'] for page in project['ui']['spec']['pages']}
+    return dict(target={key:target[key] for key in ('kind','id','section_id')},
+        allowed_reference_ids=sorted(allowed),instruction=(
+            '本次文档与章节已由target精确绑定，不扩展到其他文档。impacted_refs/unimpacted_refs只引用allowed_reference_ids或本轮实际声明的临时条目/问题ID。'
+            'DOC ID、章节ID、DOC.section定位和option ID都不是这些数组的合法引用，不得拼接或把其他文档定位映射到本节。'
+            '只纠正叙述且不改变条款或业务决定时，proposals=[]、questions=[]、changes=[]、impacted_refs=[]；没有要逐项说明的不受影响条目时unimpacted_refs=[]。'
+            '在summary说明本节文字纠正建议，原章定位可写诊断文字；不为填引用制造规范修订、新问题或新的业务决定。'
+            '确需业务修订时保留实际受影响条目ID与待核对候选及真实未知，不因引用报错删除有依据的业务内容。反馈已保存为来源，当前文档和已确认条款不自动改写。'))
+
+
+def assemble(p, stage, user_message, config, folder, kind='prd', generation_target=None, pending_images_only=False, benchmark=None, vision_for_interview=False, requirement_recommendation_scope=None, draft_request=None, discussion_target=None):
     from .business_draft import enabled as business_draft_enabled, assemble as assemble_business_draft
     if business_draft_enabled(config, stage, benchmark, requirement_recommendation_scope):
         return assemble_business_draft(p, stage, user_message, config, folder,
@@ -293,6 +307,8 @@ def assemble(p, stage, user_message, config, folder, kind='prd', generation_targ
         header['current_answer_binding_policy']='stage_focus.answer_binding_tasks 是全量待办清单，不扩大本轮授权范围。先根据本轮 user_message 中的任务指定对象和用户明确要求限定范围，仅处理范围内的回答与目标，范围外保持原状；无明确局部范围时，按当前澄清任务处理。本轮范围内的回答绑定以当前清单、questions 的已保存回答及 decision_answers 中的当前决定组原话为准。决定组原话只是待逐子决定核对的依据，不代表全部子决定已明确。历史消息和旧文档仍用于核对业务事实，持续有效的业务范围与保持约束必须保留；仅与当前契约或本轮明确指令冲突的历史操作指令（例如旧的“规则不填 answer_refs”）不再适用。范围内每个尚无 reusable_candidate_ids 的绑定任务可由本轮同 kind revise 待核对候选覆盖：target_item_id 对应该目标，answer_refs 必须包含该 question_id，source_refs 引用实际送入的当前回答来源。决定组只对当前原话明确覆盖的叶决定提出具体修订，其余决定保持待定；不要为产生候选补造规则。同一目标的多个范围内回答可合并到一个候选的 answer_refs。规则原文已正确或原条目 selected 均不等于该回答已应用；保留完整业务原文，生成待人工核对的绑定候选，不自动采纳。仅有相同目标、同一回答版本并已记录 answer_refs 的待采纳候选才可复用。'
     if generation_target:
         header['generation_target']=generation_target
+    if stage=='change' and discussion_target and discussion_target.get('kind')=='document':
+        header['document_discussion_contract']=document_discussion_contract(p,discussion_target)
     if requirement_recommendation_scope:
         from .requirement_recommendation import contract as recommendation_contract, constrain_schema
         header['requirement_recommendation_contract']=recommendation_contract(requirement_recommendation_scope)
@@ -319,13 +335,21 @@ def assemble(p, stage, user_message, config, folder, kind='prd', generation_targ
     base = (KIT / 'prompts/00_system.md').read_text('utf-8')
     if stage=='prd':base=base.split('## 输出')[0]
     header['response_boundary']=response_boundary(header['schema'])
+    if stage in ('prd','review'):
+        from .context_projection import contract as projection_contract
+        header['context_projection_contract']=projection_contract()
     if stage=='interview':
         from .interview import PROMPT
         base=base.split('## 输出')[0]
         stage_prompt=PROMPT
     else:stage_prompt=(KIT / 'prompts' / STAGES[stage]).read_text('utf-8')
-    system = base + '\n' + stage_prompt + '\n可信任务头：' + dumps(header)
+    from .skill_guidance import load as load_skills, apply as apply_skills
+    skill_guidance = load_skills(p, stage, scope=requirement_recommendation_scope)
+    system = apply_skills(header, base + '\n' + stage_prompt, skill_guidance) + '\n可信任务头：' + dumps(header)
     context = {k:p[k] for k in ('items','questions','options','documents','ui')}
+    from .product_flow import question_view
+    context['question_view']=question_view(p)
+    context['question_reuse_policy']='questions保留原ID、最新已保存回答与历史；question_view区分当前待答、已答及历史。已答待落实应继续核对关联修订，不要求用户重填原回答；已解决或被替代的历史问题不重新追问。仅在对象、来源和决定一致时复用已有问题；不同范围、新来源冲突或真正新增决定须保留独立问题，不以同义词或相同主题自动关闭。'
     context['discussion_direction'] = [dict(option_id=o['id'], name=o['name'], status=o['direction_status'])
                                        for o in p['options'] if o.get('direction_status')]
     context['direction_semantics'] = 'direction_status仅记录讨论方向；关联proposed_item_refs不代表条目已采纳，以各条目的selection_status和epistemic_status为准。旧selection_status是历史整包操作。'
@@ -405,6 +429,9 @@ def assemble(p, stage, user_message, config, folder, kind='prd', generation_targ
         from .prd import represented_revision, verified_context
         context['documents']=review_documents(p)
         context['draft_unknown_evidence']=review_unknown_evidence(p)
+        from .requirement_details import interaction_path_facts
+        context['interaction_path_facts']=[dict(item_id=item['id'],**interaction_path_facts(item['detail_contract']))
+            for item in delivery_items(p) if item.get('detail_contract')]
         context['recent_messages']=[{k:m.get(k) for k in ('role','stage','created')} for m in p['messages'][-8:]]
         current_items={i['id']:i for i in p['items']}
         context['human_checks']=dict(
@@ -442,20 +469,32 @@ def assemble(p, stage, user_message, config, folder, kind='prd', generation_targ
                 '不能只凭标题或引用齐全认定完整。后台需求按实际接口/任务交互核对，不强行要求页面。'
                 '【资料待确认】须保留具体缺口、影响和待决定项；接口接收、回执、现场执行和效果分别核对。')
         if p.get('_prewrite_review'):
+            context['product_context']=verified_context(p)
+            context['review_scope']['basic_requirement_ids']=[i['id'] for i in delivery_items(p)
+                if i['kind']=='requirement' and not i.get('detail_required') and not i.get('detail_contract')]
             context['review_scope']['instruction']=(
                 '这是成文前检查，尚未生成本轮文档；documents为空是正常情况，不能因此报告缺少PRD、缺少章节或要求先成文。'
+                'product_context仅含成文采用的已核对有效上下文；状态unknown的未采用草稿文字不作为现状，也不因假设成文会误用它而报风险。'
                 '只检查当前本期需求、规则、字段、交互、流程、状态与验收的业务一致性和可实现性。'
                 '严格以review_scope.normative_item_ids为当前规范；candidate/deferred与target_item_id修订是历史或未采纳提议，'
                 '不能因为旧稿与已采纳条款不同而制造当前冲突，也不要要求清理历史才允许成文。'
+                '本次被审对象是normative_item_ids对应的当前条目字段及其当前detail_contract；历史来源、旧修订、未接纳流程和previous_prewrite_findings仅供溯源核对，不能用其中旧节点名或旧属性值替代当前底稿。'
+                '提出矛盾前，分别按两侧object_id和path重新读取本次输入的当前原文，并逐字核对evidence_quotes；不得把旧候选的文字引用到当前原条目ID下。若旧问题建议的修改已在当前字段落实，不再报告该旧问题；仍存在的真实冲突或新未知按原规则提出，不据历史结论直接判断通过或失败。'
                 'source_refs是累积溯源；核对最新已保存回答及当前原文，不要求旧来源跟随改写。'
                 'selection_status=selected且已有人工确认的条款已被采纳；epistemic_status=proposed记录AI起草来源，'
                 '不等于用户尚未确认。程序保留原稿的“建议：”前缀用于溯源，Word导出会去除已采纳内容的这种前缀，'
                 '不得仅因这些元数据或编辑标记反复阻断成文、要求再调用AI改写。'
                 '内部验收标题相同、逐字相同的重复验收、可读性和排版整理只作warning，不作为业务未决或needs_changes的唯一依据；'
                 '有不同条件或相反结果的验收仍须检查并阻断真实冲突。'
+                'assessment须与实际严重程度一致：资料足以审查，且仅有非阻断warning/info、没有关键未决或真实冲突时，用ready_for_human_review并完整保留建议；不能仅因还有措辞完善或额外验收覆盖建议就返回needs_changes。确实需要阻断时，须给出有当前原文依据的具体blocker，说明影响；required_decisions为空本身不代表通过，已知规则的实质矛盾仍可阻断。'
                 '先核对资料是否已给出业务边界：只读查询不因返回结果变化而自动变为写操作；'
                 '不得把实现推测或范围外扩展提升为成文前置决定，推荐也必须遵守明确范围。'
-                '逐项核对流程分支能到结束或明确等待、部分成功/全失败/结果未知的路径、重试前提、状态层级、枚举与口径。'
+                'basic_requirement_ids是未要求详细定义且没有详细契约的本期需求，不因基础成文审查扩展成技术设计。'
+                '这些需求及其验收已明确必填和业务字数上限时，不仅因未选Unicode码点/扩展字素簇就要求PM决定算法；'
+                '保持各对象原上限及已确定业务结果，不补默认算法。只有当前来源或已答决定明确要求某特殊文本结果、计数口径，'
+                '且存在真实未知或冲突时才阻断，并引用实际对象、实际边界和双方原文；不能用不同对象或不同上限的示例替代当前规则。'
+                '只核对当前来源或已答决定实际提出的业务分支及结果；未提出的网络超时、查询与重试机制属于实现建议，不据此新增产品必答决定。'
+                '结合本期实际业务对象和操作提醒可能遗漏的风险；仅基于常识推测的风险须明确写“AI建议，待核对”，使用非阻断warning，不填decision_question或加入required_decisions，不把建议当既定规则，也不固定套用重复绑定、解绑数据影响等与本期无关的问题。'
                 '现有未答业务问题仍待处理，不因有问题就假定已解决；历史已答决定须核对当前条款是否真正承载。'
                 '人工作出的prewrite_responses是意见和反证，不能直接当通过；核对证据和原文后才可消除对应发现。'
                 '同一业务决定归一张finding；不要拆成字段、流程、验收三个同义问题，也不要凭空补本期无关功能。'
@@ -473,6 +512,12 @@ def assemble(p, stage, user_message, config, folder, kind='prd', generation_targ
                 '有关键未决或真实冲突必须needs_changes，资料无法审查用insufficient_context，不得为了成文宣布通过。')
             context['prewrite_responses']=copy.deepcopy(p.get('prewrite_responses',[]))
             context['previous_prewrite_findings']=copy.deepcopy((p.get('prewrite_review') or {}).get('findings',[]))
+    if stage=='review':
+        from .detail_business_scope import current_reviews
+        scoped_defaults=[review for item in delivery_items(p) if item.get('kind')=='requirement' and item.get('selection_status')=='selected' and not item.get('target_item_id') for review in current_reviews(p,item)]
+        if scoped_defaults:
+            context['detail_unknown_scope_reviews']=scoped_defaults
+            context['review_scope']['instruction']+='detail_unknown_scope_reviews仅是与当前规范和材料绑定的保留技术未定范围结论，原unknown值与依据仍保留；不要仅因这些default_value的技术未定身份重复要求业务决定。该结论不代表技术已确认，不强迫ready；若当前原文仍有真实业务缺口、来源矛盾或新反例，继续按原规则给出精确证据。'
     if stage=='prd':
         context=document_context(p, include_sketch=False)
         context['user_message']=user_message
@@ -519,8 +564,13 @@ def assemble(p, stage, user_message, config, folder, kind='prd', generation_targ
         if stage in generation_context.STAGES:
             context['result_condition_facts']=generation_context.condition_layers(context['result_condition_facts'],p)
             context['generation_evidence']=generation_context.evidence(p,selected)
+        elif stage in ('prd','review'):
+            normative_ids=(header['plan_contract']['normative_item_ids'] if stage=='prd'
+                           else context['review_scope']['normative_item_ids'])
+            context['result_condition_facts']=generation_context.document_condition_layers(
+                context['result_condition_facts'],p,normative_ids)
         context['semantic_checks']=current_counting_checks(p)
-        context['counting_definition_facts']=counting_definition_facts(p,selected)
+        context['counting_definition_facts']=counting_definition_facts(p,selected,include_documents=stage!='prd')
         if stage=='review':
             from .semantic_quality import current_document_checks, readable_document_blocks
             context['semantic_document_checks']=current_document_checks(p)
@@ -549,6 +599,9 @@ def assemble(p, stage, user_message, config, folder, kind='prd', generation_targ
                               scope=requirement_recommendation_scope, images=images)
     if context.get('platform_knowledge'):
         system = protected_system(system)
+    if stage in ('prd','review'):
+        from .context_projection import project as project_context
+        context=project_context(context,normative_ids)
     content = [{'type':'text','text':dumps(context)}] + images
     return [{'role':'system','content':system},{'role':'user','content':content}], selected, omitted
 

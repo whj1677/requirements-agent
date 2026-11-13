@@ -117,7 +117,7 @@ async def journey(j):
     await expect(content).to_have_value(MANUAL)
     assert j.project()==initial
     j.report['checks'].append('失败入口在同表直接定位并聚焦正确原条款，坏稿不混入；表内跳转保留人工输入且未写项目')
-    await failed.get_by_role('button',name='只重新整理这条需求',exact=True).click()
+    await failed.get_by_role('button',name='重新整理这条需求',exact=True).click()
     dialog=j.page.get_by_role('dialog',name='核对本次任务',exact=True)
     await expect(dialog).to_be_visible()
     plans=[r for r in j.report['api_requests'] if r['path'].endswith('/actions/plan')]

@@ -7,13 +7,32 @@ const basisLabel: Record<string,string> = {
 };
 
 export function latestDraftReview(project:Obj, requirementId?:string):Obj|undefined {
-  return [...(project.business_draft_reviews||[])].reverse().find((review:Obj)=>
-    !requirementId || [...(review.accepted||[]),...(review.rejected||[])].some((row:Obj)=>row.requirement_id===requirementId));
+  const reviews=[...(project.business_draft_reviews||[])].reverse();
+  if(!requirementId)return reviews[0];
+  return reviews.find((review:Obj)=>[
+    ...(review.accepted||[]),
+    ...(review.rejected||[]),
+    ...(review.field_rejected||[]),
+    ...(review.question_rejected||[]),
+    ...(review.structure_rejected||[]),
+  ].some((row:Obj)=>row.requirement_id===requirementId));
 }
 
 export function DraftPackageStatus({project,onLocate,onCreate}:{project:Obj;onLocate:(id:string)=>void;onCreate:()=>void}) {
   const review=latestDraftReview(project);
   if(!review)return null;
+  const grounding=review.intake_grounding;
+  const independentlyChecked=grounding?.protocol==='intake-grounding-1'&&['passed','repaired'].includes(grounding.status)&&
+    grounding.candidate_applied===true&&review.source_validation==='model_semantic_checked_not_human_approval';
+
+  const sourceReview=review.business_source_review;
+
+  const sourceOnlyReview=sourceReview?.protocol==='noninitial-source-only-1'&&
+    sourceReview.scope==='generated_requirement_statement_behavior_acceptance_only'&&
+    sourceReview.source_only===true&&sourceReview.coverage_review===false;
+
+  const sourceOnlyPassed=sourceOnlyReview&&sourceReview.status==='passed'&&
+    review.source_validation==='body_source_semantic_checked_not_human_approval';
   const rejected:Obj[]=review.rejected||[], summaryRejected:Obj[]=review.summary_rejected||[], questionRejected:Obj[]=review.question_rejected||[];
   const fieldRejected:Obj[]=review.field_rejected||[];
   const completion=review.completion;
@@ -21,7 +40,13 @@ export function DraftPackageStatus({project,onLocate,onCreate}:{project:Obj;onLo
   const history:Obj[]=(project.business_draft_reviews||[]).filter((r:Obj)=>r!==review).flatMap((r:Obj)=>(r.rejected||[]).filter((row:Obj)=>!row.requirement_id));
   return <section className="table-callout business-draft-status" aria-label="AI 草稿整理结果">
     <strong>最近一次 AI 整理：{review.accepted?.length||0} 条草稿可核对{rejected.length?`，${rejected.length} 条未载入`:''}</strong>
-    <p>资料引用已检查；内容是否准确、建议是否采用，仍由你确认。</p>
+    {independentlyChecked?<p>{grounding.status==='repaired'?'已根据已有依据修正，并再次核对资料与已答信息；':'已核对资料与已答信息；'}本次草稿已写入，仍待你确认；这不代表人工已确认或来源保证完全准确。</p>
+      :sourceOnlyPassed?<p>本次生成的需求正文、行为、验收各自来源核对已通过；这不代表全部已答信息已覆盖，也不代表摘要、问题或详细定义已核对。草稿是否采用仍由你确认；这不代表业务批准或自动写入。</p>
+
+      :sourceOnlyReview?<p>本次来源审查仅针对生成的需求正文、行为、验收各自来源，尚未确认通过；不代表全部已答信息已覆盖，也不代表摘要、问题或详细定义已核对。草稿是否采用仍由你确认。</p>
+
+      :review.source_validation==='locator_checked_not_semantic_approval'?<p>仅完成基础引用定位检查，没有独立核对资料与已答信息的记录；内容是否准确、建议是否采用，仍由你确认。</p>
+      :<p>没有可确认的独立资料与已答信息核对记录；内容是否准确、建议是否采用，仍由你确认。</p>}
     {completion&&<p>已起草 {Object.keys(completion.answers||{}).length} 道问题的回答，直接填入表格草稿。{completion.missing_answer_ids?.length?`仍有 ${completion.missing_answer_ids.length} 道未生成可用回答，原有内容保留。`:''}</p>}
     {!!completion?.rejected?.length&&<details><summary>查看未载入回答的原因</summary>{completion.rejected.map((row:Obj,n:number)=><p key={n}>{row.reason}</p>)}</details>}
     {!!rejected.length&&<details><summary>查看未载入条目与处理入口</summary>{rejected.map((row,n)=><div key={n} className="business-draft-rejected">
@@ -30,11 +55,26 @@ export function DraftPackageStatus({project,onLocate,onCreate}:{project:Obj;onLo
       <details><summary>查看未载入的 AI 原稿</summary><pre>{JSON.stringify(row.raw,null,2)}</pre></details>
     </div>)}</details>}
     {!!summaryRejected.length&&<p>另有 {summaryRejected.length} 项项目摘要未载入：{summaryRejected.map(row=>row.reason).join('；')}。可在项目摘要中核对。</p>}
-    {!!fieldRejected.length&&<details><summary>{fieldRejected.length} 个字段未载入，已有内容保留</summary>{fieldRejected.map((row,n)=><div className="business-draft-rejected" key={n}><p>{row.path?.at(-1)==='detail_contract'?'新详细定义未通过校验；已有详细定义保留，未用错误内容替换。':row.reason}</p><small>{row.reason}</small>{row.requirement_id&&<button type="button" onClick={()=>onLocate(row.requirement_id)}>到相关需求处理</button>}<details><summary>查看未载入字段的原稿</summary><pre>{JSON.stringify(row.raw,null,2)}</pre></details></div>)}</details>}
+    {!!fieldRejected.length&&<details><summary>{fieldRejected.length} 个字段未载入，已有内容保留</summary>{fieldRejected.map((row,n)=><div className="business-draft-rejected" key={n}><p>{row.path?.at(-1)==='detail_contract'?`新详细定义未载入：${row.reason||'未通过校验'}。已有详细定义保留，未用本次建议替换。`:row.reason}</p>{row.requirement_id&&<button type="button" onClick={()=>onLocate(row.requirement_id)}>到相关需求处理</button>}<details><summary>查看未载入字段的原稿与路径</summary><pre>{JSON.stringify({path:row.path,raw:row.raw},null,2)}</pre></details></div>)}</details>}
     {!!questionRejected.length&&<details><summary>{questionRejected.length} 个问题需要重新整理，其他有效草稿已保留</summary>{questionRejected.map((row,n)=><div className="business-draft-rejected" key={n}><p>{typeof row.raw?.text==='string'?row.raw.text:typeof row.raw?.question==='string'?row.raw.question:'未能读取的问题'}</p><small>{row.reason}</small>{row.requirement_id?<button type="button" onClick={()=>onLocate(row.requirement_id)}>到相关需求处理</button>:<p>尚未关联到需求，不代表问题已解决。请对照原稿核对。</p>}<details><summary>查看这条问题的原稿</summary><pre>{JSON.stringify(row.raw,null,2)}</pre></details></div>)}</details>}
     {!!structureRejected.length&&<details><summary>{structureRejected.length} 处格式差异已单独保留</summary><p>有效需求可继续核对，以下内容尚未作为需求或业务决定写入。</p>{structureRejected.map((row,n)=><div className="business-draft-rejected" key={n}><small>{row.reason}</small>{row.requirement_id&&<button type="button" onClick={()=>onLocate(row.requirement_id)}>到相关需求处理</button>}<pre>{JSON.stringify(row.raw,null,2)}</pre></div>)}</details>}
     {!!history.length&&<details><summary>此前未载入的新需求记录 · {history.length} 条</summary><p>历史记录保留供核对；后续已补充的内容无需重复处理。</p>{history.map((row,n)=><div className="business-draft-rejected" key={n}><strong>{typeof row.raw?.title==='string'?row.raw.title:'未能识别的需求条目'}</strong><p>{row.reason}</p><details><summary>查看该次 AI 原稿</summary><pre>{JSON.stringify(row.raw,null,2)}</pre></details><button type="button" onClick={onCreate}>补充需求</button></div>)}</details>}
   </section>;
+}
+
+const rowRetryGuidance='会重新生成本条需求的完整建议，已有内容保留；完成后核对差异并决定是否采用，不是只改失败字段。';
+function fullRowReason(reason:unknown):string {
+  return typeof reason==='string'&&reason.trim()?reason:'未提供具体原因。';
+}
+function shortRowReason(reason:unknown):string {
+  const full=fullRowReason(reason);
+  if(full.length<=72)return full;
+  const sentence=full.match(/^[^。！？!?；;\r\n]{1,71}[。！？!?；;]/);
+  return sentence?.[0]||'原因较长，已完整保留，可展开查看。';
+}
+function fieldRowReason(row:Obj):string {
+  const reason=fullRowReason(row.reason);
+  return row.path?.at(-1)==='detail_contract'?`新详细定义未载入：${reason}。已有详细定义保留；可先核对本次有效的正文和验收建议。`:reason;
 }
 
 export function DraftRowReview({project,requirementId,candidateId,onRetry,onSources,disabled}:{project:Obj;requirementId:string;candidateId?:string;onRetry:()=>void;onSources:(refs:Obj[])=>void;disabled:boolean}) {
@@ -51,9 +91,9 @@ export function DraftRowReview({project,requirementId,candidateId,onRetry,onSour
     ...(evidence.acceptance||[]).map((value:Obj,n:number)=>['验收建议 '+(n+1),value] as [string,Obj]),
   ].filter((entry):entry is [string,Obj]=>!!entry[1]) : [];
   return <div className="business-draft-row-review">
-    {rejected&&<div className="table-callout"><strong>本条新建议未载入，已有内容保留</strong><p>{rejected.reason}</p><button type="button" disabled={disabled} onClick={onRetry}>只重新整理这条需求</button></div>}
-    {!!fieldRejected.length&&<div className="table-callout"><strong>{fieldRejected.length} 个新字段未载入，已有内容保留</strong>{fieldRejected.map((row:Obj,n:number)=><p key={n}>{row.path?.at(-1)==='detail_contract'?'新详细定义未通过校验，已有详细定义保留；可先核对本次有效的正文和验收建议。':row.reason}</p>)}<button type="button" disabled={disabled} onClick={onRetry}>让 AI 调整未载入字段</button></div>}
-    {!!questionRejected.length&&<div className="table-callout"><strong>需求草稿已保留，{questionRejected.length} 个问题待重新整理</strong>{questionRejected.map((q:Obj,n:number)=><p key={n}>{typeof q.raw?.text==='string'?q.raw.text:q.reason}</p>)}<button type="button" disabled={disabled} onClick={onRetry}>让 AI 调整本条问题与建议</button></div>}
+    {rejected&&<div className="table-callout business-draft-row-callout"><strong>本条新建议未载入，已有内容保留</strong><p className="business-draft-row-review-reason">{shortRowReason(rejected.reason)}</p><button type="button" disabled={disabled} onClick={onRetry}>重新整理这条需求</button><details className="business-draft-row-review-details"><summary>查看完整原因与重试说明</summary><p className="business-draft-row-review-full-reason">{fullRowReason(rejected.reason)}</p>{rejected.raw!==undefined&&<details><summary>查看未载入的 AI 原稿</summary><pre>{JSON.stringify(rejected.raw,null,2)}</pre></details>}<p>{rowRetryGuidance}</p></details></div>}
+    {!!fieldRejected.length&&<div className="table-callout business-draft-row-callout"><strong>{fieldRejected.length} 个新字段未载入，已有内容保留</strong><p className="business-draft-row-review-reason">{shortRowReason(fieldRowReason(fieldRejected[0]))}</p><button type="button" disabled={disabled} onClick={onRetry}>重新整理这条需求</button><details className="business-draft-row-review-details"><summary>查看全部原因、原稿与重试说明</summary>{fieldRejected.map((row:Obj,n:number)=><div className="business-draft-diagnostic" key={n}><p className="business-draft-row-review-full-reason">{fieldRowReason(row)}</p><details><summary>查看未载入字段的原稿与路径</summary><pre>{JSON.stringify({path:row.path,raw:row.raw},null,2)}</pre></details></div>)}<p>{rowRetryGuidance}</p></details></div>}
+    {!!questionRejected.length&&<div className="table-callout business-draft-row-callout"><strong>需求草稿已保留，{questionRejected.length} 个问题待重新整理</strong><p className="business-draft-row-review-reason">{shortRowReason(questionRejected[0]?.reason)}</p><button type="button" disabled={disabled} onClick={onRetry}>重新整理这条需求</button><details className="business-draft-row-review-details"><summary>查看全部原因、原稿与重试说明</summary>{questionRejected.map((q:Obj,n:number)=><div className="business-draft-diagnostic" key={n}><p className="business-draft-row-review-full-reason">{fullRowReason(q.reason)}</p><details><summary>查看待重新整理的问题原稿</summary><pre>{JSON.stringify(q.raw,null,2)}</pre></details></div>)}<p>{rowRetryGuidance}</p></details></div>}
     {!!entries.length&&<details><summary>核对本版 AI 草稿的依据与待定内容</summary><p>以下是 AI 原稿的标注。引用存在不代表结论已经正确；修改或确认前请对照来源。</p>
       {entries.map(([label,value],n)=><div className="business-draft-evidence" key={n}><strong>{label}</strong><span>{basisLabel[value.basis]||'待核对'}</span><p>{value.text||'尚未明确'}</p>{value.source_relationship==='context_only'&&<small>以下来源只说明需求背景，不代表资料已规定这条建议。</small>}{!!value.source_refs?.length&&<button type="button" onClick={()=>onSources(value.source_refs)}>{value.source_relationship==='context_only'?'查看背景来源':'查看这项来源'}</button>}</div>)}
     </details>}

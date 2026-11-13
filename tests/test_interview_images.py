@@ -56,9 +56,8 @@ def test_four_chat_images_run_two_vision_batches_then_interview_once(case):
                       attachment_source_ids=ids)
     assert preview['stages']==['vision','vision','interview']
     assert preview['pending_image_count']==4 and not model['requests']
-    denied=start(client,root,body,preview,False)
-    assert denied.status_code==403 and not model['requests']
-    assert start(client,root,body,preview).status_code==200
+    # Explicit submission authorizes this frozen task; the legacy flag is not a gate.
+    assert start(client,root,body,preview,False).status_code==200
     task=finished(client,root)
     assert task['status'] in ('succeeded','partial') and task['calls']==3
     assert [stage(request) for request in model['requests']]==[

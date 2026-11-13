@@ -5,15 +5,20 @@ export type ScopeProfile = {scenario:'unspecified'|'new_product'|'new_module'|'m
 export type FieldState = {status:'known'|'not_applicable'|'none'|'unknown';note?:string};
 export const defaultScopeProfile: ScopeProfile = {scenario:'unspecified',dependencies:'unknown'};
 
+export function hasGenerationRun(value:Obj|undefined):boolean {
+  const runId=value?.generation_evidence?.run_id;
+  return typeof runId==='string'&&!!runId.trim();
+}
+
 export function contextSnapshot(p:Project) {
   return {values:p.product_context||{},scope_ids:p.product_context?.scope_ids||[],scope_profile:(p as Obj).scope_profile||defaultScopeProfile,field_states:(p as Obj).context_field_states||{}};
 }
 
 /** Suggestions populate blank fields; explicit human text and decisions win. */
 export function scopeDraft(p:Project):Obj {
-  const saved=p.product_context||{},states=(p as Obj).context_field_states||{},proposal=p.product_context_proposal||{};
+  const saved=p.product_context||{},states=(p as Obj).context_field_states||{},proposal=p.product_context_proposal||{},reviewed=(p as Obj).context_review_statuses||{};
   return Object.fromEntries(Object.keys(scopeLabels).map(key=>[key,
-    String(saved[key]||'').trim()||['none','not_applicable'].includes(states[key]?.status)?saved[key]||'':proposal[key]||saved[key]||''
+    reviewed[key]===true?saved[key]||'':String(saved[key]||'').trim()||['none','not_applicable','unknown'].includes(states[key]?.status)?saved[key]||'':proposal[key]||saved[key]||''
   ]));
 }
 
@@ -25,7 +30,7 @@ export function fieldStatus(key:string,values:Obj,states:Record<string,FieldStat
 }
 
 export function suggestedKeys(p:Project,values:Obj,states:Record<string,FieldState>):string[] {
-  return Object.keys(scopeLabels).filter(key=>!String(p.product_context?.[key]||'').trim()&&!!String(values[key]||'').trim()&&values[key]===p.product_context_proposal?.[key]&&!['none','not_applicable'].includes(states[key]?.status));
+  return Object.keys(scopeLabels).filter(key=>(p as Obj).context_review_statuses?.[key]!==true&&!String(p.product_context?.[key]||'').trim()&&!!String(values[key]||'').trim()&&values[key]===p.product_context_proposal?.[key]&&(p as Obj).context_field_states?.[key]?.status!=='unknown'&&!['none','not_applicable'].includes(states[key]?.status));
 }
 
 /** The final review accepts visible suggestions; a draft save keeps unknowns. */
@@ -35,7 +40,16 @@ export function scopeSaveStates(p:Project,values:Obj,states:Record<string,FieldS
     ?{...states[key],status:'known'}:states[key]||{status:fieldStatus(key,values,states,profile)}]));
 }
 
-export function isScopeFieldRequired(key:string,profile:ScopeProfile):boolean {
+export function isScopeFieldRequired(key:string,profile:ScopeProfile,scope?:string[],project?:Project):boolean {
   if(['intent','change_scope','users'].includes(key))return true;
+  if(key==='current_state'&&profile.scenario==='new_module'&&scope?.length&&project){
+    const additive=scope.every(id=>{
+      const roots=project.items.filter(item=>item.id===id&&!item.superseded_by&&!item.target_item_id);
+      if(roots.length!==1)return false;
+      const item=roots[0];
+      return item.kind==='requirement'&&item.applies_to==='to_be'&&['candidate','selected'].includes(item.selection_status)&&item.change_type==='new';
+    });
+    if(additive)return false;
+  }
   return ['current_state','preserve_scope'].includes(key)&&!(profile.scenario==='new_product'||profile.scenario==='new_module'&&profile.dependencies==='independent');
 }

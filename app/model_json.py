@@ -181,6 +181,79 @@ class _Number(str):
     pass
 
 
+def review_perspective_objects(content, schema):
+    """Split complete repeated role/considerations pairs at their array boundary.
+
+    Only result.perspectives may contain this exact missing-object-boundary
+    pattern. No member is overwritten, reordered, invented or discarded.
+    All other duplicates and incomplete/ambiguous pairs remain errors.
+    """
+    import jsonschema
+    import re
+    changes = []
+
+    def reject(token):
+        raise ValueError(token)
+
+    def convert(node, path):
+        if isinstance(node, _Object):
+            result = {}
+            for key, value in node:
+                if key in result:
+                    raise ValueError('duplicate member outside complete perspective pairs')
+                result[key] = convert(value, path + [key])
+            return result
+        if isinstance(node, list):
+            if path == ['result', 'perspectives']:
+                result = []
+                for index, item in enumerate(node):
+                    if isinstance(item, _Object) and len(item) > 2:
+                        keys = [key for key, _ in item]
+                        if len(keys) % 2 or keys != ['role', 'considerations'] * (len(keys) // 2):
+                            raise ValueError('incomplete perspective pairs')
+                        pairs = [convert(_Object(item[n:n+2]), path + [index])
+                                 for n in range(0, len(item), 2)]
+                        roles = [pair['role'] for pair in pairs]
+                        if not all(isinstance(role, str) for role in roles) or len(set(roles)) != len(roles):
+                            raise ValueError('ambiguous repeated role')
+                        result.extend(pairs)
+                        changes.append(dict(path=path + [index], objects=len(pairs)))
+                    else:
+                        result.append(convert(item, path + [index]))
+                return result
+            return [convert(item, path + [index]) for index, item in enumerate(node)]
+        return node
+
+    try:
+        try:
+            tree = json.loads(content, object_pairs_hook=_Object, parse_constant=reject)
+        except json.JSONDecodeError:
+            # Observed companion error: the perspectives array is not closed
+            # before result.required_decisions. Try only that exact boundary;
+            # the complete schema and unchanged literal stream must prove it.
+            boundaries = list(re.finditer(r',\s*"required_decisions"\s*:', content))
+            if len(boundaries) != 1:
+                return None
+            offset = boundaries[0].start()
+            previous = content[:offset].rstrip()[-1:]
+            closing = {'}': ']', ']': '}]'}.get(previous)
+            if closing is None:
+                return None
+            tree = json.loads(content[:offset] + closing + content[offset:],
+                              object_pairs_hook=_Object, parse_constant=reject)
+            changes.append(dict(offset=offset, inserted=closing))
+        value = convert(tree, [])
+        if not changes or not isinstance(value, dict) or value.get('stage') != 'review':
+            return None
+        jsonschema.Draft202012Validator(schema).validate(value)
+        from .format_repair import literal_atoms
+        if literal_atoms(content) != literal_atoms(json.dumps(value, ensure_ascii=False, allow_nan=False)):
+            return None
+        return value, changes
+    except (ValueError, TypeError, RecursionError, jsonschema.ValidationError):
+        return None
+
+
 def identical_members(content):
     """Return a derived value and duplicate paths, or None. Never choose conflicts.
 

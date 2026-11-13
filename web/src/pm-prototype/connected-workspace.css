@@ -111,7 +111,7 @@
 .project-workspace:has(>.connected-details[open]){overflow-y:auto;overscroll-behavior-y:contain;scrollbar-gutter:stable}
 .project-workspace:has(>.connected-details[open])>.connected-workspace,
 .project-workspace:has(>.connected-details[open])>.connected-details{flex:none;overflow:visible}
-.project-workspace:has(>.connected-details[open])>.project-bar{position:sticky;top:0;z-index:4;flex:none}
+.project-workspace:has(>.connected-details[open])>.project-bar{position:static;flex:none}
 .connected-details[open]{scroll-margin-top:80px}
 .connected-details[open] .workflow-main{overflow:visible}
 .connected-details[open] .document-review-surface,
@@ -137,3 +137,20 @@
   .connected-workspace[data-step="refine"]>.connected-task-details{margin-bottom:8px}
 }
 .assistant-resume{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px;border:1px solid #b9d8cc;background:#eff8f3;border-radius:9px;margin:12px 0}.assistant-resume p{margin:5px 0 0;font-size:13px}.assistant-resume button{flex-shrink:0}@media(max-width:700px){.assistant-resume{flex-wrap:wrap}}
+
+.connected-steps button b{line-height:1.35}
+.connected-steps button small{display:block;margin:4px 0 0 39px;color:#5a6f69;font-size:12px;font-weight:400;line-height:1.4}
+.connected-steps button[aria-current=step] small{color:#315f53}
+.refinement-next-step{max-width:1280px;margin:4px auto 8px;font-size:13px}
+@media(max-height:680px){
+  .connected-steps button small{display:none}
+}
+@media(max-width:520px){
+  .connected-steps button{min-width:0}
+  .connected-steps button b{display:block}
+  .connected-steps button small{display:none;margin:4px 0 0}
+  .connected-steps button[aria-current=step] small{display:block}
+}
+@media(min-width:761px) and (max-height:900px){
+  .connected-workspace[data-step="refine"]:has(.refinement-requirements-view:not([hidden])) .connected-steps button small{display:none}
+}

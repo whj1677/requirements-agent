@@ -111,6 +111,27 @@ def test_input_parts_and_thinking_convert_without_losing_content(monkeypatch, tm
     assert sent[-1]['content'][0]['type'] == 'image_url'
 
 
+@pytest.mark.parametrize('route',['responses','chat'])
+@pytest.mark.parametrize('disabled,effort',[(False,'low'),(False,None),(True,'low')])
+def test_explicit_review_effort_uses_route_field_and_preserves_defaults(monkeypatch,tmp_path,route,disabled,effort):
+    raw=completed() if route=='responses' else dict(choices=[dict(message=dict(content='{"draft":"待核对"}'),finish_reason='stop')])
+    requests=mock_transport(monkeypatch,raw)
+    sent=messages() if route=='responses' else [dict(role='user',content='合成资料')]
+    config=dict(DEFAULT,thinking_disabled=disabled)
+    if effort:config['reasoning_effort']=effort
+    before=copy.deepcopy((config,sent))
+    asyncio.run(provider(tmp_path).request(config,sent))
+    body=requests[0]['body']
+    if route=='responses':
+        assert body['reasoning']=={'effort':'none' if disabled else effort or 'high'}
+        assert 'reasoning_effort' not in body
+    else:
+        assert body['thinking']=={'type':'disabled' if disabled else 'enabled'}
+        assert body.get('reasoning_effort')==(effort if not disabled else None)
+        assert 'reasoning' not in body
+    assert (config,sent)==before and len(requests)==1
+
+
 def test_completed_envelope_accepts_omitted_optional_message_fields(monkeypatch, tmp_path):
     raw = completed()
     raw['output'][-1].pop('status')

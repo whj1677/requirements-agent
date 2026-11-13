@@ -5,7 +5,7 @@ import copy
 from pathlib import Path
 import re
 
-from check_answer_implementation_browser import (run, enter, table_case, chapter_case,
+from tests.check_answer_implementation_browser import (run, enter, table_case, chapter_case,
                                                 REQ, Q_PERMISSION, Q_TIME, question)
 from tests.check_decision_document_replay import seed_storage_case, PERMISSION
 

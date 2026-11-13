@@ -10,16 +10,15 @@ from app.requirement_confirmation import row_fingerprint
 from tests.test_detail_document import project_fixture,compile_fixture
 
 
-def test_adopted_labels_are_removed_without_rewriting_business_modality():
-    assert adopted_text('建议：管理员可保存姓名。')=='管理员可保存姓名。'
-    assert adopted_text('推荐方案：仅查询已有结果。')=='仅查询已有结果。'
-    assert adopted_text('成功结果：建议：显示保存结果。')=='成功结果：显示保存结果。'
-    assert adopted_text('优先级与依据：建议：建议按MVP优先。')=='优先级与依据：按MVP优先。'
-    assert reading_node(dict(kind='paragraph',block_kind='narrative',text='相关页面或模块：建议：联系人详情'))['text']=='相关页面或模块：联系人详情'
-    for text in ('不建议重复提交。','界面显示“建议：检查连接”。','建议用户先核对原记录。','待确认：超时时间尚未明确。'):
+def test_proposal_qualifiers_survive_without_property_level_confirmation():
+    for text in ('建议：管理员可保存姓名。','推荐方案：仅查询已有结果。',
+                 '成功结果：建议：显示保存结果。','优先级与依据：建议：建议按MVP优先。',
+                 '不建议重复提交。','界面显示“建议：检查连接”。','待确认：超时时间尚未明确。'):
         assert adopted_text(text)==text
-    pending=dict(kind='paragraph',block_kind='open_question',text='建议：由负责人决定是否纳入。')
-    assert reading_node(pending)==pending
+        node=dict(kind='paragraph',block_kind='narrative',text=text)
+        assert reading_node(node)==node
+    table=dict(kind='table',table_role='acceptance',rows=[['推荐：只读历史记录']])
+    assert reading_node(table)==table
 
 
 def test_style_cleanup_keeps_dependencies_and_hides_unused_word_gallery_entries():
@@ -49,9 +48,9 @@ def test_export_keeps_source_content_and_outputs_clean_clauses_with_navigation(t
     compile_fixture(p);before=copy.deepcopy(p)
     files=asyncio.run(document_files(p,'prd'));doc=Document(io.BytesIO(files['PRD.docx']))
     assert p==before
-    assert any(paragraph.text==req['statement'].removeprefix('建议：') for paragraph in doc.paragraphs)
-    assert any(ac['statement'].removeprefix('推荐：') in cell.text for table in doc.tables for row in table.rows for cell in row.cells)
-    assert not any(paragraph.text.startswith('建议：') for paragraph in doc.paragraphs)
+    assert any(paragraph.text==req['statement'] for paragraph in doc.paragraphs)
+    assert any(ac['statement'] in cell.text for table in doc.tables for row in table.rows for cell in row.cells)
+    assert any(paragraph.text.startswith('建议：') for paragraph in doc.paragraphs)
     assert doc.paragraphs[0].style.name=='Title' and str(doc.styles['Title'].font.color.rgb)=='000000'
     links=doc._element.findall('.//'+qn('w:hyperlink'));assert links
     destinations={b.get(qn('w:name')) for b in doc._element.findall('.//'+qn('w:bookmarkStart'))}
@@ -80,7 +79,7 @@ def test_long_prose_keeps_conditions_quotes_and_all_characters():
     assert prose_parts('确认成功。显示已有结果。')==['确认成功。显示已有结果。']
 
 
-def test_dense_requirement_exports_as_native_numbered_paragraphs_without_data_loss(tmp_path):
+def test_dense_requirement_uses_consistent_body_without_invented_numbering(tmp_path):
     p=project_fixture(tmp_path);req=p['items'][0]
     req['statement']=''.join(['用户保存姓名时必须校验当前电站权限，拒绝时保留输入；权限恢复后可手工重试。']*8)
     ac=next(i for i in p['items'] if i['kind']=='acceptance')
@@ -88,11 +87,10 @@ def test_dense_requirement_exports_as_native_numbered_paragraphs_without_data_lo
     req['requirement_confirmation']['content_hash']=row_fingerprint(p,req)
     compile_fixture(p);before=copy.deepcopy(p)
     doc=Document(io.BytesIO(asyncio.run(document_files(p,'prd'))['PRD.docx']))
-    clauses=[v for v in doc.paragraphs if v.style.name=='Requirement Clause']
+    clauses=[v for v in doc.paragraphs if v.style.name=='Normal' and v.text.startswith('用户保存姓名时')]
     assert ''.join(v.text for v in clauses)==req['statement']
-    assert all(v._p.pPr.numPr.numId.val>0 for v in clauses)
-    assert len({v._p.pPr.numPr.numId.val for v in clauses})==1
-    assert doc.styles['Requirement Clause'].paragraph_format.first_line_indent.pt<0
+    assert all(v._p.pPr is None or v._p.pPr.numPr is None for v in clauses)
+    assert all(v.style.font.size.pt==11 for v in clauses)
     cells=[cell for table in doc.tables for row in table.rows for cell in row.cells
            if ac['statement'].split('。')[0] in cell.text]
     assert len(cells)==1 and len(cells[0].paragraphs)>1

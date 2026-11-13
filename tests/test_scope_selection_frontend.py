@@ -55,7 +55,7 @@ def test_failed_generation_explains_recovery_with_technical_details_collapsed():
       const stale=renderToStaticMarkup(React.createElement(statusModule.exports.TaskStatus,{task:{...task,label:'整理当前信息',calls:2,run_ids:[]},uncertain:true,onRetry:()=>{},onCancel:()=>{},onRefresh:()=>{}}));
       assert(stale.includes('下方为此前记录'));
       assert(stale.includes('刷新任务状态'));
-      assert(stale.includes('<button disabled="">核对后重试</button>'),'stale failure cannot be retried before refreshing');
+      assert(stale.includes('<button disabled="">手动重试</button>'),'stale failure cannot be retried before refreshing');
       for(const message of ['本次没有对标任务，不能写入对标结果','普通整理包含未请求的对标内容，本次结果未写入；无需补充竞品资料。']){
         const mismatch={...task,action:'organize',error:'SCHEMA_INVALID',message,label:'整理当前信息',calls:3,run_ids:[]};
         const notice=module.exports.taskFailure(mismatch);
@@ -85,7 +85,7 @@ def test_duplicate_recovery_and_historical_failure_are_distinct_in_ui():
       assert(!failure.canRecoverDraft(restored));assert.equal(failure.taskFailure(restored),null);
       const view=renderToStaticMarkup(React.createElement(status.TaskStatus,{task:restored,...callbacks}));
       assert(view.includes('已恢复待核对草稿')&&view.includes('原 AI 请求仍记录为失败'));
-      assert(!view.includes('核对后重试'));assert(!view.includes('分析未成功'));
+      assert(!view.includes('手动重试'));assert(!view.includes('分析未成功'));
       assert(progress.taskGenerated(restored)&&!progress.taskNeedsAttention(restored));
       assert(progress.taskCurrentStage(restored).includes('未重新调用 AI'));
     ''')

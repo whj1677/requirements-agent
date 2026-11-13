@@ -1,0 +1,2 @@
+# Pinned upstream resources are verified byte-for-byte; never convert line endings.
+requirements-agent-codex-kit-v1.1/prompts/skills/vendor/** -text

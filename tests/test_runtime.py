@@ -74,7 +74,8 @@ def test_context_preserves_rules_or_refuses(tmp_path):
 def test_questions_not_repeated_and_candidate_not_auto_approved(tmp_path):
     store=Store(tmp_path);p=prepared(store)
     r=copy.deepcopy(EXAMPLES['clarify'])
-    r['questions'][0]['topic_key']=p['questions'][0]['topic_key']
+    r['questions'][0].update({key:copy.deepcopy(p['questions'][0][key])
+                              for key in ('topic_key','question','related_refs','source_refs')})
     before=len(p['questions']);apply_response(p,r)
     assert len(p['questions'])==before
     assert p['active_baseline_id'] is None

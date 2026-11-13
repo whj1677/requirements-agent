@@ -43,8 +43,20 @@ def run(command, cwd=ROOT, env=None):
     subprocess.run([str(part) for part in command], cwd=cwd, env=env, check=True)
 
 
+def builtin_skill_assets(root):
+    skills = root / KIT / 'prompts' / 'skills'
+    assets = [(path, path.parent.relative_to(root).as_posix())
+            for path in sorted(skills.rglob('*'))
+            if path.is_file() and (path.suffix.lower() in {'.md', '.json', '.txt'}
+                                  or path.name in {'LICENSE', 'LICENSE.repository', 'NOTICE'})]
+    local = root / 'skills/requirements-material-review/SKILL.md'
+    if local.is_file():assets.append((local,'skills/requirements-material-review'))
+    return assets
+
+
 def required_inputs(root):
     files = [root / 'requirements.lock.txt', root / 'app/version.py', root / 'scripts/desktop.py',
+             root / 'skills/requirements-material-review/SKILL.md',
              root / 'scripts/build_windows.py', root / 'web/package.json',
              root / 'web/package-lock.json', root / 'web/index.html', root / 'web/tsconfig.json',
              root / 'web/vite.config.ts']
@@ -62,6 +74,7 @@ def required_inputs(root):
     for folder, extensions in [('examples', {'.json'}), ('schemas', {'.json'}), ('prompts', {'.json', '.md'}),
                                ('references', {'.json', '.docx'})]:
         files += sorted(path for path in (root / KIT / folder).iterdir() if path.suffix.lower() in extensions)
+    files += [path for path, _ in builtin_skill_assets(root)]
     for path in files:
         if not path.is_file() or path.is_symlink():
             raise RuntimeError('Missing or linked build input: ' + str(path))
@@ -359,6 +372,7 @@ def build(args):
         for path in sorted((root / KIT / folder).iterdir()):
             if path.is_file() and path.suffix.lower() in extensions:
                 assets.append((path, KIT + '/' + folder))
+    assets.extend(builtin_skill_assets(root))
     command = [sys.executable, '-m', 'PyInstaller', '--name', 'RequirementsAgent',
                '--onedir', '--windowed', '--noupx', '--noconfirm', '--clean',
                '--distpath', output / 'application', '--workpath', output / 'work',
@@ -366,6 +380,8 @@ def build(args):
                '--runtime-hook', root / 'packaging/runtime_hook.py',
                '--collect-submodules', 'app', '--collect-submodules', 'uvicorn',
                '--collect-submodules', 'PIL', '--collect-data', 'jsonschema_specifications',
+               '--collect-all', 'deepseek_harness_runtime', '--collect-submodules', 'deepseek_harness',
+               '--copy-metadata', 'deepseek-harness-sdk', '--copy-metadata', 'deepseek-harness-runtime-bin',
                '--hidden-import', 'tkinter', '--hidden-import', 'tkinter.filedialog',
                '--hidden-import', 'tkinter.messagebox', '--hidden-import', 'playwright.async_api',
                '--hidden-import', 'pythoncom', '--hidden-import', 'pywintypes', '--hidden-import', 'win32com.client.dynamic',

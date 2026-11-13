@@ -133,7 +133,7 @@ def test_editor_renders_business_inputs_evidence_and_conflict_comparison():
       const module={exports:{}};new Function('require','module','exports',built.outputFiles[0].text)(require,module,module.exports);
       const value=contract();value.fields[0].evidence.required={status:'unknown',reason:'尚未明确'};
       const html=renderToStaticMarkup(React.createElement(module.exports.DetailContractEditor,{requirementId:'REQ-1',title:'告警',value,conflicts:[{path:'detail_contract.fields.FD-level.required',local:'原要求',remote:'最新要求'}],onChange:()=>{}}));
-      for(const label of ['数据字段','交互逻辑','业务流程','状态变化','可选值','可见角色与条件','可编辑角色与条件','待明确','原要求','最新要求','采用最新内容'])assert(html.includes(label),label);
+      for(const label of ['数据字段','交互逻辑','业务流程','状态变化','可选值','可见角色与条件','可编辑角色与条件','待明确','原要求','最新要求','采用新建议','保留的草稿','技术详情'])assert(html.includes(label),label);
       assert(html.includes('data-cell-key="requirement-REQ-1-detail_contract.fields.FD-level.required"'));
       assert(!html.includes('编辑 JSON'));assert(!html.includes('确认此字段'));
     ''')

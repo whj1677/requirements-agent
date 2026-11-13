@@ -4,7 +4,9 @@ from .core import require
 
 
 def questions(project, request):
+    from .prewrite import question_resolution_current
     rows=[q for q in project.get('questions',[]) if not q.get('superseded_by') and q.get('kind')!='parent'
+          and not question_resolution_current(project,q)
           and (not q.get('out_of_scope_reason') or q.get('scope_exclusion'))
           and (q.get('status') not in ('deferred','out_of_scope') or q.get('scope_exclusion'))]
     if request.get('mode')=='question':
@@ -15,13 +17,29 @@ def questions(project, request):
 def validate(project, request):
     if not request:return None
     require(request.get('mode') in ('all','required','question','prewrite'),'DRAFT_REQUEST_INVALID','请选择整表补全或单题建议')
-    require(set(request)<={'mode','question_id'},'DRAFT_REQUEST_INVALID','补全请求含不支持的设置')
+    require(set(request)<={'mode','question_id','detail_required_ids'},'DRAFT_REQUEST_INVALID','补全请求含不支持的设置')
+    if 'detail_required_ids' in request:
+        from .business_draft import _roots
+        ids=request['detail_required_ids'];allowed={item['id'] for item in _roots(project).values()}
+        require(request['mode'] in ('all','required') and isinstance(ids,list) and
+            all(isinstance(identity,str) for identity in ids) and len(ids)==len(set(ids)) and set(ids)<=allowed,
+            'DRAFT_REQUEST_INVALID','详细定义范围须为本次有效原始需求ID，不得重复、越界或用于单题补全。')
     if request['mode']=='question':
         require(bool(questions(project,request)),'DRAFT_REQUEST_INVALID','这道问题已变化，请刷新后重新选择',409)
     if request['mode']=='prewrite':
         require(any(f.get('status')!='resolved' for f in (project.get('prewrite_review') or {}).get('findings',[])),
             'DRAFT_REQUEST_INVALID','当前没有待处理的成文检查项，请先核对检查结果。',409)
     return copy.deepcopy(request)
+
+
+def detail_rows(project,request):
+    """None retains legacy requests; an explicit list adds scoped draft intent."""
+    if not request or 'detail_required_ids' not in request:return None
+    validate(project,request)
+    from .business_draft import _roots
+    ids=set(request['detail_required_ids'])
+    return [key for key,item in _roots(project).items() if item['id'] in ids
+        or item.get('detail_required') or item.get('detail_contract') is not None]
 
 
 def configure(header, context, project, request):
@@ -46,6 +64,19 @@ def configure(header, context, project, request):
     header['schema']['required'].append('completion')
     header['refinement_completion']=request
     context['refinement_completion']=request
+    required_details=detail_rows(project,request)
+    if required_details is not None:
+        from .detail_draft import model_schema
+        row=header['schema']['properties']['requirements']['items']
+        row['required']=[key for key in row['required'] if key!='detail_contract']
+        row['properties']['detail_contract']=model_schema()
+        header['detail_required']=bool(required_details)
+        header['detail_required_row_keys']=context['detail_required_row_keys']=required_details
+        for current in context['current_rows']:current['detail_required']=current['row_key'] in required_details
+        disabled=dict(properties={'row_key':{'not':{'enum':required_details}}},
+            **{'not':{'required':['detail_contract']}})
+        row['anyOf']=[dict(properties={'row_key':{'enum':required_details},'detail_contract':model_schema(generation=True)},
+            required=['detail_contract']),disabled] if required_details else [disabled]
     if request['mode']=='prewrite':
         # One whole-table draft consumes all check points and saved answers.
         # Opening/confirming that table never calls the model.

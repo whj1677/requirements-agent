@@ -2,6 +2,7 @@
 import json
 import os
 import re
+import threading
 from pathlib import Path
 
 from .core import now, digest, dumps
@@ -17,6 +18,7 @@ class ModelCallEvidence:
         self.secret = secret
         self.request_budget = request_budget
         self.limitations = []
+        self._save_lock = threading.RLock()
         self.final_limit = MAX_FINAL_CHARS
         self.value = dict(call_id=call_id, run_id=run_id, stage=stage, model=model,
                           origin=origin, repair_of=repair_of, started_at=now(),
@@ -30,7 +32,9 @@ class ModelCallEvidence:
         if self.request_budget is not None:
             from .core import Problem
             try:
-                self.request_budget.reserve(self.value['call_id'], config)
+                role=self.value.get('authorization',{}).get('config_role')
+                if role:self.request_budget.reserve(self.value['call_id'],config,config_role=role)
+                else:self.request_budget.reserve(self.value['call_id'],config)
             except Problem:
                 self.value['request_state']='not_sent'
                 self.save()
@@ -47,14 +51,17 @@ class ModelCallEvidence:
             self.save()
 
     def save(self):
-        try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            temporary = self.path.with_suffix('.tmp')
-            temporary.write_text(json.dumps(self.value, ensure_ascii=False, separators=(',', ':')), encoding='utf-8')
-            os.replace(temporary, self.path)
-        except OSError:
-            if 'evidence_save_failed' not in self.limitations:
-                self.limitations.append('evidence_save_failed')
+        # The SDK notification thread and relay HTTP thread share this CALL.
+        # Serialize the entire temp-write/replace operation, not just replace.
+        with self._save_lock:
+            try:
+                self.path.parent.mkdir(parents=True, exist_ok=True)
+                temporary = self.path.with_suffix('.tmp')
+                temporary.write_text(json.dumps(self.value, ensure_ascii=False, separators=(',', ':')), encoding='utf-8')
+                os.replace(temporary, self.path)
+            except OSError:
+                if 'evidence_save_failed' not in self.limitations:
+                    self.limitations.append('evidence_save_failed')
 
     def request_context(self, config, messages, authorization, metrics):
         """Keep bounded local input evidence; no headers, keys, proxy or hidden fields."""

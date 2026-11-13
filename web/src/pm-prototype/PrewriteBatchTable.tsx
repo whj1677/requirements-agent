@@ -6,7 +6,7 @@ import {inlinePrewriteFailure} from '../task-progress-state';
 import {useDirty} from '../editing';
 import {requiredIssues,aiInstructions} from './RequirementTable';
 import {mergeSuggestions,sheetQuestions,inScopeQuestion,equal,linkedClausePayload,type Sheet} from './refinement-sheet-state';
-import {initialBatch,pendingChecks,checkRoots,batchCompletion,batchImplementations,confirmationPayload,answerOffer,refreshBatchCandidates} from './prewrite-batch-state';
+import {initialBatch,pendingChecks,checkRoots,batchCompletion,batchImplementations,confirmationPayload,answerOffer,refreshBatchCandidates,isOverallAssessment} from './prewrite-batch-state';
 import {requirementBehaviorLabels as fields} from './requirement-fields';
 import {DetailContractEditor} from './DetailContractEditor';
 import './prewrite-batch.css';
@@ -50,7 +50,8 @@ export function PrewriteBatchTable(props:Props){
   function change(next:Sheet){current.current=next;setSheet(next);persist(next);setDirty(true);setSavedRevision(null);session.removeItem(key+'-confirmed');setError('');}
   const disabled=props.busy||props.running||working||loaded!==project.revision;
   if(!sheet)return <section className="prewrite-batch" aria-label="成文检查确认表"><p>正在读取全部确认点和已有草稿…</p>{error&&<p role="alert">{error}</p>}</section>;
-  const qs=sheetQuestions(project).filter(q=>inScopeQuestion(project,q,sheet.scope)),checks=pendingChecks(project),completion=batchCompletion(project);
+  const qs=sheetQuestions(project).filter(q=>inScopeQuestion(project,q,sheet.scope)),allChecks=pendingChecks(project),completion=batchCompletion(project);
+  const overall=allChecks.find((f:Obj)=>isOverallAssessment(f)),checks=allChecks.filter((f:Obj)=>!isOverallAssessment(f));
   const witnesses=batchImplementations(project,sheet);
   const missing=requiredIssues(sheet,qs,project);
   const conflicts=sheet.merge_conflicts||[];
@@ -62,6 +63,17 @@ export function PrewriteBatchTable(props:Props){
     return !!row&&!!original&&(!equal(row.statement,original.statement)||Object.keys(fields).some(field=>(row.behavior[field]||'')!==(original.behavior?.[field]||''))||!!row.candidate_id||offeredRoots.has(id)||
       row.acceptance_items.some(ac=>!!ac.candidate_id||ac.statement!==project.items.find(i=>i.id===ac.id)?.statement));
   };
+  const detailOrTypeChanged=sheet.scope.some(id=>{
+    const row=sheet.rows[id],original=project.items.find(i=>i.id===id);
+    return !!row&&!!original&&(JSON.stringify(row.detail_contract||null)!==JSON.stringify(original.detail_contract||null)||(row.change_type||'unspecified')!==((original as Obj).change_type||'unspecified'));
+  });
+  const answersChanged=qs.some(q=>(sheet.answers[q.id]||'')!==(q.answer||''));
+  const clausesChanged=linkedClausePayload(project,sheet).some(clause=>{
+    const original=project.items.find(i=>i.id===clause.item_id);
+    return clause.statement!==(original?.statement||'')||Object.keys(fields).some(field=>(clause.behavior[field]||'')!==(original?.behavior?.[field]||''));
+  });
+  const hasReviewableChanges=sheet.scope.some(rootChanged)||detailOrTypeChanged||answersChanged||clausesChanged;
+  const directRecheck=!!overall&&!checks.length&&!hasReviewableChanges;
   const ready=(finding:Obj)=>{
     const roots=checkRoots(project,finding);
     return saved||!!roots.length&&roots.every(id=>rootChanged(id)||(completion?.complete&&completion.covered_requirement_ids?.includes(id)));
@@ -82,6 +94,7 @@ export function PrewriteBatchTable(props:Props){
     if(conflictEntries.length||conflicts.length){setIssueReview(null);setConflictReview(true);return;}
     if(missing.length){setIssueReview(missing);return;}
     if(left.length||conflicts.length){setError(left.length?'还有 '+left.length+' 个检查点缺少可确认的修改，可用上方 AI 一次起草全部。':'手工修改已保留，请核对按钮上方的合并提示。');return;}
+    if(directRecheck){setIssueReview(null);setConflictReview(false);props.onContinue();return;}
     setIssueReview(null);setConflictReview(false);
     const payload=confirmationPayload(project,sheet!);const signature=JSON.stringify(payload);
     if(intent.current.body!==signature)intent.current={body:signature,key:crypto.randomUUID()};
@@ -99,10 +112,11 @@ export function PrewriteBatchTable(props:Props){
   }
   function setField(id:string,field:string,value:string){const row=sheet!.rows[id];change({...sheet!,rows:{...sheet!.rows,[id]:field==='statement'?{...row,statement:value}:{...row,behavior:{...row.behavior,[field]:value}}}});}
   return <section className="prewrite-batch" aria-label="成文检查确认表">
-    <header className="prewrite-batch-heading"><div><h3>集中核对，一次确认</h3><p>查看、编辑、确认均不调用 AI。缺少修改草稿时批量起草，确认后只整批复检一次。</p></div>
+    <header className="prewrite-batch-heading"><div><span className="batch-eyebrow">成文检查 · {checks.length} 个确认点</span><h3>集中核对，一次确认</h3><p>查看、编辑、确认均不调用 AI。缺少修改草稿时批量起草，确认后只整批复检一次。</p></div>
       <button type="button" className="secondary" disabled={disabled||saved} onClick={()=>void draftAll()}>AI 批量起草全部修改</button></header>
+    {overall&&<div className="prewrite-batch-warning" data-check-id={overall.id}><strong>总评待复检</strong><p>上一轮总评为“需要修改”，它不是缺少修改草稿的检查点。{directRecheck?'当前没有需要保存的新修改，可直接重新整批复检。':'请先核对并确认本次修改，保存后将进行整批复检。'}确认条款不会让总评自动通过，正式交付仍以最新复检结果为准。</p></div>}
     {props.draftTask&&inlinePrewriteFailure(props.draftTask)&&<div role="alert" className="prewrite-batch-warning batch-draft-failure"><div><strong>本次 AI 起草未完成，原稿和修改已保留。</strong><button type="button" disabled={disabled} onClick={()=>void draftAll()}>重新起草全部修改</button></div><details><summary>查看失败原因</summary><p>{clean(props.draftTask.message)}</p></details></div>}
-    {props.onReviewDraft&&<div className="prewrite-batch-warning"><strong>可以先生成完整的 PRD 评审稿</strong><p>直接使用已保存内容，不调用 AI、不改写需求。未决问题随文档列出，后续仍可继续核对。</p><button type="button" disabled={disabled} onClick={props.onReviewDraft}>先生成待确认评审稿</button></div>}
+    {props.onReviewDraft&&<div className="prewrite-batch-warning prewrite-draft-callout"><div><span className="batch-callout-label">PRD 评审预览</span><strong>先预览，再生成完整评审稿</strong><p>直接使用已保存内容，不调用 AI、不改写需求。未决问题随文档列出，后续仍可继续核对。</p></div><button type="button" disabled={disabled} onClick={props.onReviewDraft}>先生成待确认评审稿</button></div>}
     <div className="prewrite-batch-scroll" hidden={!!issueReview||conflictReview}>
       {!!draftProblems.length&&<details className="prewrite-batch-warning"><summary>上次批量起草有 {draftProblems.length} 处内容未形成可用修改；已有回答和原条款已保留</summary><p>可直接核对下方已生成内容。缺少的修改可整批重新起草，不需要逐项操作。</p>{draftProblems.map((r:Obj,n:number)=><p key={n}>{clean(r.reason||'该部分未通过格式与来源核对。')}</p>)}</details>}
       <table aria-label="全部成文检查确认点"><thead><tr><th>需要确认的点</th><th>已保存回答 / 推荐方案</th><th>建议与对应修改</th><th>当前状态</th></tr></thead><tbody>
@@ -137,7 +151,7 @@ export function PrewriteBatchTable(props:Props){
     {conflictReview&&<BatchConflictReview project={project} sheet={sheet} fresh={baseline.current} disabled={disabled} onChange={change} onClose={()=>setConflictReview(false)}/>}
     {(!!conflicts.length||!!conflictEntries.length)&&!conflictReview&&<div role="alert" className="prewrite-batch-warning">新建议与手工修改有差异，你的内容已保留。<button type="button" onClick={()=>{setIssueReview(null);setConflictReview(true);}}>比较并处理冲突</button><button type="button" onClick={()=>{let next=sheet;for(const entry of conflictEntries)next=resolveBatchConflict(project,next,entry,false,baseline.current);change({...next,merge_conflicts:[]});}}>保留全部手工修改，继续核对</button></div>}
     {error&&<p role="alert" className="connected-error">{error}</p>}{notice&&<p role="status">{notice}</p>}
-    <footer className="prewrite-batch-footer"><span>{checks.length} 个确认点 · {saved?'整批修改已保存':conflictEntries.length||conflicts.length?'请核对冲突内容':missing.length?<button type="button" onClick={()=>{setConflictReview(false);setIssueReview(missing);}}>{missing.length} 项需要补齐，点击在此处理</button>:left.length?left.length+' 项待起草':'已有草稿可统一确认'}</span>
-      <div className="batch-footer-actions"><button type="button" className="primary" disabled={disabled} onClick={()=>saved?props.onContinue():void confirmAll()}>{working?'正在统一保存…':saved?'继续整批复检':'确认全部修改并复检'}</button></div></footer>
+    <footer className="prewrite-batch-footer"><span>{checks.length} 个确认点 · {saved?'整批修改已保存':conflictEntries.length||conflicts.length?'请核对冲突内容':missing.length?<button type="button" onClick={()=>{setConflictReview(false);setIssueReview(missing);}}>{missing.length} 项需要补齐，点击在此处理</button>:left.length?left.length+' 项待起草':directRecheck?'没有新修改，可直接整批复检':'已有草稿可统一确认'}</span>
+      <div className="batch-footer-actions"><button type="button" className="primary" disabled={disabled} onClick={()=>saved?props.onContinue():void confirmAll()}>{working?'正在统一保存…':saved?'继续整批复检':directRecheck?'直接重新整批复检':'确认全部修改并复检'}</button></div></footer>
   </section>;
 }

@@ -38,8 +38,9 @@ async def wait_saved(store, pid, predicate, message):
 
 
 async def enter(page, initial, expect, *, homepage=False):
+    from tests.browser_navigation import select_project
     await page.goto(ORIGIN, wait_until='networkidle')
-    await page.locator('aside.sidebar button[title="' + initial['name'] + '"]').click()
+    await select_project(page, initial['id'])
     work = page.locator('.connected-workspace:visible')
     if homepage:
         await expect(work.get_by_role('button', name='和助手聊需求', exact=True)).to_have_attribute('aria-pressed', 'true')
@@ -47,7 +48,7 @@ async def enter(page, initial, expect, *, homepage=False):
         await expect(page.locator('.project-workspace:not([hidden]) details.connected-details')).not_to_have_attribute('open', '')
     table = work.get_by_role('table', name='需求确认表', exact=True)
     if not await table.is_visible():
-        await work.get_by_role('button', name='2 完善需求', exact=True).click()
+        await work.get_by_role('navigation', name='需求工作流程').get_by_role('button', name=re.compile(r'^2\s')).click()
     await expect(table).to_be_visible()
     return work, table
 
@@ -166,7 +167,7 @@ async def chapter_case(page,store,initial,output,report,expect):
     await page.goto(ORIGIN,wait_until='networkidle')
     await page.locator('aside.sidebar button[title="'+initial['name']+'"]').click()
     workspace=page.locator('.project-workspace:not([hidden])');work=workspace.locator('.connected-workspace')
-    await work.get_by_role('navigation',name='需求工作流程').get_by_role('button',name=re.compile(r'^3\s*确认交付$')).click()
+    await work.get_by_role('navigation',name='需求工作流程').get_by_role('button',name=re.compile(r'^3\s')).click()
     await work.get_by_role('button',name='查看与核对正式文档',exact=True).click()
     heading=page.locator('[id="DOC-STORAGE-CLOSURE-PRD-STORAGE-PERM"]')
     await heading.locator('..').get_by_role('button',name='讨论此章节',exact=True).click()
@@ -199,7 +200,7 @@ async def chapter_case(page,store,initial,output,report,expect):
 
 async def run(args, exercise=None):
     output,build=args.output.resolve(),args.static_build.resolve()
-    assert output.is_relative_to(ROOT/'evidence') and not output.exists() and (build/'index.html').is_file()
+    assert (output.is_relative_to(ROOT/'evidence') or output.is_relative_to(ROOT/'work')) and not output.exists() and (build/'index.html').is_file()
     output.mkdir(parents=True)
     report=dict(status='running',checks=[],api_requests=[],page_errors=[],routing_errors=[],served_static={},
         model_calls=0,listener_started=False,daily_data_access=False,business_acceptance='NOT_RUN',static_build=str(build))

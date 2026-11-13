@@ -70,6 +70,7 @@ def test_repeat_confirmation_preserves_existing_prd_inputs_and_original_reviews(
     assert result['questions'] == project['questions']
     assert result['documents'] == project['documents']
     assert result['decision_answers'] == project['decision_answers']
+    assert result['context_confirmations'] == project['context_confirmations']
     assert source_files(store) == files
     assert brief_hash(result) == project['documents']['prd']['brief_hash']
 
@@ -105,6 +106,22 @@ def test_real_input_changes_still_expire_prd_and_keep_unaffected_row_reviews(tmp
         assert item(saved, 'REQ-0001')['content_version'] == item(project, 'REQ-0001')['content_version'] + 1
     if field == 'answer':
         assert saved['questions'][0]['decision_answer_id'] != project['questions'][0]['decision_answer_id']
+
+
+@pytest.mark.parametrize('fault', ['content_hash', 'actor'])
+def test_reconfirmation_replaces_invalid_context_proof(tmp_path, fault):
+    store=Store(tmp_path)
+    project,answers=confirmed_project(store)
+    with store.edit(project['id'],project['revision'],'合成失效上下文确认') as (draft,_):
+        draft['context_confirmations']['intent'][fault]='invalid'
+    project=store.get(project['id'])
+    saved=reconfirm(store,project,answers)
+    proof=saved['context_confirmations']['intent']
+    from app.core import digest
+    assert proof['actor']=='authenticated_local_user'
+    assert proof['content_hash']==digest(dict(text=saved['product_context']['intent'],
+        state=saved['context_field_states']['intent']))
+    assert proof!=project['context_confirmations']['intent']
 
 
 def test_changed_source_version_requires_new_row_confirmation(tmp_path):

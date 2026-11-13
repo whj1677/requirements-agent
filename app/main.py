@@ -55,6 +55,7 @@ class Name(Strict):
     name: str = Field(min_length=1,max_length=100)
 
 class ProjectEdit(Revision):
+    project_memory_mode: Literal['off','langmem'] | None = None
     name: str | None = Field(default=None,min_length=1,max_length=100)
     mode: Literal['explore','converge'] | None = None
     reference_mode: Literal['user','builtin'] | None = None
@@ -80,6 +81,7 @@ class ActionTarget(Strict):
     kind: Literal['item','question','ui','document']
     id: str = Field(min_length=1,max_length=200)
     section_id: str | None = None
+    detail_required: bool | None = Field(default=None,strict=True)
 
 class BenchmarkInput(Strict):
     target: str = Field(min_length=1,max_length=200)
@@ -97,11 +99,12 @@ class ActionPlan(Revision):
     attachment_source_ids: list[str] = Field(default_factory=list)
     allow_review_draft: bool = False
     draft_request: dict | None = None
+    intake_resume_task_id: str | None = None
 
 class ActionStart(ActionPlan):
     plan_hash: str
     idempotency_key: str = Field(min_length=8,max_length=100)
-    authorize: bool = False
+    authorize: bool = False  # Legacy clients only; explicit action submission authorizes the task.
 
 class Decision(Revision):
     selection_status: Literal['candidate','selected','rejected','deferred']
@@ -201,6 +204,7 @@ class ExportInput(Strict):
     idempotency_key: str = Field(min_length=8,max_length=100)
 
 class ModelConfig(Strict):
+    intake_engine: Literal['direct','deepseek-harness'] = 'direct'
     name: str = Field(min_length=1,max_length=100)
     base_url: str = Field(max_length=2000)
     model: str = Field(min_length=1,max_length=200)
@@ -415,6 +419,12 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
                 actions=[dict(kind='source',label='核对参考资料'),dict(kind='document',label='核对 PRD 文档',document='prd')])]
         # Reader/source progress are response projections; keep canonical review hashes intact.
         result=copy.deepcopy(p)
+        from .scope_context import context_review_statuses
+        result['context_review_statuses']=context_review_statuses(p)
+        from .detail_business_scope import projection as detail_scope_projection
+        result.pop('detail_unknown_scope_reviews',None)
+        scoped_details=detail_scope_projection(p)
+        if scoped_details:result['detail_unknown_scope_reviews']=scoped_details
         result.update(summary, hashes=hashes(p), confirmation_issues=issues, confirmation_blockers=confirmation_blockers,
                       baselines=store.records(pid,'baseline'), exports=store.records(pid,'export'))
         from .requirements import behavior_review_current
@@ -428,10 +438,14 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
         from .understanding import coverage_complete
         from .domain_context import active_source_ids
         result['active_source_ids'] = sorted(active_source_ids(p))
+        from .prewrite import question_resolution_current
         for question in result['questions']:
             qid = question.get('decision_group_id') or question['id']
             question['decision_review_proposal_current'] = proposal_current(p, qid)
             question['decision_coverage_complete'] = coverage_complete(question)
+            question['prewrite_resolution_current'] = question_resolution_current(p, question)
+            from .answer_implementation import location_suggestions
+            question['answer_location_suggestions'] = location_suggestions(p,question)
         for source in result['sources']:
             if source.get('embedded_image_ids'):
                 children=[s for s in result['sources'] if s.get('container_source_id')==source['id']]
@@ -442,6 +456,8 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
         result['document_export_readiness']={kind:export_readiness(p,kind) for kind in p['documents']}
         result['document_review_export_readiness']={kind:export_readiness(p,kind,mode='review') for kind in p['documents']}
         result['product_flow']=flow_status(p)
+        from .product_flow import question_view
+        result['question_view']=question_view(p)
         result['scope_field_rules']=scope_field_rules(p)
         result['confirmation_scope_ids']=[i['id'] for i in delivery_items(p)]
         result['document_review_status']={k:dict(reviewed=document_review_current(p,k),record=p.get('document_reviews',{}).get(k)) for k in ('mrd','prd')}
@@ -610,6 +626,11 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
     @app.patch('/api/projects/{pid}')
     async def edit_project(pid:str, body:ProjectEdit):
         with store.edit(pid,body.expected_revision,'修改项目信息') as (p,db):
+            if body.project_memory_mode is not None:
+                busy = any(r.get('status') in ('queued','running') for kind in ('run','user_task')
+                           for r in store.records(pid,kind,db))
+                require(not busy,'PROJECT_BUSY','当前项目任务正在执行，请完成或取消后切换项目记忆。',409)
+                p['project_memory_mode']=body.project_memory_mode
             if body.name: p['name']=body.name
             if body.mode: p['mode']=body.mode
             if body.reference_mode:p['reference_mode']=body.reference_mode
@@ -963,6 +984,9 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
             c=dict(DEFAULT, **(store.setting(slot) or {}))
             c.update(budget_mode='unlimited', max_calls=None)
             result[slot]=dict(c,**provider.key_status(c),proxy='已配置' if c.get('proxy') else '')
+            if slot == 'model':
+                from .dsh_intake import runtime_status
+                result[slot]['intake_runtime'] = runtime_status()
         return result
 
     @app.put('/api/models/{slot}')
@@ -1025,7 +1049,14 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
 
     @app.post('/api/projects/{pid}/actions/plan')
     async def action_plan(pid:str,body:ActionPlan):
-        return actions.plan(pid,body.model_dump())
+        values=body.model_dump()
+        if values.get('intake_resume_task_id') is None:values.pop('intake_resume_task_id',None)
+        return actions.plan(pid,values)
+
+    @app.post('/api/projects/{pid}/documents/prd/local-preview')
+    async def local_prd_preview(pid:str,body:dict):
+        from .local_prd import preview
+        return preview(store,pid,body)
 
     @app.post('/api/projects/{pid}/documents/prd/local-review')
     async def local_prd_review(pid:str,body:dict):
@@ -1035,6 +1066,7 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
     @app.post('/api/projects/{pid}/actions')
     async def action_start(pid:str,body:ActionStart):
         values=body.model_dump()
+        if values.get('intake_resume_task_id') is None:values.pop('intake_resume_task_id',None)
         plan_hash=values.pop('plan_hash'); key=values.pop('idempotency_key'); authorize=values.pop('authorize')
         return actions.start(pid,values,plan_hash,key,authorize)
 
@@ -1044,7 +1076,16 @@ def create_app(folder=DATA, access_token=None, provider=None, env_path=None):
         tasks=store.records(pid,'user_task')
         recovered={row['task_id']:row for row in store.records(pid,'local_recovery')}
         for task in tasks:
-            task['calls']=sum(store.get_record(pid,rid,'run')['calls'] for rid in task['run_ids'])
+            from .ingest_recovery import intake_resume_available
+            task['intake_resume_available']=intake_resume_available(store,project,task)
+            task_runs=[store.get_record(pid,rid,'run') for rid in task['run_ids']]
+            task['calls']=sum(run['calls'] for run in task_runs)
+            grounding_run=next((run for run in reversed(task_runs)
+                if run.get('stage')=='ingest' and run.get('intake_grounding')),None)
+            if grounding_run is not None:
+                task['intake_grounding']=copy.deepcopy(grounding_run['intake_grounding'])
+                task['intake_grounding']['candidate_applied']=bool(grounding_run.get('result_applied'))
+                task['message']=task['intake_grounding']['reason']
             if task['id'] in recovered:
                 row=recovered[task['id']]
                 task['local_recovery']={k:row[k] for k in ('id','output_revision','candidate_ids','external_model_calls')}

@@ -36,13 +36,14 @@ def test_hierarchy_uses_explicit_objects_and_never_promotes_short_prose(tmp_path
     p=hierarchy_project(tmp_path);artifact=p['documents']['prd'];before=copy.deepcopy(artifact)
     view=reader_document(artifact);outline=view['outline'];sections=view['sections']
     assert artifact==before
-    assert view['presentation_version']=='document-reading-8'
+    assert view['presentation_version']=='document-reading-10'
     req=next(n for n in outline if n.get('item_id')=='REQ-0001')
-    assert req['level']==2 and req['parent_id']==sections[0]['section_id']
+    function=next(section for section in sections if section['title']=='功能需求')
+    assert req['level']==2 and req['parent_id']==function['section_id']
     actor=next(n for n in outline if n['text']=='谁操作')
     assert actor['level']==3 and actor['parent_id']==req['id']
     child=next(n for n in outline if n['id']=='PRD-explicit-child')
-    assert child['level']==2 and child['parent_id']==sections[0]['section_id']
+    assert child['level']==2 and child['parent_id']==artifact['content']['sections'][0]['section_id']
     sibling=next(n for n in outline if n['text']=='并列主题乙')
     assert sibling['level']==1 and sibling['parent_id'] is None
     assert len({n['number'] for n in outline})==len(outline)

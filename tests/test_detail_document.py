@@ -75,7 +75,7 @@ def test_structured_cloud_prd_uses_one_snapshot_without_legacy_seven_fields(tmp_
     assert not document_gaps(p['documents']['prd']['content'],p)
     assert export_readiness(p,'prd')['ready']
     view=reader_document(p['documents']['prd'])
-    assert {'字段属性','交互逻辑','业务流程说明','状态变化'}<={s['title'] for s in view['sections']}
+    assert {'字段属性','交互逻辑','功能流程图','状态变化'}<={s['title'] for s in view['sections']}
     nodes=[n for s in view['sections'] for n in s['reading_nodes']]
     tables=[n for n in nodes if n['kind']=='table'];diagram=next(n for n in nodes if n['kind']=='diagram')
     assert len([n for n in tables if n.get('detail_hash')])==4
@@ -120,7 +120,8 @@ def test_word_real_tables_and_images_markdown_self_contained(tmp_path):
     p=project_fixture(tmp_path);compile_fixture(p)
     files=asyncio.run(document_files(p,'prd'))
     word=Document(io.BytesIO(files['PRD.docx']))
-    assert len(word.tables)==5 and len(word.inline_shapes)>=1
+    assert len(word.tables)==6 and len(word.inline_shapes)>=1
+    assert any('主要功能清单' in paragraph.text for paragraph in word.paragraphs)
     assert any('1 至 30 个字符' in cell.text for table in word.tables for row in table.rows for cell in row.cells)
     assert 'data:image/png;base64,' in files['PRD.md'].decode('utf-8')
     assert any(key.endswith('.svg') for key in files)
@@ -197,10 +198,70 @@ def test_complex_branch_and_loop_routes_do_not_cross_node_interiors():
         for (x1,y1),(x2,y2) in zip(route['points'],route['points'][1:]):
             for box in layout['boxes'].values():
                 left,right=box['x'],box['x']+box['width'];top,bottom=box['y'],box['y']+box['height']
+                if box['kind']=='decision':
+                    cx,cy=(left+right)/2,(top+bottom)/2
+                    if y1==y2:
+                        half=max(0,box['width']/2*(1-abs(y1-cy)/(box['height']/2)))
+                        left,right=cx-half,cx+half
+                    if x1==x2:
+                        half=max(0,box['height']/2*(1-abs(x1-cx)/(box['width']/2)))
+                        top,bottom=cy-half,cy+half
                 if y1==y2:
                     assert not (top<y1<bottom and max(min(x1,x2),left)<min(max(x1,x2),right))
                 if x1==x2:
                     assert not (left<x1<right and max(min(y1,y2),top)<min(max(y1,y2),bottom))
+
+
+@pytest.mark.parametrize('show_ids',[False,True])
+def test_copy_branches_align_without_crossing_and_exports_share_routes(show_ids):
+    from PIL import ImageColor
+    from app.word_presentation import WORD_FLOW_PALETTE
+    names=['打开详情','点击复制','执行复制','处理中','复制成功？','成功提示','失败提示','结束','等待重试']
+    flow=dict(nodes=[dict(id=str(i),label=name,kind='decision' if i==4 else 'action') for i,name in enumerate(names)],
+        edges=[dict(id='E'+str(i),**{'from':str(a),'to':str(b)},condition=condition)
+                for i,(a,b,condition) in enumerate([(0,1,''),(1,2,''),(2,3,''),(3,4,''),(4,5,'所有站点查询确认成功后继续'),
+                (5,7,''),(4,6,'失败，保持原数据'),(6,8,''),(8,1,'用户重试')])])
+    before=copy.deepcopy(flow)
+    svg,layout=flow_svg(flow,columns=3,show_ids=show_ids,palette=WORD_FLOW_PALETTE)
+    boxes=layout['boxes']
+    assert [boxes[str(i)]['column'] for i in (7,6,8)]==[0,1,2]
+    assert len(layout['routes'])==9
+    assert all(len({x for x,y in route['points']})==1 or len({y for x,y in route['points']})==1
+        for route in layout['routes'][:-1])
+    assert min(x for x,y in layout['routes'][-1]['points'][2:4])>max(b['x']+b['width'] for b in boxes.values())
+    root=ET.fromstring(svg);ns={'s':'http://www.w3.org/2000/svg'}
+    strokes=[line for line in root.findall('.//s:polyline',ns) if 'marker-end' in line.attrib]
+    assert len(strokes)==9
+    assert root.find('.//s:marker/s:path',ns).get('fill')==WORD_FLOW_PALETTE['line']
+    branch=layout['routes'][4]
+    if show_ids:
+        assert branch['lines']==['E4'] and branch['anchor']=='start'
+    else:
+        import unicodedata
+        left,right=sorted([branch['points'][0][0],branch['points'][-1][0]])
+        assert branch['anchor']=='middle' and branch['x']==(left+right)/2
+        assert len(branch['lines'])>1
+        for label in branch['lines']:
+            width=sum(2 if unicodedata.east_asian_width(ch) in ('F','W') else 1 for ch in label)*layout['edge_font_size']/2
+            assert left<branch['x']-width/2 and branch['x']+width/2<right
+        assert branch['y']+(len(branch['lines'])-1)*layout['edge_line_height']<branch['points'][0][1]
+        assert flow['edges'][4]['condition'] in svg
+    picture=Image.open(io.BytesIO(flow_png(flow,columns=3,show_ids=show_ids,palette=WORD_FLOW_PALETTE)))
+    scale=picture.width/layout['width']
+    for route,line,edge in zip(layout['routes'],strokes,flow['edges']):
+        assert line.get('points')==' '.join(f'{x},{y}' for x,y in route['points'])
+        assert route['condition']==edge['condition']
+        (x1,y1),(x2,y2)=route['points'][:2]
+        assert picture.getpixel((round((x1+x2)/2*scale),round((y1+y2)/2*scale)))==ImageColor.getrgb(line.get('stroke'))
+    assert flow==before
+    # Multiple branches on the same diamond side have distinct departure and arrival ports.
+    flow['edges'].append(dict(id='parallel',**{'from':'4','to':'6'},condition='另一已定义条件'))
+    flow['edges'].append(dict(id='merge',**{'from':'3','to':'6'},condition='合成汇合条件'))
+    routes={route['id']:route for route in flow_layout(flow,columns=3)['routes']}
+    assert len(routes)==len(flow['edges'])
+    assert routes['E6']['points'][0]!=routes['parallel']['points'][0]
+    arrivals=[route['points'][-1] for route in routes.values() if route['target']=='6']
+    assert len(arrivals)==3 and len(set(arrivals))==3
 
 
 def test_long_edge_conditions_do_not_expand_diagram_or_disappear_from_tables():
@@ -260,5 +321,8 @@ def test_reciprocal_edges_remain_distinct_on_a_compact_single_canvas():
     by_id={route['id']:route for route in layout['routes']}
     for reverse,forward in [('R1','E2'),('R2','E6')]:
         assert by_id[reverse]['points'] != list(reversed(by_id[forward]['points']))
+        # Reciprocal arrows must not terminate on the other edge's departure port.
+        assert by_id[reverse]['points'][-1] != by_id[forward]['points'][0]
+        assert by_id[forward]['points'][-1] != by_id[reverse]['points'][0]
     assert len(returns)==2 and len(layout['routes'])==len(flow['edges'])
     assert layout['width']<1300 and layout['height']/layout['width']<1

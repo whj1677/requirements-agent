@@ -75,7 +75,7 @@ export function ChapterDiscussion({ project, target, tasks, runs, busy, running,
     {!!context.tasks.length && <details className="chapter-history"><summary>本章已发送的讨论 · {context.tasks.length}</summary>
       {context.tasks.map(task => <article key={task.id}><b>讨论输入</b><p className="preserve-lines">{task.retry_input?.message || '根据已保存的补充继续核对关联修改。'}</p></article>)}
     </details>}
-    <footer className="chapter-discussion-footer"><p>确认只保存预览展示的变更；更新后的文档还需核对。</p>
-      <button type="button" disabled={busy || running || !canUpdate} onClick={() => navigate(onUpdate)}>更新当前文档</button></footer>
+    <footer className="chapter-discussion-footer"><p>章节讨论不会直接改写文档；涉及条款的建议须先核对并采用到需求底稿，重新生成全文不会自动采纳尚未确认的建议，生成后仍需阅读核对。</p>
+      <button type="button" disabled={busy || running || !canUpdate} onClick={() => navigate(onUpdate)}>按当前底稿重新生成全文</button></footer>
   </section></div>;
 }

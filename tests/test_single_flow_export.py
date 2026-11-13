@@ -46,7 +46,7 @@ def test_complete_flow_is_one_media_image_in_landscape_with_its_heading(tmp_path
     flow_headings=lambda nodes:[n for n in nodes if n.tag==qn('w:p')
         and n.find('./'+qn('w:pPr')+'/'+qn('w:pStyle')) is not None
         and n.find('./'+qn('w:pPr')+'/'+qn('w:pStyle')).get(qn('w:val'))=='Heading1'
-        and '业务流程说明' in text([n])]
+        and '功能流程图' in text([n])]
     assert len(flow_headings(contents[1]))==1 and not flow_headings(contents[0])
     assert sum(len(n.findall('.//'+qn('w:drawing'))) for n in contents[1])==1
     assert '流程步骤' in text(contents[2]) and '分支与流转条件' in text(contents[2])

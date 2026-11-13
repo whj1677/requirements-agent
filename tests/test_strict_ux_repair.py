@@ -145,12 +145,17 @@ def test_local_requirement_help_runs_before_scope_checkpoint_and_keeps_retry_int
         time.sleep(.02)
     assert task['status'] == 'failed' and task['error'] == 'AUTH_FAILED'
     expected = {k:v for k,v in body.items() if k != 'expected_revision'}
-    expected['target'] = dict(expected['target'], section_id=None)
+    expected['target'] = dict(expected['target'], section_id=None, detail_required=None)
     # Retry stores the normalized action contract, including explicit defaults.
     # Neither an ordinary clarify action nor its retry requests a review draft
     # or silently adds attachments.
     expected.update(allow_review_draft=False, attachment_source_ids=[])
     assert task['retry_input'] == expected
+    assert 'detail_required' not in preview['requirement_recommendation_scope']
+    assert 'detail_required' not in task['requirement_recommendation_scope']
+    run = app.state.store.get_record(p['id'], task['run_ids'][0], 'run')
+    assert run['discussion_target'] == expected['target']
+    assert 'detail_required' not in run['requirement_recommendation_scope']
     current = client.get(root).json()
     assert not current['product_flow'][1]['complete']
     assert current['items'] == p['items']

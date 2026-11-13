@@ -44,18 +44,39 @@ class RequestBudget:
                 'BUDGET_AUTH_CHANGED', '额度记录与已批准快照不一致', 409)
         return rows
 
-    def available(self):
+    def available(self, count=1):
+        require(type(count) is int and count>=1,'BUDGET_INVALID','预检请求数必须为正整数')
         with self.store.connect() as db:
-            check_available(self._records(db)[-1]['request_budget'])
+            current=self._records(db)[-1]['request_budget']
+            check_available(current)
+            require(current['limit']-current['used']>=count,'BUDGET_EXHAUSTED',
+                f"本次共享请求额度已用 {current['used']}/{current['limit']}，后续纠正及完整复审需要至少 {count} 次；未发送，已有结果保留。")
 
-    def reserve(self, call_id, config):
+    def reserve(self, call_id, config, *, config_role=None):
         with self.store.connect() as db:
             db.execute('BEGIN IMMEDIATE')
             rows = self._records(db)
             require(config.get('max_calls')==self.limit, 'BUDGET_AUTH_CHANGED',
                     '出站请求上限与批准快照不一致', 409)
-            require({k:v for k,v in config.items() if k not in ('proxy','max_tokens')}==
-                    {k:v for k,v in rows[0]['provider'].items() if k!='max_tokens'} and
+            expected={k:v for k,v in rows[0]['provider'].items() if k!='max_tokens'}
+            require(config_role in (None,'detail_source_review'),'BUDGET_AUTH_CHANGED','未知出站配置用途',409)
+            if config_role=='detail_source_review':
+                require(len(rows)==1 or rows[1]['authorized_configs'][rows[0]['stage']]==rows[0]['provider'],
+                        'BUDGET_AUTH_CHANGED','来源核对配置与批准任务快照不一致',409)
+                options=expected.get('detail_review_options')
+                require(isinstance(options,dict) and set(options)-{'timeout','max_tokens'} in ({'thinking_disabled'},{'thinking_disabled','reasoning_effort'}) and
+                        type(options['thinking_disabled']) is bool and
+                        expected.get('detail_review_reasoning_effort','low') in ('low','high') and
+                        ('reasoning_effort' not in options or not options['thinking_disabled'] and options['reasoning_effort']==expected.get('detail_review_reasoning_effort','low')) and
+                        ('timeout' not in options or type(options['timeout']) in (int,float) and options['timeout']==
+                            (expected['timeout'] if options['thinking_disabled'] else max(expected['timeout'],300))),
+                        'BUDGET_AUTH_CHANGED','来源核对配置未在计划中批准',409)
+                if 'max_tokens' in options:
+                    require(type(options['max_tokens']) is int and options['max_tokens']>0 and
+                            config['max_tokens']==min(options['max_tokens'],rows[0]['authorization']['approved_max_tokens']),
+                            'BUDGET_AUTH_CHANGED','来源核对输出额度与批准角色快照不一致',409)
+                expected.update({k:v for k,v in options.items() if k!='max_tokens'})
+            require({k:v for k,v in config.items() if k not in ('proxy','max_tokens')}==expected and
                     config['max_tokens']<=rows[0]['authorization']['approved_max_tokens'],
                     'BUDGET_AUTH_CHANGED','出站配置超出已批准快照',409)
             require(all(r['status'] in ('queued','running') for r in rows),

@@ -16,7 +16,7 @@ async function load(path) {
   return module.exports;
 }
 const {DocumentStudio,documentTaskForType}=await load('src/panels.tsx');
-const {TaskStatus,ActionDialog}=await load('src/guided.tsx');
+const {TaskStatus}=await load('src/guided.tsx');
 const task=(id,kind='prd',status='running',extra={})=>({id,action:'document',label:'生成文档讨论稿',
   status,message:'正在整理文档章节',calls:0,max_calls:null,cost:null,run_ids:[],source_ids:[],
   completed_steps:0,stages:['prd'],step_states:[{stage:'prd',status}],
@@ -97,21 +97,50 @@ def test_reviewed_or_historical_document_does_not_hide_task_in_review_sidebar():
     ''')
 
 
-def test_prepare_button_explains_the_explicit_run_and_authorization_step():
+def test_generate_button_explains_one_click_and_keeps_human_document_review():
     run_ts(LOAD + r'''
       const html=render(undefined);
-      assert(html.includes('准备生成 PRD'));
+      assert(html.includes('生成 PRD'));
       assert(html.includes('aria-describedby="document-generate-help-P-document-prd"'));
-      assert(html.includes('运行本次任务')&&html.includes('才会开始生成'));
-      const plan={label:'生成文档讨论稿',expected_revision:4,stages:['prd'],max_calls:null,
-        recipients:[],sources:[],context_scope:'已确认需求',missing:[]};
-      const dialogProps={plan,input:{message:''},error:'',busy:false,onClose:noWrite,onSubmit:noWrite};
-      const approved=renderToStaticMarkup(React.createElement(ActionDialog,dialogProps));
-      assert(approved.includes('运行本次任务'));
-      const unapproved=renderToStaticMarkup(React.createElement(ActionDialog,{...dialogProps,
-        plan:{...plan,recipients:[{origin:'https://example.invalid',model:'offline',needs_authorization:true}]}}));
-      assert(unapproved.includes('授权本次范围并运行'));
-      assert(html.includes('授权本次范围并运行'));
+      assert(html.includes('点击上方按钮一次'));
+      assert(html.includes('生成结果仍需人工阅读核对'));
+      assert(html.includes('不会自动标记为已核对'));
+      assert(!html.includes('授权本次范围并运行'));
+      assert(!html.includes('运行本次任务'));
+      assert(!html.includes('role="dialog"'),'rendering document controls cannot open a run dialog');
+    ''')
+
+
+def test_historical_document_options_distinguish_document_version_from_draft_revision():
+    run_ts(LOAD + r'''
+      const artifacts={document_artifact:[
+        {id:'DOC-V3',document_version:3,draft_revision:19,created:'2026-10-30',content:{document_type:'prd',title:'储能告警'}},
+        {id:'DOC-V5',document_version:5,draft_revision:34,created:'2026-10-31',content:{document_type:'prd',title:'储能告警'}},
+        {id:'DOC-MRD',document_version:2,draft_revision:34,created:'2026-10-31',content:{document_type:'mrd',title:'市场需求'}}]};
+      const before=JSON.stringify(artifacts),html=render(undefined,{artifacts});
+      const third=html.match(/<option value="DOC-V3">([^<]*)<\/option>/)[1];
+      const fifth=html.match(/<option value="DOC-V5">([^<]*)<\/option>/)[1];
+      assert(third.includes('文档v3')&&third.includes('底稿v19'));
+      assert(fifth.includes('文档v5')&&fifth.includes('底稿v34'));
+      assert(!fifth.includes('文档v34'));assert(!html.includes('value="DOC-MRD"'));
+      assert.equal(JSON.stringify(artifacts),before,'rendering a version selector never rewrites artifacts');
+    ''')
+
+
+def test_connected_workspace_renders_one_three_step_navigation_without_retired_five_step_blockers():
+    run_ts(LOAD + r'''
+      const {ConnectedWorkspace}=await load('src/pm-prototype/ConnectedWorkspace.tsx');
+      const project={...p,sources:[],items:[],questions:[],confirmation_issues:[],product_flow:[{complete:true},{complete:false},{complete:false},{retired:true,missing:['旧草图待处理']},{complete:false}]};
+      const before=JSON.stringify(project),html=renderToStaticMarkup(React.createElement(ConnectedWorkspace,{
+        id:project.id,project,tasks:[],busy:false,running:false,actionBlockReason:'',mutate:noWrite,
+        chatPanel:()=>React.createElement('p',null,'合成聊天区域'),onPrepareRefinement:noWrite,onCancelPreparation:noWrite,
+        onOrganize:noWrite,onClarify:noWrite,onSources:noWrite,onCreateRequirement:noWrite,onCreateAcceptance:noWrite,
+        onDelivery:noWrite,onDocuments:noWrite,onRefresh:noWrite,onResolveBlocker:noWrite,onPrewrite:noWrite,onGeneratePrd:noWrite}));
+      const nav=html.match(/<nav[^>]*aria-label="需求工作流程"[^>]*>([\s\S]*?)<\/nav>/)[1];
+      assert.equal((nav.match(/<button/g)||[]).length,3);assert.equal((nav.match(/aria-current="step"/g)||[]).length,1);
+      for(const label of ['聊清需求想法','核对草稿与规则','评审与交付文档'])assert(nav.includes(label));
+      assert(!html.includes('需求五步进度'));assert(!html.includes('核对功能草图'));assert(!html.includes('旧草图待处理'));
+      assert.equal(JSON.stringify(project),before,'omitting an obsolete visual progress row must preserve internal workflow states');
     ''')
 
 

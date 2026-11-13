@@ -47,11 +47,13 @@ def test_workflow_repairs_once_and_leaves_confirmation_to_user(tmp_path, invalid
         async def request(self, config, messages, evidence=None):
             if not self.requests:
                 value, meta = await super().request(config, messages, evidence)
+                self.generated=copy.deepcopy(value)
                 value['requirements'][0]['statement']['sources'][0]['source'] = 'L1'
                 evidence.response(json.dumps(value), http_status=200, finish_reason='stop', usage={})
                 return value, meta
-            self.requests.append({'stage': 'repair'})
             plan = json.loads(messages[1]['content'][0]['text'])
+            if 'rows' in plan or 'fields' in plan:return await super().request(config,messages,evidence)
+            self.requests.append({'stage':'repair','role':'business_reference_repair'})
             pair = plan['allowed'][0]
             patch = {'references': [{'slot': i, 'source': 'S99' if invalid else pair['source'],
                                      'locator': pair['locator']} for i in range(len(plan['slots']))]}
@@ -69,9 +71,19 @@ def test_workflow_repairs_once_and_leaves_confirmation_to_user(tmp_path, invalid
         task = actions.start(before['id'], body, plan['plan_hash'], 'reference-repair-test', True)
         await actions.jobs[task['id']]
         task = store.get_record(before['id'], task['id'], 'user_task'); after = store.get(before['id'])
-        assert len(provider.requests) == 2 and task['calls'] == 2
+        expected=['business_generation','business_reference_repair']+([] if invalid else ['business_source_review','detail_source_review','detail_source_challenge'])
+        assert [r['role'] for r in provider.requests]==expected
+        assert len(provider.requests)==task['calls']==len(expected)
+        assert sum(r['role']=='business_reference_repair' for r in provider.requests)==1
         assert task['status'] in (('failed',) if invalid else ('partial', 'succeeded')), task
         assert after['questions'] == before['questions'] and after['documents'] == before['documents']
         assert after['items'][:len(before['items'])] == before['items']
-        if not invalid: assert after['refinement_completion']['complete']
+        if not invalid:
+            assert after['refinement_completion']['complete']
+            run=store.get_record(before['id'],task['run_ids'][0],'run')
+            reviews=run['business_draft_review']['detail_semantic_reviews']
+            assert reviews and all(r['status']=='passed' for r in reviews.values())
+            candidates=[r for r in run['response']['proposals'] if r['kind']=='requirement']
+            assert {r['title']:r['statement'] for r in candidates}=={r['title']:r['statement']['text'] for r in provider.generated['requirements']}
+            assert all(r.get('detail_contract') for r in candidates)
     asyncio.run(run())

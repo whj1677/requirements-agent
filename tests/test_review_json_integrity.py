@@ -56,3 +56,40 @@ def test_valid_json_remains_valid_and_example_covers_object_separator(monkeypatc
     assert len(value['result']['perspectives'])>=2
     parsed,_=request(monkeypatch,tmp_path,json.dumps(value,ensure_ascii=False))
     assert parsed==value and complete_object(json.dumps(value))==value
+
+
+def flattened_perspectives():
+    value=review_structure_example()
+    value['result']['perspectives']=[dict(role=role,considerations=[role+'保留全部原文'])
+                                     for role in ('固件开发','测试','系统集成','产品经理')]
+    raw=json.dumps(value,ensure_ascii=False)
+    start=raw.index('"perspectives": ')+len('"perspectives": ')
+    original=json.dumps(value['result']['perspectives'],ensure_ascii=False)
+    return value,raw[:start]+raw[start:].replace(original,original.replace('}, {',', '),1)
+
+
+def test_complete_flattened_perspectives_preserve_every_role_and_consideration(monkeypatch,tmp_path):
+    value,raw=flattened_perspectives()
+    parsed,meta=request(monkeypatch,tmp_path,raw)
+    assert parsed==value
+    assert meta['syntax_normalization']['rule']=='review-perspective-object-boundaries-1'
+    assert meta['syntax_normalization']['changes']==[dict(path=['result','perspectives',0],objects=4)]
+
+
+@pytest.mark.parametrize('closing', [']', '}]'])
+def test_flattened_perspectives_with_missing_array_close_preserve_all_members(monkeypatch,tmp_path,closing):
+    value,raw=flattened_perspectives()
+    raw=raw.replace(closing+', "required_decisions":', ', "required_decisions":')
+    parsed,meta=request(monkeypatch,tmp_path,raw)
+    assert parsed==value
+    assert meta['syntax_normalization']['changes'][0]['inserted']==closing
+
+
+@pytest.mark.parametrize('fault',['same_role','incomplete_pair','other_duplicate','unknown_field','truncated'])
+def test_flattened_perspectives_cannot_hide_ambiguity_or_unrelated_errors(monkeypatch,tmp_path,fault):
+    _,raw=flattened_perspectives()
+    if fault=='same_role':raw=raw.replace('"role": "测试"','"role": "固件开发"')
+    elif fault=='incomplete_pair':raw=raw.replace('"role": "测试", ','')
+    elif fault=='other_duplicate':raw=raw.replace('"summary":','"summary":"conflict", "summary":',1)
+    elif fault=='unknown_field':raw=raw.replace('"role": "测试"','"extra":true, "role": "测试"')
+    with pytest.raises(Problem):request(monkeypatch,tmp_path,raw,finish='length' if fault=='truncated' else 'stop')

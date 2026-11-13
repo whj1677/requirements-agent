@@ -73,7 +73,10 @@ def test_formal_download_after_confirmation_contains_current_tables_and_figure(t
         response=client.get(f'/api/projects/{pid}/documents/prd/docx?mode=formal&document_id='+artifact['id'])
         assert response.status_code==200,response.text[:200]
         document=Document(io.BytesIO(response.content))
-        assert len(document.tables)==5 and len(document.inline_shapes)>=1
+        assert len(document.tables)==6 and len(document.inline_shapes)>=1
+        acceptance=next(i for i in snapshot['items'] if i['kind']=='acceptance')
+        assert any(acceptance['statement'] in cell.text for table in document.tables
+                   for row in table.rows for cell in row.cells)
         assert '非正式交付' not in '\n'.join(p.text for p in document.paragraphs)
         assert app.state.store.records(pid,'document_export')[0]['export_mode']=='formal'
 

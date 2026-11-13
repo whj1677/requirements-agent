@@ -17,6 +17,11 @@ UNKNOWN = re.compile(r'结果未知|未知结果|超时|响应丢失')
 _OUTCOME_VALUE=r'(?:成功|失败|结果未知|未知结果)'
 OUTCOME_ENUM=re.compile(r'(?:派单结果|结果|状态)(?:字段)?(?:枚举)?(?:取值)?为'+_OUTCOME_VALUE+
     r'(?:[、/／]'+_OUTCOME_VALUE+r'){1,3}(?:三选一|之一|枚举)(?=[，,。；;]|$)')
+NON_EVENT_TIMEOUT=re.compile(
+    r'(?:不设(?:置)?|不启用|不采用|没有|无需|禁止|不得)自动超时'
+    r'|自动超时(?:释放|解锁|退出|策略|政策|机制|规则|时长|阈值)'
+    r'|(?:未|尚未|没有)发生(?:请求|网络|连接)?超时(?!后|之|的)'
+    r'|(?:请求|网络|连接)(?:未|尚未)超时(?!后|之|的)')
 NORMAL = re.compile(r'正常(?:成功|处理|受理|结果)?分支|成功(?:分支|场景)|正常成功(?:场景|情况下)|'
                     r'(?:服务|系统)(?:(?:正常受理|已受理|受理成功)(?:且|并且?)(?:已)?处理成功|处理成功|执行成功)|'
                     r'已确认(?:成功|完成)')
@@ -63,12 +68,16 @@ def assertion_scope(text, position):
 def rejection_branch(clause):
     """An explicit local refusal branch does not inherit an earlier unknown."""
     match=REJECTION.search(clause)
-    return bool(match and not UNKNOWN.search(clause) and not re.search(
+    return bool(match and not UNKNOWN.search(clause) and not EFFECT.search(clause[:match.start()]) and not re.search(
         r'不(?:是|能|会)?|未|没有',clause[max(0,match.start()-4):match.start()]))
 
 
 def quoted_prior_assertion(text, position):
     """An explicitly corrected quotation ends at its original closing quote."""
+    # Describing the position of a quoted flow node is not asserting its
+    # business result. Keep the exemption inside that quote only.
+    for match in re.finditer(r'[“「"]([^”」"]+)[”」"]\s*置于[^，,。；;]{1,40}(?:之前|之后)',text):
+        if match.start(1)<=position<match.end(1):return True
     for match in re.finditer(r'(?:(?:原句|旧句|错误表述)[：:]?|纠正|更正)\s*[“「"]',text):
         closing={'“':'”','「':'」','"':'"'}[text[match.end()-1]]
         end=text.find(closing,match.end())
@@ -85,6 +94,29 @@ def subject(text, *, last=False):
 def operation(text):
     match=EFFECT.search(text or '')
     return OPERATIONS[match.group()] if match else None
+
+
+def input_update_noun(sentence, effect):
+    """A received update or counter-reference noun is not a persisted write.
+
+    Match only this occurrence. A later '更新记录' in the same timeout clause
+    must still be checked, including '有效更新记录' used as a verb phrase.
+    """
+    if effect.group()!='更新':return False
+    before,after=sentence[:effect.start()],sentence[effect.end():].lstrip()
+    # A timing parameter (for example a Markdown "PCS 更新超时" row)
+    # describes an input deadline, not an update of a timeout record.
+    if (re.match(r'(?:超时|间隔|周期|频率)(?=[\s|，,。；;：:]|$)',after)
+            and re.search(r'(?:^|\|)\s*(?:PCS|BMS|通信|数据|报文)?\s*(?:有效|无效)?\s*$',before)):
+        return True
+    if re.search(r'(?:有|无)效$',before):
+        if re.search(r'(?:(?:距(?:离)?|自)(?:上次|上一次|最近一次|最后(?:一次)?)|收到)(?:有|无)效$',before):
+            return True
+        return bool(re.match(r'(?:报文|帧|时间|时长|间隔|的(?:时长|时间|间隔|条件|判定)|'
+            r'\d+(?:\.\d+)?\s*(?:ms|s|毫秒|秒)|'
+            r'(?:恰)?(?:在|于)(?:[tT]\s*=|\d)|时|后|前|且|并|与|及|或|不计为|[，,。；;：:、]|$)',after))
+    return bool(re.search(r'(?:计数参照|计数参考|参考计数)(?:值)?$',before)
+                and re.match(r'与|和|及|或|的|[，,。；;：:、]|$',after))
 
 
 def normal_branch(text,expected_subject=None):
@@ -112,12 +144,13 @@ def scopes(text,expected_subject=None):
 
 def confirmed_result(sentence):
     pattern=(r'(?:查询|收到|获得)(?P<lookup>[^，,。；]{0,12}?)(?:确认|明确)[^，,。；]{0,12}?(?:成功|拒绝|失败|未写入|未提交|未创建)'
-             r'|查到(?P<found>[^，,。；]{0,12}?)已确认(?=则|时|后|的|记录|[，,。；：:]|$)')
+             r'|查到(?P<found>[^，,。；]{0,12}?)已确认(?=则|时|后|的|记录|[，,。；：:]|$)'
+             r'|核实(?P<verified>(?:原请求|请求|资源|记录)?)(?:成功|失败)(?:后|时)')
     for match in re.finditer(pattern,sentence):
         boundary=max(sentence.rfind('，',0,match.start()),sentence.rfind(',',0,match.start()))+1
         prefix=sentence[boundary:match.start()]
-        if re.search(r'(?:未|尚未|没有|不能|无法|未能)\s*$',prefix):continue
-        lookup=match.group('lookup') if match.group('lookup') is not None else match.group('found')
+        if re.search(r'(?:未|尚未|没有|不能|无法|未能|不)\s*$',prefix):continue
+        lookup=next(value for value in match.groups() if value is not None)
         if re.search(r'未|没有|尚未|不能|无法',lookup):continue
         return match
     return None
@@ -143,7 +176,7 @@ def uncertainty_event(text):
     Exclude only the literal's own bounded declaration. Another unknown/timeout
     in the same sentence still governs assertions, as does inherited context.
     """
-    declarations=list(OUTCOME_ENUM.finditer(text))
+    declarations=[*OUTCOME_ENUM.finditer(text),*NON_EVENT_TIMEOUT.finditer(text)]
     return next((match for match in UNKNOWN.finditer(text)
         if not any(decl.start()<=match.start()<decl.end() for decl in declarations)),None)
 
@@ -164,11 +197,14 @@ def outcome_sentences(text,fallback_subject):
             tentative=bool(re.match(r'(?:方案)?建议[：:]|假设[：:]|待(?:澄清|核对|确认)[：:]',sentence))
             confirmed=confirmed_result(sentence)
             preceding_context=context
-            if confirmed and (not context or not obj or not context['subject'] or obj==context['subject']):context=None
+            if (confirmed and confirmed.group('verified') is None
+                    and (not context or not obj or not context['subject'] or obj==context['subject'])):context=None
             if uncertainty_event(sentence) and not confirmed and not tentative:
                 context=dict(subject=obj,quote=sentence)
             carried=preceding_context if confirmed else context
-            inherited=carried if (carried and (not obj or not carried['subject'] or obj==carried['subject'])
+            inherited=carried if (carried and (not obj or not carried['subject'] or obj==carried['subject']
+                or (confirmed and confirmed.group('verified') is not None
+                    and subject(sentence[confirmed.end():])==carried['subject']))
                 and not normal_branch(sentence,obj) and not rejection_branch(sentence)) else None
             yield sentence,inherited
 
@@ -195,6 +231,10 @@ def facts(text, *, location, object_id=None, source_refs=(), fallback_operation=
         for effect in EFFECT.finditer(sentence):
             prefix=sentence[:effect.start()]
             part=ASSERTION_BREAK.split(prefix)[-1]
+            # A received update is an input event, not a persisted update.
+            # Exempt only this noun occurrence; later write predicates in the
+            # same timeout sentence must still retain uncertainty checks.
+            if input_update_noun(sentence,effect):continue
             # Rendering a value returned by a query is not a business write.
             # Keep this narrow: a timeout followed by an invented success or
             # an update of stored records must still be checked below.
@@ -206,6 +246,11 @@ def facts(text, *, location, object_id=None, source_refs=(), fallback_operation=
             if re.match(r'\s*(?:输入|草稿|编辑内容)',sentence[effect.end():]):continue
             # A saved answer is workflow evidence, not a transaction outcome.
             if effect.group()=='保存' and re.match(r'\s*[^，,。；]{0,12}(?:回答|答案)(?=[，,。；：:\s]|$)',sentence[effect.end():]):continue
+            # Reading an already saved request identity is not a new write or
+            # evidence of the original request's outcome.
+            if (effect.group()=='保存' and re.search(r'(?:按|用|依据|根据)(?:已)?$',prefix)
+                    and re.match(r'的(?:原|该|本次)?(?:请求|申请)(?:编号|ID)',sentence[effect.end():])):
+                continue
             inference=assertion_scope(sentence,effect.start())
             denied=bool(inference and inference['denied'])
             non_asserted=tentative or denied or (not inference and bool(NON_ASSERTION.search(part)))

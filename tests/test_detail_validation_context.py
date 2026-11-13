@@ -53,3 +53,26 @@ def test_missing_required_definition_is_not_reported_as_complete(tmp_path):
     row = context(project, config, tmp_path, local)['current_rows'][0]
     assert [i['code'] for i in row['detail_validation_issues']] == ['DETAIL_REQUIRED']
     assert 'detail_contract' not in row
+
+
+def test_generation_and_review_share_literal_interaction_path_projection(tmp_path):
+    from tests.test_interaction_path_facts import flow_fixture
+    from app.requirement_details import interaction_path_facts
+    from app.request_context import assemble as review_assemble
+    from app.provider import DEFAULT
+    from tests.test_detail_document import project_fixture
+    project,local,config,_,_,_=setup(tmp_path)
+    detail=flow_fixture();project['items'][0]['detail_contract']=detail
+    row=context(project,config,tmp_path,local)['current_rows'][0]
+    assert row['interaction_path_facts']==interaction_path_facts(detail)
+    reviewed=project_fixture(tmp_path/'review')
+    reviewed['items'][0]['detail_contract']=detail
+    before=copy.deepcopy(reviewed)
+    messages,_,_=review_assemble(reviewed,'review','核对流程',DEFAULT,tmp_path)
+    value=json.loads(messages[1]['content'][0]['text'])
+    projected=next(row for row in value['interaction_path_facts'] if row['item_id']==reviewed['items'][0]['id'])
+    assert {k:v for k,v in projected.items() if k!='item_id'}==interaction_path_facts(detail)
+    header=json.loads(messages[0]['content'].split('可信任务头：',1)[1])
+    policy=header['semantic_quality_contract']['interaction_path_review_policy']
+    assert all(text in policy for text in ('每个interaction_id','共享等待','本次请求','已答规则','finding','required_decisions'))
+    assert reviewed==before

@@ -8,7 +8,7 @@ from app.model_json import business_containers
 from app.provider import DEFAULT, Provider, origin
 from app.workflow import Workflow
 from tests.test_business_draft import draft_row, packet
-from tests.test_deepseek_responses import completed, mock_transport
+from tests.test_deepseek_responses import completed
 from tests.test_requirement_recommendation import project, target
 
 
@@ -77,7 +77,7 @@ def test_ambiguous_incomplete_conflicting_or_other_errors_are_not_normalized(kin
 
 
 @pytest.mark.parametrize('kind',['normal','bad_source','limited','incomplete'])
-def test_workflow_keeps_exact_raw_one_request_and_unchanged_source_gates(tmp_path,monkeypatch,kind):
+def test_workflow_keeps_exact_raw_one_generation_and_unchanged_source_gates(tmp_path,monkeypatch,kind):
     store,before=project(tmp_path)
     row=draft_row()
     if kind=='bad_source':row['statement']['sources'][0]['source']='S404'
@@ -86,7 +86,19 @@ def test_workflow_keeps_exact_raw_one_request_and_unchanged_source_gates(tmp_pat
     raw=raw.replace(ref,ref[:-1],1)
     reply=completed(raw)
     if kind=='incomplete':reply.update(status='incomplete',incomplete_details={'reason':'max_output_tokens'})
-    requests=mock_transport(monkeypatch,reply)
+    import httpx
+    client=httpx.AsyncClient;requests=[]
+    def respond(request):
+        body=json.loads(request.content);requests.append(body)
+        messages=body.get('input',body.get('messages'))
+        header=json.loads(messages[0]['content'].split('可信任务头：',1)[1])
+        if header.get('grounding_protocol'):
+            payload=json.loads(messages[1]['content'][0]['text'])
+            review=dict(candidate_hash=payload['candidate_hash'],input_hash=payload['input_hash'],
+                        checked_field_ids=[field['id'] for field in payload['fields']],findings=[])
+            return httpx.Response(200,json=completed(text(review)))
+        return httpx.Response(200,json=reply)
+    monkeypatch.setattr('app.provider.httpx.AsyncClient',lambda **kw:client(**kw,transport=httpx.MockTransport(respond)))
     provider=Provider(tmp_path/'absent.env');provider.keys[origin(DEFAULT)]='synthetic-test-key'
     workflow=Workflow(store,provider)
     if kind=='limited':
@@ -96,8 +108,8 @@ def test_workflow_keeps_exact_raw_one_request_and_unchanged_source_gates(tmp_pat
         await workflow.tasks[result['id']]
         return store.get_record(before['id'],result['id'],'run')
     result=asyncio.run(execute())
-    assert len(requests)==result['calls']==1 and result['repair_count']==0
-    call=json.loads(next((tmp_path/'evidence/model-calls').glob('*.json')).read_text('utf-8'))
+    assert len(requests)==result['calls']==(2 if kind in ('normal','bad_source') else 1) and result['repair_count']==0
+    call=json.loads((tmp_path/'evidence/model-calls'/(result['attempts'][0]['call_id']+'.json')).read_text('utf-8'))
     after=store.get(before['id'])
     assert after['items'][:len(before['items'])]==before['items']
     if kind in ('normal','bad_source'):

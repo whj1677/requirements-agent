@@ -27,6 +27,7 @@ def digest(path):
 def source_paths(root):
     """Only executable product inputs; no data, evidence, prototypes or history."""
     paths = [Path(name) for name in ROOT_FILES]
+    paths.append(Path('skills/requirements-material-review/SKILL.md'))
     paths += [Path('scripts') / name for name in RUNTIME_SCRIPTS]
     paths += [p.relative_to(root) for p in sorted((root / 'app').iterdir())
               if p.is_file() and p.suffix in SAFE_APP_EXTENSIONS]
@@ -38,6 +39,10 @@ def source_paths(root):
               p.suffix.lower() in ({'.json'} if folder in ('examples','schemas') else
                                    {'.json', '.md'} if folder == 'prompts' else
                                    {'.json', '.docx'})]
+    skills = root / KIT / 'prompts' / 'skills'
+    paths += [p.relative_to(root) for p in sorted(skills.rglob('*'))
+              if p.is_file() and (p.suffix.lower() in {'.md', '.json', '.txt'}
+                                  or p.name in {'LICENSE', 'LICENSE.repository', 'NOTICE'})]
     for relative in paths:
         path = root / relative
         if not path.is_file() or path.is_symlink():

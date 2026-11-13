@@ -111,7 +111,9 @@ def test_current_ui_context_and_discussion_image_without_adoption(tmp_path):
     files=asyncio.run(document_files(p,'prd'))
     # The current sketch is linked only to unadopted candidate statements, so
     # a product document must not publish it as if it were an accepted design.
-    assert json.loads(files['document_asset_bindings.json'])==[]
+    bindings=json.loads(files['document_asset_bindings.json'])
+    assert bindings and all(b.get('kind')=='table' and 'ui_page_id' not in b for b in bindings)
+    assert not any(name.startswith('assets/') and name.endswith('.png') for name in files)
     assert '原型模拟，不能证明业务系统已经实现' in files['PRD.md'].decode()
     from docx import Document
     from docx.shared import Inches

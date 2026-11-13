@@ -1,16 +1,89 @@
 import { beginActivity } from './activity';
 export type JsonObject = Record<string, any>;
 export interface ProjectSummary { id: string; name: string; revision: number; created?: string; updated_at?: string; flow_current_title?: string }
-export interface Run { id: string; stage: string; status: string; message: string; calls: number; error?: string; cost?: number }
+export type IntakeGroundingStatus = 'checking'|'correcting'|'rechecking'|'passed'|'repaired'|'blocked'|'unverified';
+export interface IntakeGrounding {
+  protocol:'intake-grounding-1';
+  status:IntakeGroundingStatus;
+  corrections:0|1|2;
+  review_call_ids:string[];
+  reason:string;
+  original_candidate_hash:string;
+  candidate_hash:string;
+  input_hash:string;
+  candidate_applied:boolean;
+  error?:string;
+}
+export interface IntakeGroundingPlan {
+  protocol:'intake-grounding-1';
+  max_corrections:1|2;
+  additional_requests_min:1|2;
+  additional_requests_max:3|5|8;
+  within_task_budget:true;
+  includes_full_corrected_candidate_review:true;
+  failure_policy:'retain_evidence_without_applying_candidate';
+}
+export type ProjectMemoryMode = 'off' | 'langmem';
+export interface ProjectMemorySourceRef { source_id: string; excerpt_id: string }
+export interface ProjectMemoryEntry {
+  id: string; statement: string; scope: string; source_refs: ProjectMemorySourceRef[];
+  authority: 'source_statement'; confirmation: 'not_confirmed'; source_version: string; validity: 'current_source';
+}
+export interface ProjectMemoryTrace {
+  mode: 'langmem'; protocol: 'project-langmem-1'; status: 'preparing' | 'ready' | 'failed';
+  consumed?: boolean; reused?: boolean; snapshot_id?: string | null; input_hash?: string;
+  library_version?: '0.0.30'; memory_ids?: string[]; source_refs?: ProjectMemorySourceRef[];
+  extraction_call_ids?: string[]; consumed_stages?: string[]; limitations?: string[]; entries?: ProjectMemoryEntry[];
+}
+export interface BusinessSourceReview {
+  protocol:'noninitial-source-only-1';
+  scope:'generated_requirement_statement_behavior_acceptance_only';
+  source_only:true;
+  coverage_review:false;
+  status:'pending'|'blocked'|'passed';
+  corrections:number;
+  candidate_hash:string;
+  input_hash:string;
+  history:JsonObject[];
+  error?:string;
+}
+export interface Run { id: string; stage: string; status: string; message: string; calls: number; error?: string; cost?: number; intake_grounding?:IntakeGrounding; memory_trace?:ProjectMemoryTrace; business_source_review?:BusinessSourceReview; business_draft_review?:{business_source_review?:BusinessSourceReview} }
 export type BusinessAction = 'interview' | 'organize' | 'explore' | 'clarify' | 'prototype' | 'document' | 'review' | 'prewrite' | 'change';
 export interface BenchmarkInput {target:string;focus:string;source_ids:string[]}
-export interface ActionInput { expected_revision: number; action: BusinessAction; message: string; document_type: string; option_id?: string | null; max_calls?: number | null; target?: JsonObject; benchmark?:BenchmarkInput; attachment_source_ids?:string[]; allow_review_draft?:boolean; draft_request?:{mode:'all'|'required'|'question'|'prewrite';question_id?:string} }
+export interface ActionInput { expected_revision: number; action: BusinessAction; message: string; document_type: string; option_id?: string | null; max_calls?: number | null; target?: JsonObject; benchmark?:BenchmarkInput; attachment_source_ids?:string[]; allow_review_draft?:boolean; intake_resume_task_id?:string|null; draft_request?:{mode:'all'|'required'|'question'|'prewrite';question_id?:string;detail_required_ids?:string[]} }
 export interface BudgetPolicy { mode: 'function_first'|'fixed'|'unlimited'; initial_output_tokens: number; maximum_output_tokens: number; truncation_escalations: number; action_seconds: number | null; input_measure: string; input_allowance: number | null }
-export interface ActionPlan { benchmark?:BenchmarkInput; budget_policies?: Record<string,BudgetPolicy>; plan_hash: string; label: string; stages: string[]; max_calls: number | null; expected_revision: number; pending_text: string; context_scope: string; missing: string[]; recipients: { origin: string; model: string; needs_authorization: boolean }[]; sources: { id: string; title: string; status: string }[]; generation_target?: JsonObject }
+export interface DocumentPreview {
+  version:string;document_type:'prd';input_revision:number;preview_hash:string;first_generation:boolean;notice:string;
+  baseline?:{document_id:string;document_version?:number;draft_revision?:number}|null;
+  counts:{added:number;modified:number;removed:number;pending:number;excluded:number;suggestions:number};
+  changes:{item_id:string;title:string;item_kind:string;change_type:'added'|'modified'|'removed';change_label:string;fields:{field:string;label:string;before:string;after:string;segments:{type:'same'|'added'|'removed';text:string}[]}[]}[];
+  pending_confirmations:{id:string;kind:string;text:string;related_refs:string[]}[];
+  excluded:{id:string;kind:string;title:string;text:string;reason:string}[];
+  ai_suggestions:{id:string;kind:string;title:string;text:string;status:string}[];
+}
+export interface PrewriteLocalFinding { id?:string;code:string;title?:string;message?:string;reason?:string;question?:string;severity:'blocker'|'warning';related_refs?:string[] }
+export interface ActionPlan { benchmark?:BenchmarkInput; budget_policies?: Record<string,BudgetPolicy>; intake_grounding?:IntakeGroundingPlan; intake_resume?:{task_id:string;run_id:string;candidate_hash:string;context_hash:string;generation_skipped:true}; plan_hash: string; label: string; stages: string[]; max_calls: number | null; expected_revision: number; pending_text: string; context_scope: string; missing: string[]; recipients: { origin: string; model: string; needs_authorization: boolean }[]; sources: { id: string; title: string; status: string }[]; generation_target?: JsonObject; document_preview?:DocumentPreview; prewrite_local_findings?:PrewriteLocalFinding[] }
 export interface RequestBudget { limit: number; used: number; reservations: { call_id: string; run_id: string; state: string }[] }
-export interface UserTask { local_recovery_available?: boolean; local_recovery?: {id:string;output_revision:number;candidate_ids:string[];external_model_calls:number}; id: string; action: BusinessAction; label: string; status: string; message: string; created?: string; completed?: string; error?: string; calls: number; max_calls: number | null; request_budget?: RequestBudget; step_states?: { stage: string; status: string }[]; run_ids: string[]; source_ids: string[]; completed_steps: number; stages: string[]; cost: number | null; retry_input?: Partial<ActionInput> }
+export interface UserTask { intake_resume_available?:boolean; local_recovery_available?: boolean; local_recovery?: {id:string;output_revision:number;candidate_ids:string[];external_model_calls:number}; id: string; idempotency_key:string; action: BusinessAction; label: string; status: string; message: string; intake_grounding?:IntakeGrounding; created?: string; completed?: string; error?: string; calls: number; max_calls: number | null; request_budget?: RequestBudget; step_states?: { stage: string; status: string }[]; run_ids: string[]; source_ids: string[]; completed_steps: number; stages: string[]; cost: number | null; retry_input?: Partial<ActionInput> }
+export interface DetailUnknownScopeReviewProperty {
+  readonly path:string; readonly property_key:string; readonly classification:string;
+  readonly known_business:string; readonly unknown_technical:string; readonly explanation:string;
+}
+export interface DetailUnknownScopeReview {
+  readonly requirement_id:string; readonly candidate_id:string; readonly detail_hash:string; readonly review_hash:string;
+  readonly protocol?:string;
+  readonly properties:readonly DetailUnknownScopeReviewProperty[];
+}
 export interface Project extends ProjectSummary {
+  project_memory_mode?:ProjectMemoryMode;
+  detail_unknown_scope_reviews?: readonly DetailUnknownScopeReview[];
   prewrite_review?: JsonObject;
+  question_view?: {
+    open_ids:string[];answered_ids:string[];history_ids:string[];
+    answer_pending_ids:string[];answer_applied_ids:string[];
+    open_groups:{representative_id:string;question_ids:string[];related_refs:string[]}[];
+    duplicate_groups:{representative_id:string;question_ids:string[]}[];
+  };
   product_flow?: {step:number;title:string;content_hash:string;complete:boolean;available:boolean;missing:string[];blockers?:Blocker[];needs_recheck:boolean;retired?:boolean;display_step?:number|null}[];
   product_context?: JsonObject; product_context_proposal?: JsonObject; sketch_review?: JsonObject; benchmark_analysis?:JsonObject;
   requirement_relations?: JsonObject[];
@@ -19,6 +92,7 @@ export interface Project extends ProjectSummary {
   ui?: JsonObject; hashes: Record<string, string | null>; confirmation_issues: string[];
   confirmation_blockers?: Blocker[];
   document_export_readiness?: Record<string, { ready: boolean; issues: { code: string; message: string; question_id?: string }[]; problems?: {question_id:string;title:string;state:string;action:string;message:string;related_refs:string[]}[] }>;
+  document_review_export_readiness?: Record<string, { ready: boolean; issues: { code: string; message: string }[]; warnings: { code: string; message: string }[] }>;
   baselines: JsonObject[]; exports: JsonObject[]; active_baseline_id?: string;
 }
 export interface BackendInfo { runtime_id: string; started_at: string; capabilities: string[]; distribution?: string }
@@ -30,6 +104,7 @@ export class ApiError extends Error {
   constructor(public status: number, public code: string, message: string, public kind: ErrorKind = 'json', public path = '') { super(message); }
 }
 export function requestTimeout(path: string, method = 'GET') {
+  if (method === 'POST' && (path.endsWith('/actions/plan') || path.endsWith('/actions'))) return 120_000;
   if (/\/models\/[^/]+\/test$/.test(path)) return 75_000;
   if (/\/(sources|exports)(\/|$)/.test(path) && method !== 'GET') return 300_000;
   return method === 'GET' ? 15_000 : 30_000;
@@ -68,6 +143,28 @@ export async function api<T = any>(path: string, method = 'GET', body?: unknown,
     catch { kind = 'text'; }
   }
   if (!response.ok) {
+    if (response.status === 403 && kind === 'json' && data?.code === 'CSRF_DENIED') {
+      let reconnected = false;
+      try {
+        const sessionResponse = await fetch('/api/session', {
+          method: 'GET',
+          credentials: 'same-origin',
+          cache: 'no-store',
+          signal: controller.signal
+        });
+        const session = await sessionResponse.json().catch(() => null);
+        if (sessionResponse.ok && session && typeof session.csrf === 'string' && session.csrf.trim()) {
+          setCsrf(session.csrf);
+          reconnected = true;
+        }
+      } catch {
+        // 刷新失败仍保留本次请求已被 CSRF 校验拒绝的事实。
+      }
+      const message = reconnected
+        ? '工作台已重新连接，本次操作未提交，请再点一次原按钮。'
+        : '会话校验失败，本次操作未提交。请重新打开工作台后再试。';
+      throw new ApiError(response.status, data.code, message, 'json', path);
+    }
     if (kind === 'json' && data && (data.code || data.message)) throw new ApiError(response.status, data.code || 'HTTP_ERROR', data.message || '请求失败', 'json', path);
     if (response.status === 422) throw new ApiError(422, 'VALIDATION', '输入格式或必填项不符合要求，请检查当前表单。', 'json', path);
     if (kind === 'json') throw new ApiError(response.status, 'ROUTE_OR_OBJECT', `请求未成功（HTTP ${response.status}）`, 'json', path);
@@ -79,7 +176,8 @@ export async function api<T = any>(path: string, method = 'GET', body?: unknown,
   return data as T;
   } catch (e) {
     if (signal?.aborted && !timedOut) { finish?.(); throw e; }
-    const unknown = method !== 'GET' ? '服务端是否已处理尚未确认，请先刷新核对，避免重复提交。' : '请确认服务和网络正常后重试。';
+    const planning = method === 'POST' && path.endsWith('/actions/plan');
+    const unknown = planning ? '本次核对未完成，输入已保留，可重试计划；尚未提交 AI 任务。' : method !== 'GET' ? '服务端是否已处理尚未确认，请先刷新核对，避免重复提交。' : '请确认服务和网络正常后重试。';
     const error = e instanceof ApiError ? e : new ApiError(0, timedOut ? 'REQUEST_TIMEOUT' : 'NETWORK', (timedOut ? '等待响应超时。' : '连接中断，未取得完整响应。') + unknown, 'network', path);
     finish?.(error.message, true);
     throw error;

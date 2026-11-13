@@ -19,6 +19,21 @@ class Workflow:
         self.store, self.provider = store, provider
         self.tasks = {}
 
+    def _task_progress(self, pid, rid, tid, phase):
+        """Only the current running task/run binding may publish a phase."""
+        if not tid:return
+        import json
+        with self.store.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            saved=db.execute("SELECT payload FROM records WHERE project_id=? AND id=? AND kind='user_task'",(pid,tid)).fetchone()
+            current=json.loads(saved[0]) if saved else None
+            if not current or current.get('status')!='running' or rid not in current.get('run_ids',[]):return
+            saved_run=db.execute("SELECT payload FROM records WHERE project_id=? AND id=? AND kind='run'",(pid,rid)).fetchone()
+            bound_run=json.loads(saved_run[0]) if saved_run else {}
+            if bound_run.get('status')!='running' or bound_run.get('user_task_id')!=tid:return
+            current['message']=phase
+            db.execute("UPDATE records SET payload=? WHERE project_id=? AND id=? AND kind='user_task'",(dumps(current),pid,tid))
+
     def config(self, stage):
         settings=dict(DEFAULT, **(self.store.setting('vision' if stage == 'vision' else 'model') or {}))
         if origin(settings) == 'https://api.deepseek.com':
@@ -33,9 +48,31 @@ class Workflow:
         # Part of the authorized plan/config snapshot, never changed mid-request.
         if stage=='review' and origin(config)=='https://api.deepseek.com':
             config['thinking_disabled']=not config.get('review_thinking',True)
+        if stage in ('ingest','clarify','change'):
+            config['business_source_policy']='noninitial-source-only-1'
+            config['detail_review_protocol_version']=3
+            config['detail_property_reference_encoding']='detail-property-reference-encoding-1'
+            config['detail_unknown_scope_protocol']='detail-unknown-scope-1'
+            config['detail_default_scope_protocol']='detail-technical-scope-2'
+            config['detail_recovery_guard']=True
+            config['recovery_outcome_checks']=True
+            config['detail_correction_protocol_version']=2
+            config['detail_local_graph_kind_protocol']='detail-local-graph-kind-1'
+        if stage in ('ingest','clarify','change') and origin(config)=='https://api.deepseek.com':
+            config['detail_review_protocol_retries']=1
+            config['detail_review_repair_protocol']='detail-review-entry-patch-1'
+            if config.get('structured_output_protocol')=='responses-json-schema-v1' and config.get('json_mode') and config['model'] in ('deepseek-flash','deepseek-v4-pro'):
+                config['detail_review_transport_protocol']='responses-json-schema-v1'
+                if stage in ('ingest','clarify'):
+                    config['detail_correction_policy']='two-corrections-source-seventeen-run-calls-2'
+            config['detail_review_reasoning_effort']='high'
+            config['detail_review_options']={'thinking_disabled':not config.get('review_thinking',True)}
+            config['detail_review_options']['max_tokens']=min(config['review_max_tokens'],output_ceiling(config))
+            config['detail_review_options']['timeout']=max(config['timeout'],300) if config.get('review_thinking',True) else config['timeout']
+            if config.get('review_thinking',True):config['detail_review_options']['reasoning_effort']=config['detail_review_reasoning_effort']
         return config
 
-    def start(self, pid, revision, stage, message, kind='prd', resumed_from=None, *, user_task_id=None, config_override=None, generation_target=None, discussion_target=None, benchmark=None, prewrite=False, allow_review_draft=False, draft_request=None):
+    def start(self, pid, revision, stage, message, kind='prd', resumed_from=None, *, user_task_id=None, config_override=None, generation_target=None, discussion_target=None, benchmark=None, prewrite=False, allow_review_draft=False, draft_request=None, intake_resume=None):
         require(stage in STAGES and stage != 'handoff', 'STAGE_INVALID', '请选择支持的分析阶段')
         require(stage!='interview' or user_task_id,'STAGE_INVALID','需求访谈请通过聊天任务入口保存原话并核对接收端')
         config = copy.deepcopy(config_override or self.config(stage))
@@ -75,9 +112,17 @@ class Workflow:
         if local and user_task_id:
             require(local == approved.get('requirement_recommendation_scope'),
                     'STALE_PLAN', '本条需求范围与已核对计划不一致，请重新核对', 409)
-        issues=execution_issues(p,stage,kind,discussion_target)
+        if intake_resume:
+            from .ingest_recovery import derive_intake_resume
+            require(user_task_id and approved.get('intake_resume')==intake_resume,
+                'INTAKE_RESUME_UNAVAILABLE','续审必须绑定新核对的业务任务。',409)
+            require(derive_intake_resume(self.store,p,intake_resume['task_id'])['identity']==intake_resume,
+                'INTAKE_RESUME_UNAVAILABLE','原候选证据已变化。',409)
+        issues=execution_issues(p,stage,kind,discussion_target,
+            prewrite=prewrite and approved['action']=='prewrite')
         require(not issues,'STAGE_BLOCKED','；'.join(issues),409)
         run = dict(stage=stage, status='queued', revision=revision, message=message, document_type=kind, max_calls=limit, calls=0, attempts=[], events=[], created=now(), error=None, resumed_from=resumed_from, provider={k:v for k,v in config.items() if k not in ('proxy',)}, prompt_version='1.1', cost=None)
+        if intake_resume:run.update(intake_resume=copy.deepcopy(intake_resume),resumed_from=intake_resume['run_id'])
         if stage=='vision' and user_task_id and approved.get('action')=='interview':
             run['vision_for_interview']=True
         if limit is not None:run['request_budget']=initial_budget(limit)
@@ -104,11 +149,13 @@ class Workflow:
         run = self.store.get_record(pid, rid, 'run')
         from .request_budget import RequestBudget
         budget=RequestBudget(self.store,pid,rid,config['max_calls']) if config.get('max_calls') is not None else None
-        calls, repair_count, retries = 0, 0, 0
+        calls, repair_count, retries = run.get('calls',0), 0, 0
         repair_parent = None
         pending_repair = False
         repair_anchor = None
         repair_original = None
+        document_reference_repair_target = None
+        prd_repair_original = None
         interview_anchor = None
         syntax_anchor = None
         prewrite_repair = None
@@ -129,23 +176,366 @@ class Workflow:
             require(current_sources <= set(p['grants'][origin(config)]['source_ids']), 'DATA_AUTH_REQUIRED', '新增材料尚未授权发送，请检查材料范围')
             from .prewrite import review_project
             reviewed_project=review_project(p) if run.get('prewrite') else p
-            messages, excerpts, omitted = assemble(reviewed_project, run['stage'], run['message'], config, self.store.folder, run['document_type'], run.get('generation_target'), pending_images_only=bool(run.get('user_task_id')),vision_for_interview=run.get('vision_for_interview',False),
-                requirement_recommendation_scope=run.get('requirement_recommendation_scope'),**({'draft_request':run['draft_request']} if run.get('draft_request') else {}),**({'benchmark':run['benchmark']} if run.get('benchmark') else {}))
+            resume_packet=None
+            if run.get('intake_resume'):
+                from .ingest_recovery import derive_intake_resume
+                resume_packet=derive_intake_resume(self.store,p,run['intake_resume']['task_id'])
+                require(resume_packet['identity']==run['intake_resume'],'INTAKE_RESUME_UNAVAILABLE','续审出站前原证据已变化。',409)
+                messages,excerpts,omitted=resume_packet['messages'],resume_packet['excerpts'],[]
+            else:
+                messages, excerpts, omitted = assemble(reviewed_project, run['stage'], run['message'], config, self.store.folder, run['document_type'], run.get('generation_target'), pending_images_only=bool(run.get('user_task_id')),vision_for_interview=run.get('vision_for_interview',False),
+                    requirement_recommendation_scope=run.get('requirement_recommendation_scope'),discussion_target=run.get('discussion_target'),**({'draft_request':run['draft_request']} if run.get('draft_request') else {}),**({'benchmark':run['benchmark']} if run.get('benchmark') else {}))
             import json
             header=json.loads(messages[0]['content'].split('可信任务头：',1)[1])
+            from .skill_guidance import freeze as freeze_skills, preserve as preserve_skills
+            frozen_skills=freeze_skills(messages[0]['content'])
             business_protocol = header.get('response_protocol') == 'business-draft-v1'
-            assembled_context=json.loads(messages[1]['content'][0]['text'])
+            if business_protocol and header.get('detail_required') and header.get('draft_scope')=='single_row' and not resume_packet:
+                from .ingest_recovery import rejected_detail_reference
+                from .business_draft import attach_rejected_detail_reference
+                reference=rejected_detail_reference(self.store,p,run,json.loads(messages[1]['content'][0]['text']),excerpts)
+                if reference is not None:
+                    messages=attach_rejected_detail_reference(messages,reference,config)
+                    audit={k:copy.deepcopy(v) for k,v in reference.items() if k!='detail_contract'}
+                    self.store.update_run(pid,rid,rejected_detail_reference=audit)
+                    events.append(dict(time=now(),phase=('已带入完整未采纳详细候选，仍须正常生成与审查' if reference['status']=='unaccepted_ai_candidate'
+                        else '未复用完整旧详细候选：'+reference['reason'])))
+            from .dsh_intake import eligible as dsh_eligible
+            use_dsh = not resume_packet and config.get('intake_engine') == 'deepseek-harness' and dsh_eligible(run, header)
+            from .dsh_intake import SDK_VERSION as dsh_version, VERSION as dsh_intake_version
+            intake_runtime=dict(engine='deepseek-harness' if use_dsh else 'direct',
+                version=dsh_version if use_dsh else None,adapter_version=dsh_intake_version if use_dsh else None,
+                transport='chat_completions' if use_dsh else config.get('structured_output_protocol','chat_completions'))
+            self.store.update_run(pid,rid,intake_engine=intake_runtime['engine'],intake_runtime=intake_runtime)
+            bounded_detail=bool(business_protocol and header.get('detail_required') and
+                (run.get('draft_request') or {}).get('mode')!='question' and config.get('detail_correction_policy'))
+            if bounded_detail:
+                require(config['detail_correction_policy'] in ('two-corrections-seven-run-calls-1','two-corrections-source-seventeen-run-calls-2'),
+                    'DETAIL_CORRECTION_POLICY_INVALID','不支持的详细定义有限纠正策略。')
+            detail_run_cap=17 if config.get('detail_correction_policy')=='two-corrections-source-seventeen-run-calls-2' else 7
+            def available_calls(count=1):
+                if bounded_detail:
+                    used=self.store.get_record(pid,rid,'run')['calls']
+                    require(used+count<=detail_run_cap,'DETAIL_RUN_CALL_LIMIT',
+                        f'本轮详细定义请求已用 {used}/{detail_run_cap}，后续步骤需要至少 {count} 次；未发送，原候选与审查结果保留。')
+                if budget:budget.available(count)
+            assembled_context=copy.deepcopy(resume_packet['context']) if resume_packet else json.loads(messages[1]['content'][0]['text'])
             platform_background=assembled_context.get('platform_knowledge')
             authorization=dict(user_task_id=run.get('user_task_id'),run_id=rid,approved_max_tokens=output_ceiling(config),
                 initial_max_tokens=out_budget,budget_policy=policy_summary(config),
                 approved_max_calls=config['max_calls'],config_hash=digest(run['provider']),
                 prompt_hash=digest(messages[0]['content'].split('可信任务头：',1)[0]),schema_hash=digest(header['schema']),
                 profile_hash=digest(header.get('content_profile')),input_revision=p['revision'],assembly_version=header.get('response_protocol') or ('prd-plan-4' if run['stage']=='prd' else 'runtime-1.1'))
+            if frozen_skills:
+                authorization['builtin_skills']=copy.deepcopy(frozen_skills['manifest'])
+            authorization['intake_runtime']=copy.deepcopy(intake_runtime)
             if platform_background:
                 authorization['platform_knowledge']={k:platform_background[k]
                     for k in ('bundle_id','sha256','generated_at','classification','retrieval')}
             self.store.update_run(pid, rid, status='running', sent_excerpt_ids=[x['id'] for x in excerpts], omitted_excerpt_ids=omitted, input_hash=digest(messages),authorization=authorization,input_metrics=input_metrics(messages),source_snapshot=source_snapshot(p,excerpts))
+            auxiliary_evidence={}
+            detail_review_protocol_retries=0
+            detail_review_repaired_candidates=set()
+            async def auxiliary(aux_messages,phase,protocol,parent,*,source_review=False):
+                """Same authorized run/config/budget; no hidden semantic requests."""
+                nonlocal calls
+                require(self.store.get_record(pid,rid,'run')['status']!='cancelled','CANCELLED','任务已取消，未继续核对。')
+                if resume_packet:
+                    from .ingest_recovery import derive_intake_resume
+                    require(derive_intake_resume(self.store,self.store.get(pid),run['intake_resume']['task_id'])['identity']==run['intake_resume'],
+                        'INTAKE_RESUME_UNAVAILABLE','续审出站前原来源或证据已变化。',409)
+                available_calls()
+                effective=dict(config,max_tokens=out_budget)
+                config_role='detail_source_review' if source_review and config.get('detail_review_options') else None
+                if config_role:effective.update(config['detail_review_options'])
+                if config_role and 'max_tokens' in config['detail_review_options']:
+                    effective['max_tokens']=min(effective['max_tokens'],authorization['approved_max_tokens'])
+                check_context(aux_messages,effective)
+                if budget:budget.available()
+                aux_id=ident('CALL')
+                aux_header=json.loads(aux_messages[0]['content'].split('可信任务头：',1)[1])
+                if source_review and config.get('detail_review_transport_protocol') is not None:
+                    require(config['detail_review_transport_protocol']=='responses-json-schema-v1'
+                        and origin(effective)=='https://api.deepseek.com' and effective['model'] in ('deepseek-flash','deepseek-v4-pro')
+                        and effective.get('json_mode') and effective.get('structured_output_protocol')=='responses-json-schema-v1'
+                        and getattr(self.provider,'business_draft_protocol',None)
+                        and aux_header.get('transport_protocol')==config['detail_review_transport_protocol']
+                        and aux_header.get('strict_json_protocol')=='detail-review-strict-json-1',
+                        'DETAIL_REVIEW_TRANSPORT_INVALID','当前接收端、模型或审查消息不支持已冻结的严格结构化传输；未发送审查请求。')
+                aux_auth=dict(authorization,repair_protocol=protocol,schema_hash=digest(aux_header['schema']),
+                    prompt_hash=digest(aux_messages[0]['content'].split('可信任务头：',1)[0]))
+                safe_effective={k:v for k,v in effective.items() if k!='proxy'}
+                aux_auth.update(config_role=config_role,effective_config=safe_effective,effective_config_hash=digest(safe_effective))
+                aux_evidence=ModelCallEvidence(self.store.folder,aux_id,rid,run['stage'],config['model'],
+                    origin(config),parent,self.provider.key(config),request_budget=budget)
+                auxiliary_evidence[aux_id]=aux_evidence
+                aux_evidence.request_context(effective,aux_messages,aux_auth,input_metrics(aux_messages))
+                number=self.store.get_record(pid,rid,'run')['calls']+1 if budget else calls+1
+                if not budget:calls+=1
+                aux_attempt=dict(call=number,call_id=aux_id,repair_of=parent,max_tokens=effective['max_tokens'],
+                    protocol=protocol,authorization_hash=digest(aux_auth),actual_input_hash=digest(aux_messages),
+                    config_role=config_role,effective_config_hash=digest(safe_effective))
+                events.append(dict(time=now(),phase=phase,call=number,call_id=aux_id))
+                self.store.update_run(pid,rid,events=events,**({} if budget else {'calls':calls}))
+                self._task_progress(pid,rid,run.get('user_task_id'),phase+f'（本步骤第 {number} 次模型请求）')
+                started=time.monotonic()
+                try:
+                    result,metadata=await asyncio.wait_for(self.provider.request(effective,aux_messages,
+                        evidence=aux_evidence),timeout=effective['timeout'])
+                    if budget:
+                        require(aux_evidence.value.get('request_state')=='response_received','BUDGET_AUTH_REQUIRED','辅助核对缺少出站计数绑定。')
+                        calls=self.store.get_record(pid,rid,'run')['calls']
+                    require(self.store.get_record(pid,rid,'run')['status']!='cancelled','CANCELLED','任务已取消，核对结果未采用。')
+                    aux_attempt.update(metadata,validation_result='response_received')
+                    aux_evidence.finish('response_received',round(time.monotonic()-started,3))
+                    return result,aux_id
+                except (Problem,asyncio.TimeoutError) as error:
+                    if budget:calls=self.store.get_record(pid,rid,'run')['calls']
+                    if isinstance(error,asyncio.TimeoutError):error=Problem('TIMEOUT','语义核对请求超时，原候选和已有检查结果保留。')
+                    error.auxiliary_call_id=aux_id
+                    aux_attempt.update(error=error.code,validation_result=error.code)
+                    aux_evidence.finish(error.code,round(time.monotonic()-started,3))
+                    raise error
+                except asyncio.CancelledError:
+                    if budget:calls=self.store.get_record(pid,rid,'run')['calls']
+                    aux_attempt.update(error='CANCELLED',validation_result='CANCELLED')
+                    aux_evidence.finish('CANCELLED',round(time.monotonic()-started,3))
+                    raise
+                except Exception:
+                    if budget:calls=self.store.get_record(pid,rid,'run')['calls']
+                    aux_attempt.update(error='INTERNAL_ERROR',validation_result='INTERNAL_ERROR')
+                    aux_evidence.finish('INTERNAL_ERROR',round(time.monotonic()-started,3))
+                    raise
+                finally:
+                    aux_attempt['evidence_limitations']=aux_evidence.limitations[:]
+                    attempts.append(aux_attempt)
+                    self.store.update_run(pid,rid,attempts=sorted(attempts,key=lambda a:a['call']))
+            def protocol_recovery_slot(required):
+                nonlocal detail_review_protocol_retries
+                if (header.get('initial_intake') or detail_run_cap!=17 or
+                    not config.get('detail_review_protocol_retries') or detail_review_protocol_retries>=1):return False
+                available_calls(required)
+                detail_review_protocol_retries+=1
+                return True
+
+            def protocol_failure(call_id,error):
+                record=auxiliary_evidence[call_id]
+                record.value['semantic_protocol_error']=dict(code=error.code,message=error.message)
+                record.finish(error.code)
+                next(a for a in attempts if a['call_id']==call_id).update(validation_result=error.code)
+                self.store.update_run(pid,rid,attempts=sorted(attempts,key=lambda a:a['call']))
+
+            async def checked_source_challenge(review_messages,phase,parent,validate,*,source_review=False):
+                # One fresh independent review, never editing the invalid hash
+                # or reusing an old pass. Semantic findings are valid results.
+                while True:
+                    review_id=None;response=None
+                    try:
+                        response,review_id=await auxiliary(review_messages,phase,
+                            'intake-grounding-challenge-2',parent,source_review=source_review)
+                        checked=validate(response)
+                        return response,review_id,checked
+                    except Problem as error:
+                        failed_id=review_id or getattr(error,'auxiliary_call_id',None)
+                        if error.code not in ('INTAKE_GROUNDING_INVALID','SCHEMA_INVALID') or not failed_id:raise
+                        protocol_failure(failed_id,error)
+                        expected=json.loads(review_messages[0]['content'].split('可信任务头：',1)[1])['schema']['properties']
+                        if (isinstance(response,dict) and response.get('findings') and
+                            all(response.get(key)==expected[key]['const'] for key in ('candidate_hash','input_hash'))):
+                            # A malformed finding cannot erase other, already
+                            # bound semantic findings through a fresh empty pass.
+                            raise
+                        if not protocol_recovery_slot(1):raise
+                        auxiliary_evidence[failed_id].value['protocol_recovery']=dict(mode='fresh_same_input_review',
+                            input_hash=digest(review_messages),shared_run_allowance=1)
+                        auxiliary_evidence[failed_id].save()
+                        parent=failed_id;phase='重新独立核对来源协议（同一候选，仅一次）'
+
+            async def source_patch_request(patch_messages,phase,parent):
+                try:
+                    return await auxiliary(patch_messages,phase,'intake-grounding-patch-2',parent)
+                except Problem as error:
+                    from .format_repair import anchor,instruction,literal_atoms
+                    failed_id=getattr(error,'auxiliary_call_id',None)
+                    if error.code!='SCHEMA_INVALID' or not failed_id:raise
+                    failed=auxiliary_evidence[failed_id];original_anchor=anchor(failed)
+                    if original_anchor is None:raise
+                    # A valid JSON with wrong schema, duplicate members or
+                    # business errors is not a syntax-only repair candidate.
+                    from .core import strict_model_json
+                    raw=failed.value['final_output'].strip()
+                    if raw.startswith('```json\n') and raw.endswith('\n```'):raw=raw[8:-4]
+                    try:strict_model_json(raw)
+                    except json.JSONDecodeError:pass
+                    except ValueError:raise error
+                    else:raise error
+                    if not protocol_recovery_slot(2):raise
+                    messages=patch_messages+[dict(role='user',content=instruction(error.message,failed.value['final_output']))]
+                    failed.value['protocol_recovery']=dict(mode='literal_preserving_patch_format',
+                        anchor_hash=digest(original_anchor),shared_run_allowance=1)
+                    failed.save()
+                    result,repair_id=await auxiliary(messages,'仅修复来源补丁JSON格式；原文与引用保持不变',
+                        'intake-grounding-patch-2',failed_id)
+                    record=auxiliary_evidence[repair_id]
+                    record.value['source_patch_format_repair']=dict(original_call_id=failed_id,
+                        anchor_hash=digest(original_anchor),status='pending')
+                    record.save()
+                    if anchor(record)!=original_anchor or literal_atoms(json.dumps(result,ensure_ascii=False,allow_nan=False))!=original_anchor:
+                        record.value['source_patch_format_repair']['status']='rejected'
+                        error=Problem('SEMANTIC_BLOCKED','来源补丁格式修复改变了原文字面内容、顺序或证据身份。')
+                        protocol_failure(repair_id,error)
+                        raise error
+                    record.value['source_patch_format_repair']['status']='literal_preserved';record.save()
+                    return result,repair_id
+
+            async def challenge_detail(plan,result,review_id):
+                if not bounded_detail or any(r['status']!='passed' or r['findings'] for r in result.values()):
+                    return result,review_id
+                from . import detail_semantics,intake_grounding
+                packet=detail_semantics.challenge_plan(plan,result)
+                review_evidence=auxiliary_evidence[review_id]
+                review_evidence.value['detail_source_challenge']=dict(status='pending',
+                    candidate_hash=packet['candidate_hash'],input_hash=packet['input_hash'],full_review_outcomes=copy.deepcopy(result))
+                review_evidence.save()
+                response,challenge_id,merged=await checked_source_challenge(
+                    detail_semantics.challenge_messages(packet,transport_protocol=config.get('detail_review_transport_protocol')),
+                    '正在独立核对详细属性自身来源、条件与范围',review_id,
+                    lambda response:detail_semantics.challenge_outcomes(plan,packet,response,result),source_review=True)
+                challenge_evidence=auxiliary_evidence[challenge_id]
+                challenge_evidence.value['detail_source_challenge']=dict(full_review_call_id=review_id,
+                    candidate_hash=packet['candidate_hash'],input_hash=packet['input_hash'],outcomes=copy.deepcopy(merged))
+                challenge_evidence.save()
+                review_evidence.value['detail_source_challenge'].update(status='completed',call_id=challenge_id)
+                review_evidence.save()
+                return merged,challenge_id
+            async def review_detail(plan,phase,parent,scope_feedback=None):
+                nonlocal detail_review_protocol_retries
+                from . import detail_semantics
+                review_messages=detail_semantics.scope_correction_messages(
+                    detail_semantics.messages(plan,transport_protocol=config.get('detail_review_transport_protocol')),scope_feedback)
+                while True:
+                    try:
+                        original,review_id=await auxiliary(review_messages,phase,plan['version'],parent,source_review=True)
+                    except Problem as error:
+                        failed_id=getattr(error,'auxiliary_call_id',None)
+                        if error.code!='SCHEMA_INVALID' or not failed_id or not protocol_recovery_slot(2):raise
+                        protocol_failure(failed_id,error)
+                        auxiliary_evidence[failed_id].value['protocol_recovery']=dict(mode='fresh_same_input_review',
+                            input_hash=digest(review_messages),shared_run_allowance=1)
+                        auxiliary_evidence[failed_id].save()
+                        parent=failed_id;phase='重新完整核对审查协议（同一候选，仅一次）'
+                        continue
+                    normalized,changes=detail_semantics.normalize_review(original)
+                    if changes:
+                        normalization=dict(rule='supported-empty-correction-scope-2',input_hash=digest(original),
+                            output_hash=digest(normalized),changes=changes)
+                        review_evidence=auxiliary_evidence[review_id]
+                        review_evidence.value.setdefault('response_normalizations',[]).append(normalization)
+                        review_evidence.value['normalized_detail_review']=copy.deepcopy(normalized)
+                        review_evidence.save()
+                        next(a for a in attempts if a['call_id']==review_id).setdefault('response_normalizations',[]).append(normalization)
+                    try:
+                        normalized,decoding=detail_semantics.decode_review(plan,normalized)
+                        if decoding is not None:
+                            review_evidence=auxiliary_evidence[review_id]
+                            review_evidence.value.update(property_reference_decoding=decoding,canonical_detail_review=copy.deepcopy(normalized))
+                            review_evidence.save()
+                        result=detail_semantics.validate(plan,normalized)
+                        structures={key:value['recovery_structure_guard'] for key,value in result.items() if 'recovery_structure_guard' in value}
+                        if structures:
+                            auxiliary_evidence[review_id].value['recovery_structure_guard']=structures
+                            auxiliary_evidence[review_id].save()
+                        resolutions={key:value['quote_reference_resolution'] for key,value in result.items() if 'quote_reference_resolution' in value}
+                        if resolutions:
+                            auxiliary_evidence[review_id].value['quote_reference_resolution']=resolutions
+                            auxiliary_evidence[review_id].save()
+                        return await challenge_detail(plan,result,review_id)
+                    except Problem as error:
+                        if error.code!='DETAIL_REVIEW_INVALID':raise
+                        auxiliary_evidence[review_id].value['semantic_protocol_error']=dict(code=error.code,message=error.message)
+                        auxiliary_evidence[review_id].finish(error.code)
+                        review_attempt=next(a for a in attempts if a['call_id']==review_id)
+                        review_attempt.update(validation_result=error.code,semantic_protocol_error=dict(code=error.code,message=error.message))
+                        self.store.update_run(pid,rid,attempts=sorted(attempts,key=lambda a:a['call']))
+                        if config.get('detail_review_repair_protocol')=='detail-review-entry-patch-1':
+                            from . import detail_review_repair
+                            candidate_identity=digest([(r['row_key'],r['candidate_hash']) for r in plan['rows']])
+                            if (candidate_identity in detail_review_repaired_candidates or
+                                (detail_run_cap==17 and detail_review_protocol_retries>=1) or
+                                not config.get('detail_review_protocol_retries')):raise
+                            packet=detail_review_repair.prepare(plan,normalized)
+                            # Ambiguous/global defects remain rejected. Never fabricate
+                            # placeholder checks to discover or conceal further errors.
+                            if not packet:
+                                # Only a missing/mismatched global quote-pool
+                                # identity permits a fresh full review. Other
+                                # mixed/partial defects retain the original reject.
+                                if isinstance(normalized,dict) and normalized.get('quote_pool_hash')==plan.get('quote_pool_hash'):raise
+                                if not protocol_recovery_slot(2):raise
+                                auxiliary_evidence[review_id].value['protocol_recovery']=dict(mode='fresh_same_input_review',
+                                    input_hash=digest(review_messages),shared_run_allowance=1)
+                                auxiliary_evidence[review_id].save()
+                                parent=review_id;phase='重新完整核对审查协议（同一候选，仅一次）'
+                                continue
+                            auxiliary_evidence[review_id].value['review_entry_diagnostics']={k:copy.deepcopy(v) for k,v in packet.items() if k!='original'}
+                            auxiliary_evidence[review_id].save()
+                            if detail_run_cap==17:available_calls(2)
+                            elif budget:budget.available()
+                            detail_review_repaired_candidates.add(candidate_identity)
+                            if detail_run_cap==17:detail_review_protocol_retries+=1
+                            patch,patch_id=await auxiliary(detail_review_repair.messages(plan,packet,transport_protocol=config.get('detail_review_transport_protocol')),
+                                '核对错误审查条目（同一候选，仅一次）',detail_review_repair.PROTOCOL,review_id,source_review=True)
+                            patch_evidence=auxiliary_evidence[patch_id]
+                            patch_evidence.value['review_entry_repair_input']=dict(original_review_call_id=review_id,
+                                plan_hash=packet['plan_hash'],normalized_review_hash=packet['review_hash'],
+                                raw_review_hash=digest(original),diagnostics=copy.deepcopy(packet['slots']))
+                            try:
+                                merged,result,audit=detail_review_repair.apply(plan,packet,patch,assembly=patch_evidence.value)
+                            except Problem as patch_error:
+                                if 'review_entry_repair' in patch_evidence.value:
+                                    patch_evidence.value['review_entry_repair']['full_strict_validation']=patch_error.code
+                                patch_evidence.value['semantic_protocol_error']=dict(code=patch_error.code,message=patch_error.message)
+                                patch_evidence.finish(patch_error.code)
+                                next(a for a in attempts if a['call_id']==patch_id).update(validation_result=patch_error.code)
+                                self.store.update_run(pid,rid,attempts=sorted(attempts,key=lambda a:a['call']))
+                                raise
+                            patch_evidence.value.update(merged_detail_review=merged,review_entry_repair=audit,
+                                quote_reference_resolution={key:value['quote_reference_resolution'] for key,value in result.items() if 'quote_reference_resolution' in value},
+                                recovery_structure_guard={key:value['recovery_structure_guard'] for key,value in result.items() if 'recovery_structure_guard' in value})
+                            patch_evidence.finish('passed')
+                            next(a for a in attempts if a['call_id']==patch_id).update(validation_result='passed',review_entry_repair=audit)
+                            self.store.update_run(pid,rid,attempts=sorted(attempts,key=lambda a:a['call']))
+                            return await challenge_detail(plan,result,patch_id)
+                        if detail_run_cap==17:
+                            if isinstance(normalized,dict) and normalized.get('quote_pool_hash')==plan.get('quote_pool_hash'):raise
+                            if not protocol_recovery_slot(2):raise
+                            auxiliary_evidence[review_id].value['protocol_recovery']=dict(mode='fresh_same_input_review',
+                                input_hash=digest(review_messages),shared_run_allowance=1)
+                            auxiliary_evidence[review_id].save()
+                            parent=review_id;phase='重新完整核对审查协议（同一候选，仅一次）'
+                            continue
+                        if detail_review_protocol_retries>=min(config.get('detail_review_protocol_retries',0),1):raise
+                        if budget:budget.available()
+                        detail_review_protocol_retries+=1
+                        review_messages=detail_semantics.scope_correction_messages(
+                    detail_semantics.messages(plan,transport_protocol=config.get('detail_review_transport_protocol')),scope_feedback)+[dict(role='user',content=dumps(dict(
+                            instruction='上次审查协议无效。候选与来源保持原样，仅重新完成审查；按精确错误核对原引用，不能补造引文、改候选或因修复协议而改成通过。全部属性、状态和路径仍须完整核对。',
+                            validator_error=dict(code=error.code,message=error.message),previous_review=original)))]
+                        parent=review_id
+                        phase='重新核对审查协议与来源引用（同一候选，仅一次）'
+            memory_trace=None
+            from . import project_memory
+            if not resume_packet and project_memory.enabled(p,run['stage']):
+                def memory_progress(trace):
+                    self.store.update_run(pid,rid,memory_trace=copy.deepcopy(trace))
+                memory_trace=await project_memory.prepare(self.store,p,excerpts,run['stage'],auxiliary,config,memory_progress)
+                messages=project_memory.attach(messages,memory_trace,run['stage'],excerpts)
+                check_context(messages,config)
+                self.store.update_run(pid,rid,input_hash=digest(messages),input_metrics=input_metrics(messages))
             while True:
+                available_calls()
+                messages=preserve_skills(messages,frozen_skills)
+                authorization['prompt_hash']=digest(messages[0]['content'].split('可信任务头：',1)[0])
                 state = self.store.get_record(pid, rid, 'run')
                 require(state['status'] != 'cancelled', 'CANCELLED', '任务已取消；已发请求仍可能计费')
                 check_context(messages, config)
@@ -153,21 +543,55 @@ class Workflow:
                 if pending_repair:
                     repair_count += 1
                     pending_repair = False
-                if not budget:calls += 1
-                call_id = ident('CALL')
-                evidence = ModelCallEvidence(self.store.folder, call_id, rid, run['stage'],
-                                             config['model'], origin(config), repair_parent,
-                                             self.provider.key(config),request_budget=budget)
-                evidence.request_context(dict(config,max_tokens=out_budget),messages,authorization,input_metrics(messages))
-                attempt = dict(call=len(attempts)+1, call_id=call_id, repair_of=repair_parent,max_tokens=out_budget,
-                    authorization_hash=digest(authorization),actual_input_hash=digest(messages))
-                events.append(dict(time=now(), phase='调用模型', call=len(attempts)+1, call_id=call_id))
-                self.store.update_run(pid, rid, events=events,**({} if budget else {'calls':calls}))
+                if resume_packet:
+                    from .ingest_recovery import IntakeResumeAudit
+                    call_id=resume_packet['identity']['call_id']
+                    evidence=IntakeResumeAudit(self.store,pid,rid,resume_packet['identity'])
+                    evidence.save()
+                    attempt={}
+                else:
+                    if not budget and not use_dsh:calls += 1
+                    call_id = ident('CALL')
+                    evidence = ModelCallEvidence(self.store.folder, call_id, rid, run['stage'],
+                                                 config['model'], origin(config), repair_parent,
+                                                 self.provider.key(config),request_budget=budget)
+                    evidence.request_context(dict(config,max_tokens=out_budget),messages,authorization,input_metrics(messages))
+                    attempt = dict(call=calls if not budget else self.store.get_record(pid,rid,'run')['calls']+1, call_id=call_id, repair_of=repair_parent,max_tokens=out_budget,
+                        authorization_hash=digest(authorization),actual_input_hash=digest(messages))
+                    if memory_trace is not None and memory_trace.get('status')=='ready' and not use_dsh:
+                        original_before_send=evidence.before_send
+                        def memory_main_dispatch(effective, original=original_before_send, number=attempt['call']):
+                            # Keep reservation/dispatch evidence first; no new request or retry.
+                            original(effective)
+                            self._task_progress(pid,rid,run.get('user_task_id'),f'正在处理本轮需求（本步骤第 {number} 次模型请求）')
+                        evidence.before_send=memory_main_dispatch
+                    events.append(dict(time=now(), phase='调用模型', call=len(attempts)+1, call_id=call_id))
+                    self.store.update_run(pid, rid, events=events,**({} if budget else {'calls':calls}))
                 value = None
+                raw_prd_plan = None
                 call_started = time.monotonic()
                 try:
-                    value, meta = await asyncio.wait_for(self.provider.request(dict(config, max_tokens=out_budget), messages, evidence=evidence), timeout=config['timeout'])
-                    if budget:
+                    if resume_packet:
+                        value,meta=copy.deepcopy(resume_packet['candidate']),{}
+                    elif use_dsh:
+                        from .dsh_intake import request as dsh_request
+                        base_calls = calls
+                        def dsh_dispatch(count):
+                            nonlocal calls
+                            calls = self.store.get_record(pid,rid,'run')['calls'] if budget else base_calls + count
+                            if not budget:self.store.update_run(pid,rid,calls=calls)
+                        def dsh_progress(phase):
+                            events.append(dict(time=now(),phase=phase,call_id=call_id))
+                            self.store.update_run(pid,rid,events=events)
+                            self._task_progress(pid,rid,run.get('user_task_id'),phase)
+                        value,meta = await dsh_request(dict(config,max_tokens=out_budget),messages,
+                            self.provider.key(config),evidence,on_dispatch=dsh_dispatch,on_progress=dsh_progress)
+                    else:
+                        value, meta = await asyncio.wait_for(self.provider.request(dict(config, max_tokens=out_budget), messages, evidence=evidence), timeout=config['timeout'])
+                    if memory_trace is not None and project_memory.present_in(messages,memory_trace):
+                        memory_trace.update(consumed=True,consumed_stages=[run['stage']],consumed_input_hash=digest(messages))
+                        memory_progress(memory_trace)
+                    if budget and not use_dsh and not resume_packet:
                         require(evidence.value.get('request_state')=='response_received','BUDGET_AUTH_REQUIRED','模型响应缺少出站计数绑定，未采纳结果')
                         calls=self.store.get_record(pid,rid,'run')['calls']
                     attempt.update(meta)
@@ -196,8 +620,296 @@ class Workflow:
                             business_reference_plan=prepare_business_refs(value,excerpts)
                             if business_reference_plan:raise Problem('BUSINESS_REFERENCE_INVALID','业务草稿存在无效来源编号，需要核对本轮材料。')
                         from .business_draft import adapt
+                        raw_business=copy.deepcopy(value)
                         raw_hash = digest(value)
-                        value, business_draft_review = adapt(value, p, excerpts, run['stage'], run.get('requirement_recommendation_scope'),draft_request=run.get('draft_request'))
+                        value, business_draft_review = adapt(value, p, excerpts, run['stage'], run.get('requirement_recommendation_scope'),draft_request=run.get('draft_request'),initial_intake_scope=header.get('initial_intake',False))
+                        if header.get('initial_intake'):
+                            from . import intake_grounding
+                            grounding=dict(protocol=intake_grounding.VERSION,status='checking',corrections=0,
+                                review_protocol=intake_grounding.PAIRED_VERSION,coverage_protocol=intake_grounding.COVERAGE_VERSION,
+                                challenge_protocol=intake_grounding.CHALLENGE_VERSION,
+                                challenge_call_ids=[],review_call_ids=[],reason='正在逐字段核对来源，并检查已答决定是否完整带入。',
+                                original_candidate_hash=raw_hash,candidate_hash=raw_hash,
+                                input_hash=digest(assembled_context),candidate_applied=False)
+                            grounding_history=[]
+                            def save_grounding():
+                                evidence.value['intake_grounding']=copy.deepcopy(grounding)
+                                evidence.value['intake_grounding_history']=copy.deepcopy(grounding_history)
+                                evidence.save()
+                                self.store.update_run(pid,rid,intake_grounding=copy.deepcopy(grounding))
+                            save_grounding()
+                            try:
+                                for grounding_round in range(intake_grounding.MAX_CORRECTIONS+1):
+                                    grounding_plan=intake_grounding.prepare(raw_business,assembled_context)
+                                    grounding['candidate_hash']=grounding_plan['candidate_hash']
+                                    available_calls(2)
+                                    grounding.update(coverage_status=None,challenge_status=None,
+                                        reason='正在核对全部已答子决定是否完整带入，并检查重复追问。')
+                                    save_grounding()
+                                    response,review_id=await auxiliary(intake_grounding.coverage_messages(grounding_plan),
+                                        grounding['reason'],intake_grounding.COVERAGE_VERSION,call_id)
+                                    grounding['review_call_ids'].append(review_id)
+                                    grounding_history.append(dict(call_id=review_id,kind='coverage',
+                                        candidate_hash=grounding_plan['candidate_hash'],response=copy.deepcopy(response)))
+                                    save_grounding()
+                                    checked=intake_grounding.validate_coverage(grounding_plan,response)
+                                    grounding_history[-1]['validation']=copy.deepcopy(checked)
+                                    auxiliary_evidence[review_id].value['intake_grounding_validation']=copy.deepcopy(checked)
+                                    auxiliary_evidence[review_id].save()
+                                    grounding.update(coverage_status=checked['status'],
+                                        reason='正在独立质疑来源关系：核查位置、权限、现状、时序与不必要追问。')
+                                    save_grounding()
+                                    challenge_response,challenge_id=await auxiliary(
+                                        intake_grounding.challenge_messages(grounding_plan),grounding['reason'],
+                                        intake_grounding.CHALLENGE_VERSION,review_id)
+                                    grounding['challenge_call_ids'].append(challenge_id)
+                                    grounding_history.append(dict(call_id=challenge_id,kind='source_challenge',
+                                        candidate_hash=grounding_plan['candidate_hash'],response=copy.deepcopy(challenge_response)))
+                                    save_grounding()
+                                    challenge=intake_grounding.validate_challenge(grounding_plan,challenge_response)
+                                    grounding_history[-1]['validation']=copy.deepcopy(challenge)
+                                    auxiliary_evidence[challenge_id].value['intake_grounding_challenge']=copy.deepcopy(challenge)
+                                    auxiliary_evidence[challenge_id].save()
+                                    grounding['challenge_status']=challenge['status']
+                                    checked['findings'].extend(copy.deepcopy(challenge['findings']))
+                                    grounding['local_findings']=intake_grounding.local_findings(grounding_plan)
+                                    checked['findings'].extend(copy.deepcopy(grounding['local_findings']))
+                                    checked['status']='blocked' if checked['findings'] else 'passed'
+                                    review_id=challenge_id
+                                    save_grounding()
+                                    if checked['status']=='passed':
+                                        grounding.update(status='repaired' if grounding_round else 'passed',
+                                            reason='已完成已答覆盖与独立来源核查，初稿仍待人工核对。')
+                                        break
+                                    if grounding_round==intake_grounding.MAX_CORRECTIONS:
+                                        grounding.update(status='blocked',reason='纠正后仍有来源或已答完整性问题；候选只保留为证据，未写入初稿，已有内容不变。')
+                                        raise Problem('INTAKE_GROUNDING_BLOCKED',grounding['reason'],model_repair_allowed=False)
+                                    # Do not spend a patch request without room to review the
+                                    # entire result and source challenge. Every outbound uses auxiliary.
+                                    available_calls(3)
+                                    grounding.update(status='correcting',reason=f'正在进行第{grounding_round+1}轮纠正：补齐漏引和已答约束，纠正无依据断言；最多纠正两轮。')
+                                    save_grounding()
+                                    patch_schema,patch_messages=intake_grounding.correction_messages(grounding_plan,checked)
+                                    patch,patch_id=await auxiliary(patch_messages,grounding['reason'],
+                                        intake_grounding.PATCH_VERSION,review_id)
+                                    grounding_history.append(dict(call_id=patch_id,kind='patch',patch=copy.deepcopy(patch)))
+                                    save_grounding()
+                                    corrected=intake_grounding.apply_correction(grounding_plan,patch,patch_schema)
+                                    evidence.value['intake_grounding_corrected_candidate']=copy.deepcopy(corrected)
+                                    evidence.save()
+                                    trial,trial_report=adapt(corrected,p,excerpts,run['stage'],
+                                        run.get('requirement_recommendation_scope'),draft_request=run.get('draft_request'),initial_intake_scope=True)
+                                    evidence.value['intake_grounding_corrected_review']=copy.deepcopy(trial_report)
+                                    evidence.save()
+                                    require(trial_report['complete'],'INTAKE_GROUNDING_BLOCKED',
+                                        '纠正候选未通过完整结构与引用检查；候选只保留为证据，已有内容不变。')
+                                    raw_business=corrected;value=trial;business_draft_review=trial_report
+                                    evidence.value['corrected_business_candidate']=copy.deepcopy(corrected)
+                                    grounding.update(corrections=grounding_round+1,status='rechecking',candidate_hash=digest(corrected),
+                                        reason='正在重新核对整份修后初稿及全部已答子决定，防止纠正时丢失约束。')
+                                    save_grounding()
+                                business_draft_review['intake_grounding']=copy.deepcopy(grounding)
+                                business_draft_review['source_validation']='model_semantic_checked_not_human_approval'
+                                save_grounding()
+                            except (Exception,asyncio.CancelledError) as grounding_error:
+                                code=getattr(grounding_error,'code','CANCELLED' if isinstance(grounding_error,asyncio.CancelledError) else 'INTERNAL_ERROR')
+                                if grounding['status']!='blocked':
+                                    grounding.update(status='unverified',reason='来源与已答完整性核对未完成；候选只保留为证据，未写入初稿，已有内容不变。')
+                                grounding['error']=code
+                                grounding['error_type']=type(grounding_error).__name__
+                                if isinstance(grounding_error,Problem):
+                                    grounding['error_reason']=grounding_error.message
+                                save_grounding()
+                                if isinstance(grounding_error,asyncio.CancelledError) or code in ('CANCELLED','BUDGET_EXHAUSTED','INTAKE_GROUNDING_BLOCKED'):
+                                    raise
+                                raise Problem('INTAKE_GROUNDING_UNVERIFIED',grounding['reason'],model_repair_allowed=False) from grounding_error
+                        body_source_review=None
+                        if not header.get('initial_intake') and raw_business.get('requirements') and config.get('business_source_policy')=='noninitial-source-only-1':
+                            from . import intake_grounding
+                            body_source_review=dict(protocol='noninitial-source-only-1',status='pending',corrections=0,
+                                scope='generated_requirement_statement_behavior_acceptance_only',source_only=True,coverage_review=False,
+                                candidate_hash=digest(raw_business),input_hash=digest(assembled_context),history=[])
+                            def save_body_source():
+                                evidence.value['business_source_review']=copy.deepcopy(body_source_review)
+                                evidence.save()
+                                self.store.update_run(pid,rid,business_source_review=copy.deepcopy(body_source_review))
+                            save_body_source()
+                            try:
+                                for source_round in range(3):
+                                    source_plan=intake_grounding.source_plan(raw_business,assembled_context)
+                                    body_source_review['candidate_hash']=source_plan['candidate_hash']
+                                    source_response,source_id,checked=await checked_source_challenge(intake_grounding.challenge_messages(source_plan),
+                                        '正在核对本次正文与验收条款各自的来源、主体及适用条件',call_id,
+                                        lambda response:intake_grounding.validate_challenge(source_plan,response))
+                                    entry=dict(call_id=source_id,candidate_hash=source_plan['candidate_hash'],response=copy.deepcopy(source_response))
+                                    body_source_review['history'].append(entry);save_body_source()
+                                    entry['validation']=copy.deepcopy(checked)
+                                    auxiliary_evidence[source_id].value['business_source_review']=copy.deepcopy(checked)
+                                    auxiliary_evidence[source_id].save()
+                                    if checked['status']=='passed':
+                                        body_source_review.update(status='passed',reviewed_fields_hash=digest(source_plan['fields']));save_body_source();break
+                                    body_source_review['status']='blocked';save_body_source()
+                                    if source_round==2:
+                                        raise Problem('BUSINESS_SOURCE_BLOCKED','本次正文或验收仍有来源问题，候选仅保留为证据，原内容未改。',model_repair_allowed=False)
+                                    # Reserve both a located correction and its fresh source check.
+                                    available_calls(2)
+                                    schema,patch_messages=intake_grounding.source_correction_messages(source_plan,checked)
+                                    patch,patch_id=await source_patch_request(patch_messages,
+                                        '正在按真实来源定位纠正本次正文或验收；不改详细定义',source_id)
+                                    body_source_review['history'].append(dict(call_id=patch_id,kind='patch',response=copy.deepcopy(patch)))
+                                    save_body_source()
+                                    corrected=intake_grounding.apply_correction(source_plan,patch,schema)
+                                    evidence.value['business_source_corrected_candidate']=copy.deepcopy(corrected);evidence.save()
+                                    trial,trial_report=adapt(corrected,p,excerpts,run['stage'],run.get('requirement_recommendation_scope'),
+                                        draft_request=run.get('draft_request'),initial_intake_scope=False)
+                                    evidence.value['business_source_corrected_review']=copy.deepcopy(trial_report);evidence.save()
+                                    intake_grounding.validate_source_correction(source_plan,patch,trial_report)
+                                    raw_business=corrected;value=trial;business_draft_review=trial_report
+                                    body_source_review.update(status='pending',corrections=source_round+1)
+                                    save_body_source()
+                            except (Exception,asyncio.CancelledError) as source_error:
+                                body_source_review.update(status='blocked' if body_source_review['status']=='blocked' else 'pending',
+                                    error=getattr(source_error,'code','CANCELLED' if isinstance(source_error,asyncio.CancelledError) else 'INTERNAL_ERROR'))
+                                if isinstance(source_error,Problem):body_source_review['error_reason']=source_error.message
+                                save_body_source()
+                                if isinstance(source_error,asyncio.CancelledError):raise
+                                if isinstance(source_error,Problem) and source_error.code in (
+                                    'CANCELLED','BUDGET_EXHAUSTED','STALE_REVISION','DATA_AUTH_REQUIRED','BUDGET_AUTH_CHANGED','BUDGET_AUTH_REQUIRED'):
+                                    raise
+                                raise Problem('BUSINESS_SOURCE_UNVERIFIED' if body_source_review['status']=='pending' else 'BUSINESS_SOURCE_BLOCKED',
+                                    '本次正文与验收来源核对未通过，原内容保留；未重生成主稿。',model_repair_allowed=False) from source_error
+                        from . import detail_semantics
+                        if config.get('detail_correction_protocol_version')==2:
+                            from . import detail_preflight
+                            local_findings=detail_preflight.prepare(raw_business,business_draft_review,p,excerpts,
+                                run['stage'],run.get('requirement_recommendation_scope'),draft_request=run.get('draft_request'),
+                                graph_kind_protocol=config.get('detail_local_graph_kind_protocol'))
+                            if local_findings:
+                                local_audit=dict(protocol='detail-local-property-binding-1',original_hash=raw_hash,
+                                    findings=copy.deepcopy(local_findings),status='pending')
+                                evidence.value['detail_preflight']=local_audit
+                                evidence.save()
+                                try:
+                                    patch_schema,patch_messages=detail_semantics.correction_messages(raw_business,
+                                        dict(correction_protocol=2),local_findings,excerpts)
+                                    patch,patch_id=await auxiliary(patch_messages,
+                                        '正在核对局部技术绑定；仅纠正明确定位的属性，尚非业务通过',
+                                        'detail-local-property-binding-1',call_id)
+                                    repair_count+=1
+                                    local_audit['call_id']=patch_id
+                                    assembly=[];normalizations=[]
+                                    try:
+                                        corrected=detail_semantics.apply_correction(raw_business,patch,patch_schema,local_findings,
+                                            protocol_version=2,patch_audit=assembly,normalization_audit=normalizations)
+                                    finally:
+                                        auxiliary_evidence[patch_id].value['detail_correction_patch_assembly']=assembly
+                                        auxiliary_evidence[patch_id].value['detail_correction_normalizations']=normalizations
+                                        auxiliary_evidence[patch_id].save()
+                                    trial,trial_report=adapt(corrected,p,excerpts,run['stage'],
+                                        run.get('requirement_recommendation_scope'),draft_request=run.get('draft_request'),initial_intake_scope=header.get('initial_intake',False))
+                                    require(detail_preflight.accepted(trial_report,trial,local_findings),
+                                        'DETAIL_CORRECTION_INVALID','局部属性纠正后仍未通过完整结构、引用、来源或拓扑核对。')
+                                    raw_business=corrected;value=trial;business_draft_review=trial_report
+                                    local_audit.update(status='corrected_pending_semantic_review',corrected_hash=digest(corrected))
+                                    evidence.value['corrected_business_candidate']=copy.deepcopy(corrected)
+                                except Problem as error:
+                                    local_audit.update(status='failed',code=error.code,reason=error.message)
+                                    if error.code in ('CANCELLED','STALE_REVISION','DATA_AUTH_REQUIRED','BUDGET_AUTH_CHANGED','BUDGET_AUTH_REQUIRED'):raise
+                                    events.append(dict(time=now(),phase='局部技术绑定纠正未完成：'+error.message,call=calls))
+                                except asyncio.CancelledError:
+                                    local_audit.update(status='cancelled',code='CANCELLED',reason='任务已取消，原候选保留。')
+                                    raise
+                                finally:evidence.save()
+                                business_draft_review['detail_preflight']=copy.deepcopy(local_audit)
+                        semantic_plan=detail_semantics.prepare(raw_business,value,business_draft_review,excerpts,
+                            project=p,generation_context=assembled_context,protocol_version=config.get('detail_review_protocol_version',2),recovery_guard=config.get('detail_recovery_guard',False),correction_protocol=config.get('detail_correction_protocol_version',1),recovery_outcome_checks=config.get('recovery_outcome_checks',False),reference_encoding=config.get('detail_property_reference_encoding'),unknown_scope=config.get('detail_unknown_scope_protocol'),default_scope=config.get('detail_default_scope_protocol'))
+                        if semantic_plan:
+                            semantic_history=[]
+                            outcomes=detail_semantics.pending(semantic_plan,'DETAIL_REVIEW_PENDING','详细定义尚待来源语义核对。')
+                            try:
+                                outcomes,review_id=await review_detail(semantic_plan,
+                                    '正在逐操作核对流程结果、角色、状态和来源',call_id)
+                                semantic_history.append(dict(call_id=review_id,outcomes=copy.deepcopy(outcomes)))
+                                business_corrections=0
+                                while any(r['status']=='failed' for r in outcomes.values()) and business_corrections<(2 if bounded_detail else 1):
+                                    scope_feedback=detail_semantics.scope_correction_feedback(outcomes)
+                                    candidate_outcomes=detail_semantics.candidate_correction_outcomes(outcomes)
+                                    scope_only=bool(scope_feedback) and not any(r['status']=='failed' for r in candidate_outcomes.values())
+                                    if bounded_detail:available_calls(2 if scope_only else 3)
+                                    elif business_corrections:available_calls(2)
+                                    business_corrections+=1
+                                    if scope_only:
+                                        prior_review_id=review_id
+                                        outcomes,review_id=await review_detail(semantic_plan,
+                                            '重新完整核对范围分类依据；原候选值及未知状态保持',prior_review_id,scope_feedback)
+                                        semantic_history.append(dict(call_id=review_id,correction_kind='scope_review_evidence',
+                                            correction_number=business_corrections,previous_review_call_id=prior_review_id,
+                                            candidate_unchanged=True,outcomes=copy.deepcopy(outcomes)))
+                                        continue
+                                    correction_schema,correction_messages=detail_semantics.correction_messages(raw_business,semantic_plan,candidate_outcomes,excerpts)
+                                    patch,correction_id=await auxiliary(correction_messages,'正在按已有依据纠正本次详细定义；不新增业务决定',
+                                        'detail-property-correction-2' if semantic_plan.get('correction_protocol',1)==2 else 'detail-source-correction-1',review_id)
+                                    repair_count+=1
+                                    correction_normalizations=[];patch_assembly=[]
+                                    try:
+                                        corrected=detail_semantics.apply_correction(raw_business,patch,correction_schema,candidate_outcomes,
+                                            normalization_audit=correction_normalizations,
+                                            protocol_version=semantic_plan.get('correction_protocol',1),patch_audit=patch_assembly)
+                                    finally:
+                                        if patch_assembly:
+                                            auxiliary_evidence[correction_id].value['detail_correction_patch_assembly']=copy.deepcopy(patch_assembly)
+                                            auxiliary_evidence[correction_id].save()
+                                        if correction_normalizations:
+                                            auxiliary_evidence[correction_id].value['detail_correction_normalizations']=copy.deepcopy(correction_normalizations)
+                                            auxiliary_evidence[correction_id].save()
+                                    trial,trial_report=adapt(corrected,p,excerpts,run['stage'],run.get('requirement_recommendation_scope'),draft_request=run.get('draft_request'),initial_intake_scope=header.get('initial_intake',False))
+                                    rejection_details=[]
+                                    for rejected in [*trial_report.get('rejected',[]),*trial_report.get('field_rejected',[])]:
+                                        issues=rejected.get('issues') or [dict(code=rejected.get('code'),path=rejected.get('path'),message=rejected.get('reason'))]
+                                        rejection_details.extend(dict(row_key=rejected.get('row_key'),**copy.deepcopy(issue)) for issue in issues)
+                                    auxiliary_evidence[correction_id].value['detail_correction_validation']=dict(
+                                        corrected_candidate_hash=digest(corrected),adapt_report=copy.deepcopy(trial_report),
+                                        rejection_details=rejection_details,status='checking')
+                                    auxiliary_evidence[correction_id].save()
+                                    revised_plan=detail_semantics.prepare(corrected,trial,trial_report,excerpts,
+                                        project=p,generation_context=assembled_context,protocol_version=config.get('detail_review_protocol_version',2),recovery_guard=config.get('detail_recovery_guard',False),correction_protocol=config.get('detail_correction_protocol_version',1),recovery_outcome_checks=config.get('recovery_outcome_checks',False),reference_encoding=config.get('detail_property_reference_encoding'),unknown_scope=config.get('detail_unknown_scope_protocol'),default_scope=config.get('detail_default_scope_protocol'))
+                                    complete=revised_plan is not None and {r['row_key'] for r in revised_plan['rows']}==set(outcomes)
+                                    auxiliary_evidence[correction_id].value['detail_correction_validation']['status']='passed_pending_full_semantic_review' if complete else 'rejected'
+                                    auxiliary_evidence[correction_id].save()
+                                    first=rejection_details[0] if rejection_details else None
+                                    reason=('首项：'+str(first.get('code') or '')+' '+str(first.get('path') or '')+' '+str(first.get('message') or '')[:220]
+                                        if first else '未完整通过原结构/引用/拓扑校验')
+                                    require(complete,'DETAIL_CORRECTION_INVALID','纠正后的详细定义未采用；'+reason+'。原候选、补丁和诊断已保留。')
+                                    raw_business=corrected
+                                    semantic_plan=revised_plan
+                                    outcomes=detail_semantics.pending(semantic_plan,'DETAIL_REVIEW_PENDING','纠正候选尚待完整复审。')
+                                    outcomes,review_id=await review_detail(semantic_plan,
+                                        '正在完整复核纠正后的所有操作与来源',correction_id,scope_feedback)
+                                    semantic_history.append(dict(call_id=review_id,outcomes=copy.deepcopy(outcomes)))
+                            except Problem as error:
+                                if error.code in ('CANCELLED','STALE_REVISION','DATA_AUTH_REQUIRED','BUDGET_AUTH_CHANGED','BUDGET_AUTH_REQUIRED'):raise
+                                outcomes={key:dict(result,status='pending' if result['status']!='failed' else 'failed',
+                                    code=error.code,reason=(result['reason']+' 后续核对未完成：'+error.message)[:1800]) for key,result in outcomes.items()}
+                                events.append(dict(time=now(),phase='详细定义核对未完成：'+error.message,call=calls))
+                            for business_row in raw_business['requirements']:
+                                if business_row['row_key'] in outcomes:
+                                    outcomes[business_row['row_key']].update(raw_candidate_hash=digest(business_row['detail_contract']),
+                                        input_revision=p['revision'])
+                            value,business_draft_review=adapt(raw_business,p,excerpts,run['stage'],run.get('requirement_recommendation_scope'),
+                                draft_request=run.get('draft_request'),detail_semantic_reviews=outcomes,initial_intake_scope=header.get('initial_intake',False))
+                            business_draft_review['detail_semantic_reviews']=copy.deepcopy(outcomes)
+                            business_draft_review['detail_semantic_history']=semantic_history
+                            evidence.value['detail_semantic_review']=dict(protocol=semantic_plan['version'],
+                                original_hash=raw_hash,reviewed_hash=digest(raw_business),history=semantic_history,outcomes=copy.deepcopy(outcomes))
+                            if digest(raw_business)!=raw_hash:evidence.value['corrected_business_candidate']=copy.deepcopy(raw_business)
+                        if evidence.value.get('detail_preflight'):
+                            business_draft_review['detail_preflight']=copy.deepcopy(evidence.value['detail_preflight'])
+                        if body_source_review is not None:
+                            require(body_source_review['status']=='passed' and body_source_review['reviewed_fields_hash']==
+                                digest(intake_grounding.source_plan(raw_business,assembled_context)['fields']),
+                                'BUSINESS_SOURCE_BLOCKED','后续处理改变了已核对正文或验收，未采用候选。')
+                            business_draft_review['business_source_review']=copy.deepcopy(body_source_review)
+                            business_draft_review['source_validation']='body_source_semantic_checked_not_human_approval'
                         business_draft_review.update(run_id=rid, input_revision=p['revision'], raw_response_hash=raw_hash)
                         evidence.value['business_draft_review'] = copy.deepcopy(business_draft_review)
                         evidence.save()
@@ -237,7 +949,26 @@ class Workflow:
                             events.append(dict(time=now(), phase='按已引用的现状与改动证据统一变化分类；业务原文与来源保持不变', call=calls))
                             self.store.update_run(pid,rid,classification_corrections=classifications,events=events)
                     if run['stage']=='prd':
-                        from .prd import normalize_structured_explanations
+                        from .prd import normalize_structured_explanations, preserve_repair_explanation_refs, normalize_flow_endpoint_labels
+                        raw_prd_plan=copy.deepcopy(value)
+                        value,endpoint_changes=normalize_flow_endpoint_labels(value)
+                        if endpoint_changes:
+                            normalization=dict(rule='prd-unique-flow-label-endpoints-1',
+                                input_hash=digest(raw_prd_plan),output_hash=digest(value),changes=endpoint_changes)
+                            evidence.value.setdefault('response_normalizations',[]).append(normalization)
+                            evidence.value['normalized_prd_plan']=copy.deepcopy(value)
+                            evidence.save()
+                            attempt.setdefault('response_normalizations',[]).append(normalization)
+                        if prd_repair_original is not None:
+                            value,ref_changes=preserve_repair_explanation_refs(prd_repair_original,value,p,run['document_type'])
+                            if ref_changes:
+                                normalization=dict(rule='prd-unchanged-paragraph-reference-preservation-1',
+                                    original_plan_hash=digest(prd_repair_original),input_hash=digest(raw_prd_plan),
+                                    output_hash=digest(value),changes=ref_changes)
+                                evidence.value.setdefault('response_normalizations',[]).append(normalization)
+                                evidence.value['normalized_prd_plan']=copy.deepcopy(value)
+                                evidence.save()
+                                attempt.setdefault('response_normalizations',[]).append(normalization)
                         original_hash=digest(value)
                         value,layout_changes=normalize_structured_explanations(value,p,run['document_type'])
                         if layout_changes:
@@ -247,7 +978,31 @@ class Workflow:
                             attempt.setdefault('response_normalizations',[]).append(normalization)
                             events.append(dict(time=now(),phase='按已核对条款生成完整正文，重复解释保留在任务记录',call=calls))
                         document_plan_version = value.get('plan_version')
-                        value=compile_plan(value,p,run['document_type'],omitted,include_sketch=False)
+                        for semantic_attempt in range(3):
+                            try:
+                                compiled=compile_plan(value,p,run['document_type'],omitted,include_sketch=False)
+                                value=compiled
+                                self.store.update_run(pid,rid,prd_semantic_pending=None,pending_prd_plan=None)
+                                break
+                            except Problem as semantic_error:
+                                from .prd import semantic_correction,apply_semantic_correction
+                                prepared=semantic_correction(value,semantic_error,p,run['document_type'])
+                                if prepared is not None:
+                                    self.store.update_run(pid,rid,pending_prd_plan=copy.deepcopy(value),
+                                        prd_semantic_pending=dict(path=semantic_error.semantic_path,
+                                            findings=copy.deepcopy(prepared['findings']),status='needs_correction'),result_applied=False)
+                                if prepared is None or semantic_attempt==2:raise
+                                patch,patch_id=await auxiliary(prepared['messages'],
+                                    '正在按真实依据纠正成文解释；规范原文保持不变','prd-explanation-semantic-correction-1',call_id)
+                                repair_count+=1
+                                original_plan=copy.deepcopy(value)
+                                value=apply_semantic_correction(value,prepared,patch)
+                                evidence.value.setdefault('prd_semantic_corrections',[]).append(dict(call_id=patch_id,
+                                    path=semantic_error.semantic_path,findings=prepared['findings'],
+                                    original=prepared['original'],replacement=copy.deepcopy(patch['explanation']),
+                                    original_hash=digest(original_plan),output_hash=digest(value)))
+                                evidence.value['normalized_prd_plan']=copy.deepcopy(value)
+                                evidence.save()
                     if run.get('prewrite'):
                         from .prewrite import normalize_quotes, normalize_decisions
                         value,decision_changes=normalize_decisions(p,value)
@@ -320,7 +1075,13 @@ class Workflow:
                         require(format_atoms(json.dumps(value,ensure_ascii=False))==interview_anchor,
                                 'SEMANTIC_BLOCKED','访谈格式修复改变了原有字面内容或顺序；原始回复保留，未保存改写后的聊天。')
                     if repair_anchor is not None and run['stage'] in ('clarify','change','brainstorm','review'):
-                        ingest.preserve_response(repair_anchor,value,excerpts,run['stage'],original=repair_original,project=p)
+                        reference_normalizations=ingest.preserve_response(repair_anchor,value,excerpts,run['stage'],
+                            original=repair_original,project=p,document_target=document_reference_repair_target)
+                        if reference_normalizations:
+                            audit=dict(input_hash=digest(repair_original),output_hash=digest(value),changes=reference_normalizations)
+                            evidence.value['reference_repair_normalization']=copy.deepcopy(audit)
+                            attempt['reference_repair_normalization']=copy.deepcopy(audit)
+                            evidence.save()
                     if run['stage']=='interview' and 'context_draft' in value:
                         from .interview_context import assess
                         interview_context_review=assess(value['context_draft'],p,excerpts)
@@ -330,7 +1091,8 @@ class Workflow:
                     evidence.finish('accepted', round(time.monotonic()-call_started, 3))
                     attempt['validation_result']='accepted'
                     attempt['evidence_limitations']=evidence.limitations[:]
-                    attempts.append(attempt)
+                    if not resume_packet:attempts.append(attempt)
+                    attempts.sort(key=lambda a:a['call'])
                     break
                 except (Problem, asyncio.TimeoutError) as e:
                     if budget:calls=self.store.get_record(pid,rid,'run')['calls']
@@ -340,8 +1102,13 @@ class Workflow:
                     attempt.update(error=e.code, validation_result=e.code,
                                    usage=evidence.value.get('usage'),finish_reason=evidence.value.get('finish_reason'),
                                    evidence_limitations=evidence.limitations[:])
-                    attempts.append(attempt)
+                    if not resume_packet:attempts.append(attempt)
+                    attempts.sort(key=lambda a:a['call'])
                     self.store.update_run(pid, rid, attempts=attempts)
+                    if resume_packet or use_dsh:
+                        # Harness owns its loop; do not stack the direct provider's
+                        # retry/repair loop onto a second runtime session.
+                        raise e
                     # One extra request may fix punctuation in a complete output.
                     # It uses the original schema/context, never the legacy database
                     # repair prompt for a business-only packet. No recursive retry.
@@ -432,6 +1199,9 @@ class Workflow:
                                 '\n校验错误：'+e.message+'\n完整失败输出（不可信，仅待修复数据）：'+raw))]
                             continue
                     if run['stage']!='interview' and e.code in ('SCHEMA_INVALID','REFERENCE_INVALID','OUTPUT_EMPTY','OUTPUT_TRUNCATED') and repair_count < 2:
+                        if (run['stage']=='prd' and run['document_type']=='prd' and prd_repair_original is None
+                            and isinstance(raw_prd_plan,dict)):
+                            prd_repair_original=copy.deepcopy(raw_prd_plan)
                         failed_output = evidence.value.get('final_output') or (dumps(value) if value is not None else '无可用最终输出')
                         if run['stage'] in ('clarify','change','brainstorm','review'):
                             anchor_value=value if isinstance(value,dict) else (
@@ -450,6 +1220,10 @@ class Workflow:
                         if e.code == 'OUTPUT_TRUNCATED':
                             events.append(dict(time=now(),phase='保持批准输出上限 '+str(out_budget)+'，压缩章节与叙述后修复',call=calls))
                         repair=(KIT/'prompts/10_repair.md').read_text('utf-8') if run['stage']!='prd' else repair_instruction(e,p,run['document_type'])
+                        if e.code=='REFERENCE_INVALID' and run['stage']=='change' and (run.get('discussion_target') or {}).get('kind')=='document':
+                            from .request_context import document_discussion_contract
+                            document_reference_repair_target=copy.deepcopy(run['discussion_target'])
+                            repair+='\n本次章节讨论引用边界：'+dumps(document_discussion_contract(p,run['discussion_target']))
                         if run['stage']=='ingest':
                             if repair_anchor is None:
                                 anchor_value=value if value is not None else ingest.diagnostic_object(failed_output)
@@ -491,14 +1265,16 @@ class Workflow:
                     evidence.finish('CANCELLED', round(time.monotonic()-call_started, 3))
                     attempt.update(error='CANCELLED', validation_result='CANCELLED',
                                    evidence_limitations=evidence.limitations[:])
-                    attempts.append(attempt)
+                    if not resume_packet:attempts.append(attempt)
+                    attempts.sort(key=lambda a:a['call'])
                     raise Problem('CANCELLED','任务已取消；本地已停止等待，接收端已发请求仍可能计费')
                 except Exception:
                     if budget:calls=self.store.get_record(pid,rid,'run')['calls']
                     evidence.finish('INTERNAL_ERROR', round(time.monotonic()-call_started, 3))
                     attempt.update(error='INTERNAL_ERROR', validation_result='INTERNAL_ERROR',
                                    evidence_limitations=evidence.limitations[:])
-                    attempts.append(attempt)
+                    if not resume_packet:attempts.append(attempt)
+                    attempts.sort(key=lambda a:a['call'])
                     self.store.update_run(pid, rid, attempts=attempts)
                     raise
             # Keep the validated result tied to its actual input even if activation conflicts.
@@ -510,7 +1286,7 @@ class Workflow:
             preserve_context_proposal = run['stage'] in ('clarify', 'change') and bool(run.get('discussion_target'))
             if p.get('workflow_mode') == 'shared-draft' and run['stage'] in ('ingest','clarify','change'):
                 staged = copy.deepcopy(p)
-                if run['message'].strip() and not run.get('benchmark'):
+                if run['message'].strip() and not run.get('benchmark') and not resume_packet:
                     staged['messages'].append(dict(role='user',stage=run['stage'],text=run['message'],created=now()))
                 draft_mapping = apply_response(staged, value, identity_only=business_protocol,
                     preserve_context_proposal=preserve_context_proposal)
@@ -525,7 +1301,7 @@ class Workflow:
                 require(execution_hash(current)==execution_hash(p),'STALE_REVISION','任务执行期间输入或产物发生变化；结果已保留在调用证据，未激活',409)
                 if run['stage']=='review':
                     require(review_target(current)==review_target(p),'STALE_REVISION','审查期间文档或页面已改变，请重新审查',409)
-                if staged is None and run['message'].strip() and not run.get('benchmark') and not (run['stage']=='interview' and run.get('user_task_id')):
+                if staged is None and not resume_packet and run['message'].strip() and not run.get('benchmark') and not (run['stage']=='interview' and run.get('user_task_id')):
                     current['messages'].append(dict(role='user', stage=run['stage'], text=run['message'], created=now()))
                 candidate_count=len(current.get('ui_candidates', []))
                 if staged is None:
@@ -548,6 +1324,10 @@ class Workflow:
                     # Keep rejected rows inspectable; they never enter items or
                     # any confirmation request. Accepted rows remain candidates.
                     saved_review = replace_business_ids(business_draft_review, draft_mapping)
+                    if saved_review.get('intake_grounding'):
+                        saved_review['intake_grounding']['candidate_applied']=True
+                    from .detail_business_scope import bind_stored_reviews
+                    bind_stored_reviews(saved_review,value,draft_mapping,current)
                     current.setdefault('business_draft_reviews', []).append(saved_review)
                     if run.get('draft_request'):
                         previous=copy.deepcopy(current.get('refinement_completion') or {})
@@ -573,12 +1353,21 @@ class Workflow:
                         summaries = copy.deepcopy(p.get('product_context_proposal') or {})
                         summary_evidence = copy.deepcopy(p.get('product_context_proposal_evidence') or {})
                         for field, row in saved_review.get('summary_fields', {}).items():
-                            if row['basis'] == 'unknown':
-                                continue
-                            text = value.get('product_context_proposal', {}).get(field, '')
-                            summaries[field] = text
                             saved = str((p.get('product_context') or {}).get(field, ''))
                             state = (p.get('context_field_states') or {}).get(field, {}).get('status')
+                            text = value.get('product_context_proposal', {}).get(field, '')
+                            if row['basis'] == 'unknown':
+                                from .scope_context import context_review_statuses
+                                prior=summary_evidence.get(field) or {}
+                                # Replace only an identifiable, still-unreviewed AI baseline.
+                                # Empty unknowns and human decisions continue to preserve prior content.
+                                if not (field=='current_state' and str(row.get('text','')).strip()
+                                        and prior.get('evidence_status')=='unreviewed' and prior.get('run_id')
+                                        and prior.get('text')==summaries.get(field) and not saved.strip()
+                                        and state in (None,'unknown') and not context_review_statuses(p).get(field)):
+                                    continue
+                                text=row['text']
+                            summaries[field] = text
                             summary_evidence[field] = dict(copy.deepcopy(row), text=text,
                                 run_id=rid, input_revision=p['revision'], evidence_status='unreviewed',
                                 uncertain=row['basis'] != 'fact',
@@ -616,6 +1405,9 @@ class Workflow:
                 if run['stage']=='prd':
                     artifact=current['documents'][run['document_type']]
                     if run['document_type']=='prd':artifact['prewrite_required']=True
+                    from .detail_business_scope import current_reviews as current_detail_scopes
+                    scoped_details=[review for item in delivery_items(current) if item.get('kind')=='requirement' and not item.get('target_item_id') for review in current_detail_scopes(current,item)] if run['document_type']=='prd' else []
+                    if scoped_details:artifact['detail_unknown_scope_reviews']=scoped_details
                     artifact['sketch_policy']='excluded'
                     artifact['assembly_version']='prd-plan-'+document_plan_version
                     current['stale_document_kinds']=[kind for kind in current.get('stale_document_kinds',[]) if kind!=run['document_type']]
@@ -643,6 +1435,13 @@ class Workflow:
                             s['vision_run_id']=rid
             # Store.edit finalizes requirement versions and project revision before hashing.
             output_state=copy.deepcopy(current)
+            if business_draft_review is not None and business_draft_review.get('intake_grounding'):
+                business_draft_review['intake_grounding']['candidate_applied']=True
+                evidence.value['intake_grounding']=copy.deepcopy(business_draft_review['intake_grounding'])
+                evidence.value['business_draft_review']=copy.deepcopy(business_draft_review)
+                evidence.save()
+                self.store.update_run(pid,rid,intake_grounding=copy.deepcopy(business_draft_review['intake_grounding']),
+                    business_draft_review=copy.deepcopy(business_draft_review))
             if run.get('discussion_target'):
                 # Keep the exact applied identities with their originating
                 # section, including existing questions reused by this output.

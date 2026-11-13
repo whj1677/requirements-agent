@@ -20,6 +20,62 @@ def test_redundant_uniqueness_evidence_keeps_the_exact_constraint_and_sources():
         value=copy.deepcopy(field);value['evidence']['uniqueness']=changed
         preserved,notes=normalize_redundant_metadata({'fields':[value]})
         assert preserved['fields'][0]['evidence']['uniqueness']==changed and not notes
+
+
+def test_recommendation_evidence_alias_preserves_proposal_raw_and_business_graph(tmp_path):
+    p,local,_,_,excerpts,_=setup(tmp_path)
+    row=draft_row();row['detail_contract']=sample_detail()
+    edge=row['detail_contract']['flow']['edges'][-1]
+    edge['evidence']={'condition':{'status':'recommendation','reason':'合成建议，未经确认'}}
+    original=copy.deepcopy(row)
+    value,report=adapt(packet(row),p,excerpts,'clarify',local)
+    assert report['accepted'] and not report['rejected']
+    assert row==original
+    normalized,notes=normalize_redundant_metadata(row['detail_contract'])
+    expected=copy.deepcopy(row['detail_contract'])
+    expected['flow']['edges'][-1]['evidence']['condition']['status']='proposal'
+    assert normalized==expected
+    assert notes[0]['raw']=='recommendation' and notes[0]['normalized']=='proposal'
+    assert report['detail_normalized'][0]['code']=='BUSINESS_DRAFT_DETAIL_PROPOSAL_ALIAS'
+    assert canonical_detail(normalized,{}, {})['flow']['edges'][-1]['evidence']['condition']['status']=='proposal'
+
+
+@pytest.mark.parametrize('status',['recommended','Recommendation','fact','approved'])
+def test_other_evidence_statuses_remain_rejected(tmp_path,status):
+    p,local,_,_,excerpts,_=setup(tmp_path)
+    row=draft_row();row['detail_contract']=sample_detail()
+    row['detail_contract']['flow']['edges'][-1]['evidence']={'condition':{'status':status}}
+    original=copy.deepcopy(row)
+    _,report=adapt(packet(row),p,excerpts,'clarify',local)
+    assert not report['accepted'] and report['rejected']
+    assert row==original and not report['detail_normalized']
+
+
+def test_proposal_alias_does_not_authorize_invalid_references(tmp_path):
+    p,local,_,_,excerpts,_=setup(tmp_path)
+    row=draft_row();row['detail_contract']=sample_detail()
+    row['detail_contract']['flow']['edges'][-1]['evidence']={'condition':{
+        'status':'recommendation','sources':[{'source':'S404','locator':'L1'}]}}
+    _,report=adapt(packet(row),p,excerpts,'clarify',local)
+    assert not report['accepted'] and report['rejected'][0]['code']=='BUSINESS_DRAFT_SOURCE'
+
+
+@pytest.mark.parametrize('evidence',[{}, {'condition':{'status':'proposal'}}, [], None])
+@pytest.mark.parametrize('container',['flow','root'])
+def test_only_strictly_empty_container_evidence_is_removed(tmp_path,evidence,container):
+    p,local,_,_,excerpts,_=setup(tmp_path)
+    row=draft_row();row['detail_contract']=sample_detail()
+    target=row['detail_contract']['flow'] if container=='flow' else row['detail_contract']
+    target['evidence']=evidence
+    original=copy.deepcopy(row)
+    _,report=adapt(packet(row),p,excerpts,'clarify',local)
+    assert row==original
+    if evidence=={}:
+        assert report['accepted'] and not report['rejected']
+        assert report['accepted'][0]['raw']==original
+        assert report['detail_normalized'][0]['raw']=={}
+    else:
+        assert not report['accepted'] and report['rejected']
 from app.core import Problem
 from app.requirement_details import detail_issues, validate_detail
 from app.workflow import apply_response, replace_business_ids
@@ -310,10 +366,31 @@ def test_normalized_candidate_keeps_wait_without_exit_blocked(tmp_path):
     row['detail_contract']['interactions'][0]['index']=1
     row['detail_contract']['flow']['nodes'][-1].update(kind='wait',actor='云平台',label='等待原提交结果')
     value,report=adapt(packet(row),p,excerpts,'clarify',local)
-    assert report['accepted'] and not report['rejected'],report
-    candidate=next(i for i in value['proposals'] if i.get('detail_contract'))
-    issues=detail_issues(candidate)
-    assert any('N5' in issue['path'] and issue['code']=='DETAIL_FLOW_WAIT' for issue in issues),issues
+    assert not report['accepted'] and report['rejected'],report
+    assert not value['proposals']
+    assert report['rejected'][0]['code']=='BUSINESS_DRAFT_DETAIL_FLOW'
+    assert '等待原提交结果' in report['rejected'][0]['reason']
+
+
+def test_conflict_result_action_is_rejected_without_inventing_a_business_edge(tmp_path):
+    p,local,_,_,excerpts,_=setup(tmp_path)
+    row=draft_row();row['detail_contract']=sample_detail()
+    flow=row['detail_contract']['flow']
+    flow['nodes'][-1].update(kind='action',label='提示已被认领并刷新负责人')
+    original=copy.deepcopy(row)
+    value,report=adapt(packet(row),p,excerpts,'clarify',local)
+    assert not value['proposals'] and not report['accepted']
+    assert report['rejected'][0]['code']=='BUSINESS_DRAFT_DETAIL_FLOW'
+    assert '提示已被认领并刷新负责人' in report['rejected'][0]['reason']
+    assert row==original
+    assert report['rejected'][0]['raw']['detail_contract']['flow']==flow
+
+    # A separately authored terminal result is valid; the adapter never makes
+    # this business choice, nor connects a rejected caller to the success path.
+    row['detail_contract']['flow']['nodes'][-1]['kind']='end'
+    value,report=adapt(packet(row),p,excerpts,'clarify',local)
+    assert report['accepted'] and not report['rejected']
+    assert value['proposals']
 
 
 def test_exact_text_envelope_preserves_proposal_and_references(tmp_path):

@@ -35,14 +35,29 @@ def save(project, store, text, entry_mode):
 
 def discussion(project):
     """A factual working export, not a generated or approved MRD/PRD."""
+    chats = [m for m in project.get('messages',[]) if m.get('role')=='user' and m.get('text','').strip()]
+    draft = view(project)['text']
     lines = [f'# {project["name"]} · 讨论稿', '', '**待确认 / 非正式交付**',
-             f'工作版本：{project["revision"]}。保留候选与未决项，不代表需求已获确认。', '', '## 原始工作底稿', '', view(project)['text'] or '尚未填写。', '', '## 已有条目', '']
+             f'工作版本：{project["revision"]}。保留候选与未决项，不代表需求已获确认。', '', '## 原始工作底稿', '',
+             draft or ('已保存聊天输入，原话列于下方。' if chats else '尚未填写。')]
+    if chats:
+        lines += ['', '## 已保存的用户原话', '']
+        for number,message in enumerate(chats,1):
+            lines += [f'### 第{number}轮 · {message.get("created", "时间未记录")}', '', message['text'], '']
     statuses = {'candidate': '待核对', 'selected': '已采纳', 'deferred': '暂缓', 'rejected': '未采纳'}
-    for item in project['items']:
-        if item.get('selection_status') == 'rejected':
-            continue
-        lines += [f'### {item.get("title") or item["id"]} · {statuses.get(item.get("selection_status"), "待核对")}',
-                  '', item.get('statement', ''), '']
+    from .requirements import delivery_items
+    active = {item['id'] for item in delivery_items(project)}
+    groups = [('当前本期条目', lambda i:i['id'] in active),
+              ('待核对候选', lambda i:i['id'] not in active and not i.get('superseded_by')
+               and i.get('selection_status') not in ('deferred','rejected')),
+              ('暂缓、未采纳及历史条目', lambda i:i['id'] not in active and
+               (i.get('superseded_by') or i.get('selection_status') in ('deferred','rejected')))]
+    for title,include in groups:
+        lines += ['', '## '+title, '']
+        for item in project['items']:
+            if not include(item):continue
+            state='历史版本' if item.get('superseded_by') else statuses.get(item.get('selection_status'), '待核对')
+            lines += [f'### {item.get("title") or item["id"]} · {state}', '', item.get('statement', ''), '']
     lines += ['## 问题与落实状态', '']
     from .product_flow import question_open
     for question in project['questions']:

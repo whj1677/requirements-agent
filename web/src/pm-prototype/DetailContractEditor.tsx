@@ -1,34 +1,92 @@
-import React, {useState} from 'react';
-import {detailEditingIssues,detailFieldRequired,detailInteractionRequired,detailPropertyLabels,detailRows,detailSectionLabels,detailTransitionRequired,emptyDetailContract,mergeDetailContract,resolveDetailConflict,type DetailConflict,type DetailContract,type DetailIssue,type DetailObject,type DetailSection} from './detail-contract';
+import React, {useEffect,useState} from 'react';
+import type {DetailUnknownScopeReviewProperty} from '../api';
+import {detailEditingIssues,detailFieldRequired,detailInteractionRequired,detailPropertyLabels,detailRows,detailSectionLabels,detailTransitionRequired,emptyDetailContract,mergeDetailContract,resolveDetailConflict,validTechnicalScopeProperty,type DetailConflict,type DetailContract,type DetailIssue,type DetailObject,type DetailSection} from './detail-contract';
 import './detail-contract.css';
 
-type Props={confirmationLabel?:string;requirementId:string;title:string;value?:DetailContract;base?:DetailContract;disabled?:boolean;conflicts?:DetailConflict[];issues?:DetailIssue[];candidate?:{contract:DetailContract;candidate_id:string};references?:{id:string;title:string;kind:string}[];onChange:(value:DetailContract,conflicts?:DetailConflict[])=>void;onSources?:(refs:Record<string,any>[])=>void};
+type Props={confirmationLabel?:string;requirementId:string;title:string;value?:DetailContract;base?:DetailContract;disabled?:boolean;conflicts?:DetailConflict[];issues?:DetailIssue[];technicalScopeProperties?:readonly DetailUnknownScopeReviewProperty[];candidate?:{contract:DetailContract;candidate_id:string};references?:{id:string;title:string;kind:string}[];onChange:(value:DetailContract,conflicts?:DetailConflict[])=>void;onSources?:(refs:Record<string,any>[])=>void};
 const dataTypes={text:'文本',string:'字符串',id:'标识',number:'数值',integer:'整数',boolean:'是／否',enum:'枚举',date:'日期',datetime:'日期时间',object:'复合信息',array:'列表'};
 const nodeKinds={start:'开始',action:'处理步骤',decision:'条件判断',wait:'等待',end:'结束'};
 const arrayKeys=['enum_values','field_refs','rule_refs','acceptance_refs'];
 const prefixes:Record<string,string>={fields:'FD',interactions:'IT','flow.nodes':'ND','flow.edges':'ED',state_transitions:'ST'};
 const names:Record<string,string>={fields:'字段',interactions:'操作', 'flow.nodes':'步骤','flow.edges':'连线',state_transitions:'状态变化'};
-const display=(value:any)=>value===undefined?'已移除':typeof value==='string'?value:JSON.stringify(value,null,2);
+const rawDisplay=(value:any)=>value===undefined?'已移除':JSON.stringify(value,null,2);
+type WholeReplacement={requirementId:string;candidateId:string;candidateSnapshot:DetailContract;adopted:DetailContract;previous:DetailContract;previousConflicts:DetailConflict[]};
+
 function newObject(section:string):DetailObject{
   const fields=section==='fields'?detailFieldRequired:section==='interactions'?detailInteractionRequired:section==='state_transitions'?detailTransitionRequired:section==='flow.nodes'?['label','kind','actor']:['from','to','condition'];
   return {id:prefixes[section]+'-'+crypto.randomUUID().slice(0,8),...Object.fromEntries(fields.map(key=>[key,''])),...(section==='flow.nodes'?{kind:'action'}:{})};
 }
 
-export function DetailContractEditor({confirmationLabel='确认并进入交付',requirementId,title,value,base,disabled=false,conflicts=[],issues=[],candidate,references=[],onChange,onSources}:Props){
+export function DetailContractEditor({confirmationLabel='确认并进入交付',requirementId,title,value,base,disabled=false,conflicts=[],issues=[],technicalScopeProperties=[],candidate,references=[],onChange:notifyChange,onSources}:Props){
   const [expandedObjects,setExpandedObjects]=useState<Record<string,boolean>>({});
   const [expandedSections,setExpandedSections]=useState<Record<string,boolean>>({});
+  const [wholeReplacement,setWholeReplacement]=useState<WholeReplacement|null>(null);
+  useEffect(()=>{setWholeReplacement(null);},[requirementId,candidate?.candidate_id,candidate?.contract]);
+  const onChange=(next:DetailContract,nextConflicts?:DetailConflict[])=>{setWholeReplacement(null);notifyChange(next,nextConflicts);};
   const cell=(path:string)=>'requirement-'+requirementId+'-'+path;
-  const allIssues=[...issues,...detailEditingIssues(value)].filter((issue,index,rows)=>rows.findIndex(row=>row.path===issue.path&&row.message===issue.message)===index);
+  const conflictObject=(collection:string,id:string)=>{
+    for(const contract of [value,base,candidate?.contract]){
+      const row=detailRows(contract,collection).find(item=>item.id===id);
+      if(row)return row;
+    }
+  };
+  const conflictLocation=(path:string)=>{
+    const parts=path.split('.'),collection=parts[1]==='flow'?'flow.'+parts[2]:parts[1],idIndex=parts[1]==='flow'?3:2,id=parts[idIndex],key=parts[idIndex+1];
+    if(!names[collection])return parts.slice(1).map(part=>detailPropertyLabels[part]||part).join(' / ');
+    const section=(collection.startsWith('flow.')?'flow':collection) as DetailSection,row=conflictObject(collection,id),label=row?.name||row?.label;
+    return detailSectionLabels[section]+' / '+(row?names[collection]+(label?'“'+label+'”':''):'未找到的引用')+(key?' / '+(detailPropertyLabels[key]||key):'');
+  };
+  const referenceText=(id:string,key:string)=>{
+    const collection=key==='field_refs'||key==='parent_id'?'fields':key==='interaction_id'?'interactions':['from','to'].includes(key)?'flow.nodes':undefined;
+    if(collection){
+      const row=conflictObject(collection,id);
+      return row?(row.name||row.label||'未命名'+names[collection]):'未找到的引用';
+    }
+    const kind=key==='rule_refs'?'rule':key==='acceptance_refs'?'acceptance':'requirement',reference=references.find(item=>item.id===id&&item.kind===kind);
+    return reference?.title||'未找到的引用';
+  };
+  const conflictValue=(input:any,key:string):React.ReactNode=>{
+    if(input===undefined)return '已移除';
+    if(input===null||input==='')return '未填写';
+    if(Array.isArray(input))return input.length?<ul>{input.map((item,index)=><li key={index}>{conflictValue(item,key)}</li>)}</ul>:'无';
+    if(typeof input==='boolean')return input?'是':'否';
+    if(typeof input==='object')return input.name||input.label||'复合内容（见技术详情）';
+    if(key==='data_type')return dataTypes[input as keyof typeof dataTypes]||String(input);
+    if(key==='kind')return nodeKinds[input as keyof typeof nodeKinds]||String(input);
+    if(key.endsWith('_refs')||['from','to','parent_id','interaction_id','depends_on'].includes(key))return referenceText(String(input),key);
+    return String(input);
+  };
+  const allIssues=[...issues,...detailEditingIssues(value,technicalScopeProperties)].filter((issue,index,rows)=>rows.findIndex(row=>row.path===issue.path&&row.message===issue.message)===index);
   const error=(path:string)=><>{allIssues.filter(issue=>issue.path===path).map((issue,index)=><p className="sheet-error" role="status" key={index}>{issue.message}</p>)}</>;
   if(!value)return <div className="detail-contract-empty">
     <p>用字段、交互和流程表明确研发所需的业务规则。启用后随本条需求一起确认；空定义不会算作完成。</p>
     <button type="button" disabled={disabled} onClick={()=>onChange(emptyDetailContract())}>启用详细定义</button>
     {candidate&&<button type="button" disabled={disabled} onClick={()=>onChange(structuredClone(candidate.contract))}>使用 AI 详细定义草稿</button>}
   </div>;
+  const candidateDiffers=!!candidate&&JSON.stringify(value)!==JSON.stringify(candidate.contract);
+  const canAdoptWhole=!!candidate&&(candidateDiffers||conflicts.length>0);
+  const canUndo=!!wholeReplacement&&!!candidate&&wholeReplacement.requirementId===requirementId&&
+    candidate.candidate_id===wholeReplacement.candidateId&&JSON.stringify(candidate.contract)===JSON.stringify(wholeReplacement.candidateSnapshot)&&
+    JSON.stringify(value)===JSON.stringify(wholeReplacement.adopted)&&conflicts.length===0;
+  const adoptWhole=()=>{
+    if(disabled||!candidate||!canAdoptWhole)return;
+    const next=structuredClone(candidate.contract);
+    setWholeReplacement({requirementId,candidateId:candidate.candidate_id,
+      candidateSnapshot:structuredClone(candidate.contract),adopted:structuredClone(next),previous:structuredClone(value),previousConflicts:structuredClone(conflicts)});
+    notifyChange(next,[]);
+  };
+  const undoWhole=()=>{
+    if(disabled||!canUndo||!wholeReplacement)return;
+    const previous=structuredClone(wholeReplacement.previous);
+    const previousConflicts=structuredClone(wholeReplacement.previousConflicts);
+    setWholeReplacement(null);
+    notifyChange(previous,previousConflicts);
+  };
   const updateSection=(section:string,rows:DetailObject[])=>onChange(section.startsWith('flow.')?{...value,flow:{...value.flow,[section.split('.')[1]]:rows}}:{...value,[section]:rows});
   const changeObject=(section:string,id:string,key:string,next:any)=>updateSection(section,detailRows(value,section).map(row=>row.id!==id?row:{...row,[key]:next,evidence:{...row.evidence,[key]:{status:'proposal',reason:'人工修改，待整条确认'}}}));
   const renderProperty=(section:string,row:DetailObject,key:string,required:boolean)=>{
     const path='detail_contract.'+section+'.'+row.id+'.'+key,label=detailPropertyLabels[key]||key,aria=title+' '+(row.name||row.label||row.id)+' '+label,evidence=row.evidence?.[key];
+    const technicalScope=technicalScopeProperties.find(property=>property.path===path&&validTechnicalScopeProperty(value,property));
     const update=(next:any)=>changeObject(section,row.id,key,next);
     const choices=key==='data_type'?dataTypes:key==='kind'?nodeKinds:null;
     const options=key==='field_refs'?detailRows(value,'fields').map(field=>({id:field.id,title:field.name||field.id})):references.filter(item=>key==='rule_refs'?item.kind==='rule':item.kind==='acceptance');
@@ -40,8 +98,14 @@ export function DetailContractEditor({confirmationLabel='确认并进入交付',
     else if(key==='source')input=<><label className="detail-calculated"><input type="checkbox" disabled={disabled} checked={row.source==='calculated'} onChange={e=>update(e.target.checked?'calculated':'')}/>由计算得到</label>{row.source!=='calculated'&&<textarea rows={2} aria-label={aria} disabled={disabled} value={row.source||''} placeholder="例如 EMS 上报、用户填写或已有业务记录" onChange={e=>update(e.target.value)}/>}</>;
     else input=<textarea rows={key==='enum_values'?3:2} aria-label={aria} disabled={disabled} value={arrayKeys.includes(key)?(Array.isArray(row[key])?row[key].join('\n'):''):row[key]||''} placeholder={key==='enum_values'?'每行一个可选值':required?'请明确说明；不适用时写明原因':'选填'} onChange={e=>update(arrayKeys.includes(key)?e.target.value.split('\n'):e.target.value)}/>;
     return <div className={'detail-property'+(allIssues.some(issue=>issue.path===path)?' detail-property-invalid':'')} key={key} data-cell-key={cell(path)}>
-      <div className="detail-property-control"><span>{label}{required&&<small>需明确</small>}</span>{input}</div>
+      <div className="detail-property-control"><span>{label}{required&&<small>{technicalScope?'技术事项保留':'需明确'}</small>}</span>{input}</div>
       <div className={'detail-evidence detail-evidence-'+(evidence?.status||'proposal')}><span>{evidence?.status==='source'?'资料依据 · 随整条核对':evidence?.status==='unknown'?'待明确':evidence?.reason?.startsWith('人工')?'人工修改 · 待确认':'建议 · 待确认'}</span>{!!evidence?.source_refs?.length&&onSources&&<button type="button" onClick={()=>onSources(evidence.source_refs!)}>查看依据</button>}{evidence?.reason&&evidence.reason!=='人工修改，待整条确认'&&<small>{evidence.reason}</small>}</div>{error(path)}
+      {technicalScope&&<div className="detail-technical-scope">
+        <strong>技术未定，业务确认保留</strong>
+        <span>已知业务：{technicalScope.known_business}</span>
+        <span>技术未定：{technicalScope.unknown_technical}</span>
+        {!!technicalScope.explanation.trim()&&<small>{technicalScope.explanation}</small>}
+      </div>}
     </div>;
   };
   const renderCollection=(section:string)=>{
@@ -52,6 +116,7 @@ export function DetailContractEditor({confirmationLabel='确认并进入交付',
       const ownIssues=allIssues.filter(issue=>issue.path.startsWith(path+'.'+row.id+'.'));
       return <details className="detail-object" key={row.id} open={!!expandedObjects[row.id]} onToggle={e=>{const open=e.currentTarget.open;setExpandedObjects(previous=>previous[row.id]===open?previous:{...previous,[row.id]:open});}} data-cell-key={cell(path+'.'+row.id)}>
         <summary><strong>{row.name||row.label||(row.from_state?row.from_state+' → '+(row.to_state||'待填写'):row.from?(detailRows(value,'flow.nodes').find(node=>node.id===row.from)?.label||row.from)+' → '+(detailRows(value,'flow.nodes').find(node=>node.id===row.to)?.label||'待选择'): '待填写'+names[section])}</strong><span>{ownIssues.length?ownIssues.length+' 项待补充':'展开核对'}</span></summary>
+        {error(path)}
         <div className="detail-properties">{required.map(key=>renderProperty(section,row,key,true))}</div><details className="detail-extra-properties"><summary>关联与补充属性（选填）</summary><div className="detail-properties">{extra.map(key=>renderProperty(section,row,key,false))}</div></details>
         <div className="detail-object-footer"><small>编号 {row.id} · 本组内容随整条需求确认</small><button type="button" disabled={disabled} onClick={()=>updateSection(section,rows.filter(item=>item.id!==row.id))}>移除{names[section]}</button></div>
       </details>;
@@ -59,8 +124,31 @@ export function DetailContractEditor({confirmationLabel='确认并进入交付',
   };
   return <div className="detail-contract-editor" data-detail-requirement={requirementId}>
     <p className="detail-contract-intro">字段、交互和流程均随“{confirmationLabel}”提交。标为不适用时需说明原因，已有定义请核对后移除。</p>
-    {candidate&&JSON.stringify(value)!==JSON.stringify(candidate.contract)&&<details className="detail-section"><summary>AI 详细定义修订建议 · 尚未替换当前内容</summary><p className="detail-help">合并时按字段和步骤编号比较；你的本地修改会保留，冲突会展示两份内容供选择。</p><p>{candidate.contract.fields?.length||0} 个字段 · {candidate.contract.interactions?.length||0} 项操作 · {candidate.contract.flow?.nodes?.length||0} 个流程步骤</p><button type="button" disabled={disabled} onClick={()=>{const merged=mergeDetailContract(value,base,candidate.contract);if(merged.value)onChange(merged.value,[...new Map([...conflicts,...merged.conflicts].map(conflict=>[conflict.path,conflict])).values()]);}}>合并 AI 详细定义建议</button></details>}
-    {!!conflicts.length&&<div className="detail-conflicts" role="alert"><strong>详细定义有 {conflicts.length} 处版本冲突，请比较后选择。</strong>{conflicts.map((conflict,index)=><div key={conflict.path} data-cell-key={cell(conflict.path)}><p>{conflict.path.split('.').map(part=>detailPropertyLabels[part]||part).join(' / ')}</p><div className="detail-conflict-values"><div><b>你的修改</b><pre>{display(conflict.local)}</pre></div><div><b>最新内容</b><pre>{display(conflict.remote)}</pre></div></div>{([false,true] as const).map(remote=><button type="button" disabled={disabled} key={String(remote)} onClick={()=>{const next=resolveDetailConflict(value,conflict,remote);if(next)onChange(next,conflicts.filter((_,n)=>n!==index));}}>{remote?'采用最新内容':'保留我的修改'}</button>)}</div>)}</div>}
+    {candidate&&(canAdoptWhole||canUndo)&&<details className="detail-section">
+      <summary>{canUndo?'AI 详细定义已整版使用 · 尚未正式确认':'AI 详细定义修订建议 · 尚未替换当前内容'}</summary>
+      <p className="detail-help">合并时按字段和步骤编号比较；保留的草稿不会被直接覆盖，冲突会展示两份内容供选择。</p>
+      <p className="detail-help">整版使用只替换本条详细定义并清除本行冲突；正文、业务说明、验收和回答不变。操作后可立即撤销。</p>
+      <p>{candidate.contract.fields?.length||0} 个字段 · {candidate.contract.interactions?.length||0} 项操作 · {candidate.contract.flow?.nodes?.length||0} 个流程步骤</p>
+      <button type="button" disabled={disabled||!candidateDiffers} onClick={()=>{const merged=mergeDetailContract(value,base,candidate.contract);if(merged.value)onChange(merged.value,[...new Map([...conflicts,...merged.conflicts].map(conflict=>[conflict.path,conflict])).values()]);}}>合并 AI 详细定义建议</button>
+      <button type="button" disabled={disabled||!canAdoptWhole} onClick={adoptWhole}>整版使用 AI 详细定义</button>
+      {canUndo&&<><p className="detail-help" role="status">已整版使用 AI 详细定义，可立即撤销；仍需核对后确认。</p><button type="button" disabled={disabled} onClick={undoWhole}>撤销整版替换</button></>}
+    </details>}
+    {!!conflicts.length&&<div className="detail-conflicts" role="alert"><strong>详细定义有 {conflicts.length} 处版本冲突，请比较后选择。</strong>
+      {conflicts.map((conflict,index)=><div key={conflict.path} data-cell-key={cell(conflict.path)}>
+        <p>{conflictLocation(conflict.path)}</p>
+        <div className="detail-conflict-values">
+          <div><b>保留的草稿</b><div className="detail-conflict-value">{conflictValue(conflict.local,conflict.path.split('.').pop()||'')}</div></div>
+          <div><b>新建议</b><div className="detail-conflict-value">{conflictValue(conflict.remote,conflict.path.split('.').pop()||'')}</div></div>
+        </div>
+        <details className="detail-conflict-technical"><summary>技术详情</summary><p>{conflict.path}</p>
+          <div className="detail-conflict-values">
+            <div><b>保留的草稿（原始 JSON）</b><pre>{rawDisplay(conflict.local)}</pre></div>
+            <div><b>新建议（原始 JSON）</b><pre>{rawDisplay(conflict.remote)}</pre></div>
+          </div>
+        </details>
+        {([false,true] as const).map(remote=><button type="button" disabled={disabled} key={String(remote)} onClick={()=>{const next=resolveDetailConflict(value,conflict,remote);if(next)onChange(next,conflicts.filter((_,n)=>n!==index));}}>{remote?'采用新建议':'保留草稿'}</button>)}
+      </div>)}
+    </div>}
     {(Object.keys(detailSectionLabels) as DetailSection[]).map(section=>{
       const setting=value.applicability?.[section],path='detail_contract.applicability.'+section,contentPath='detail_contract.'+section;
       const pendingCount=allIssues.filter(issue=>issue.path===path||issue.path.startsWith(path+'.')||issue.path===contentPath||issue.path.startsWith(contentPath+'.')).length;

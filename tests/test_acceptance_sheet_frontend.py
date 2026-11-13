@@ -15,7 +15,7 @@ const confirmed=[{requirement_id:'REQ-1',current:true}];
 
 def test_explicit_completion_fills_review_drafts_but_preserves_human_answers():
     run_ts(LOAD+r'''
-      const p=project([],2);p.product_context.intent='';p.context_field_states={intent:{status:'unknown'}};
+      const p=project([],2);p.product_context.intent='';p.context_field_states={};
       p.product_context_proposal={intent:'建议：便于值班人员核对电价模板。'};
       p.product_context_proposal_evidence={intent:{uncertain:true}};
       p.questions=[{id:'Q1',question:'权限采用什么方案？',answer:null,related_refs:['REQ-1']},
@@ -64,7 +64,7 @@ def test_unclassified_business_supplement_preserves_existing_human_change_choice
 
 def test_confirmed_requirement_keeps_new_acceptance_candidates_visible():
     run_ts(LOAD+r'''
-      const p=project([ac('AC-1','既有验收','selected'),ac('AC-NEW','建议：打开列表后显示模板'),ac('AC-REJECTED','不应出现','rejected'),ac('AC-OLD','不应出现','candidate',{superseded_by:'AC-NEW'})]);
+      const p=project([ac('AC-1','既有验收','selected'),ac('AC-NEW','建议：打开列表后显示模板','candidate',{generation_evidence:{run_id:'RUN-synthetic-ai'}}),ac('AC-REJECTED','不应出现','rejected'),ac('AC-OLD','不应出现','candidate',{superseded_by:'AC-NEW'})]);
       const before=JSON.stringify(p),row=initial(p,confirmed).rows['REQ-1'];
       assert.deepEqual(row.acceptance_items.map(a=>a.id),['AC-1','AC-NEW']);
       assert.equal(row.acceptance_items[1].ai_suggested,true);
@@ -145,12 +145,14 @@ def test_restored_old_or_same_revision_browser_draft_merges_new_suggestions():
 
 def test_expired_candidate_binding_is_cleared_only_for_recorded_matching_application():
     run_ts(LOAD+r'''
-      const old=project([ac('AC-1','原文','selected'),ac('AC-REV','AI 修订','candidate',{target_item_id:'AC-1',action:'revise'})]);
+      const old=project([ac('AC-1','原文','selected',{epistemic_status:'reported'}),ac('AC-REV','AI 修订','candidate',{target_item_id:'AC-1',action:'revise',generation_evidence:{run_id:'RUN-synthetic-ai-revision'}})]);
       const base=initial(old,confirmed),mine=structuredClone(base);
-      Object.assign(mine.rows['REQ-1'].acceptance_items[0],{statement:'AI 修订',candidate_id:'AC-REV'});
-      const applied=project([ac('AC-1','AI 修订','selected',{confirmed_revisions:[{candidate_id:'AC-REV'}]}),ac('AC-REV','AI 修订','deferred',{target_item_id:'AC-1',action:'revise'})],2);
+      assert.equal(base.rows['REQ-1'].acceptance_items[0].ai_suggested,false);
+      Object.assign(mine.rows['REQ-1'].acceptance_items[0],{statement:'AI 修订',candidate_id:'AC-REV',ai_suggested:true});
+      const applied=project([ac('AC-1','AI 修订','selected',{confirmed_revisions:[{candidate_id:'AC-REV'}]}),ac('AC-REV','AI 修订','deferred',{target_item_id:'AC-1',action:'revise',generation_evidence:{run_id:'RUN-synthetic-ai-revision'}})],2);
       const alreadySaved=mergeSuggestions(mine,base,initial(applied,confirmed)).rows['REQ-1'].acceptance_items[0];
       assert.equal(alreadySaved.candidate_id,undefined);assert.equal(alreadySaved.invalid_candidate,undefined);
+      assert.equal(alreadySaved.ai_suggested,false,'an applied matching AI revision is no longer pending AI advice');
       assert.deepEqual(acceptancePayload([alreadySaved]),[{id:'AC-1',statement:'AI 修订'}]);
       for(const status of ['deferred','rejected','excluded']){
         const latest=project([ac('AC-1','原文','selected'),ac('AC-REV','AI 修订',status,{target_item_id:'AC-1',action:'revise'})],2);

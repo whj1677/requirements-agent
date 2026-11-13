@@ -184,7 +184,7 @@ async def run(args):
                 if args.resume_data:
                     await work.locator('.refinement-view-switch').get_by_role('button',name=re.compile('^成文检查')).click()
                     await expect(work.get_by_text('可以继续生成 PRD。',exact=True)).to_be_visible()
-                    await work.get_by_role('button',name='返回并继续生成 PRD',exact=True).click()
+                    await work.get_by_role('button',name='生成 PRD',exact=True).click()
                     dialog=page.get_by_role('dialog',name='核对本次任务',exact=True);await expect(dialog).to_be_visible()
                     ids={t['id'] for t in store.records(pid,'user_task')}
                     await dialog.get_by_role('button',name=re.compile('^(授权本次范围并运行|运行本次任务)$')).click()
@@ -208,6 +208,8 @@ async def run(args):
                         raise AssertionError('Task did not finish: '+action)
                     if args.case=='review_draft':
                         await batch.get_by_role('button',name='先生成待确认评审稿',exact=True).click()
+                        preview=page.get_by_role('dialog',name='确认 PRD 变更预览',exact=True);await expect(preview).to_be_visible()
+                        await preview.get_by_role('button',name='确认预览并生成 PRD',exact=True).click()
                         await expect(page.get_by_role('article',name='PRD 正文',exact=True)).to_be_visible(timeout=15000)
                         assert not provider.requests,'saved-content review PRD must not invoke the model'
                         assert store.get(pid)['documents']['prd']['assembly_origin']=='saved_content'
@@ -238,7 +240,7 @@ async def run(args):
                             else:assert current['prewrite_review']['status']=='passed',current['prewrite_review']
                         await expect(work.get_by_text('可以继续生成 PRD。',exact=True)).to_be_visible()
                         assert all(q.get('understanding_status')=='applied' for q in store.get(pid)['questions'] if q.get('answer') and not q.get('superseded_by'))
-                        await work.get_by_role('button',name='返回并继续生成 PRD',exact=True).click()
+                        await work.get_by_role('button',name='生成 PRD',exact=True).click()
                         ids={t['id'] for t in store.records(pid,'user_task')};await execute();task=await wait_task('document',ids);assert task['status'] in ('succeeded','partial'),task
                 artifact=store.get(pid)['documents'].get('prd');assert artifact,store.records(pid,'user_task')[-1]
                 from app.document_reader import reader_document

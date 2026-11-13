@@ -41,6 +41,61 @@ def review(project, *, blocker=False, assessment=None):
     return value
 
 
+def test_basic_word_limits_do_not_expand_review_into_technical_design(tmp_path):
+    import json
+    from app.provider import assemble
+    from app.prewrite import review_project, structural_findings
+    from app.semantic_quality import POLICY
+    p = project_fixture(tmp_path)
+    req = p['items'][0]
+    req.pop('detail_contract', None)
+    req['detail_required'] = False
+    req['statement'] = '告警处理内容必填，最多500字；交接备注必填，最多200字，两者不能混用。'
+    before = copy.deepcopy(p)
+    messages, _, _ = assemble(review_project(p), 'review', '', DEFAULT, tmp_path)
+    context = json.loads(messages[1]['content'][0]['text'])
+    assert req['id'] in context['review_scope']['basic_requirement_ids']
+    assert '不补默认算法' in context['review_scope']['instruction']
+    assert '技术单位未定不自动成为业务缺口' in POLICY
+    assert not structural_findings(p)
+    assert p == before
+    req['detail_required'] = True
+    messages, _, _ = assemble(review_project(p), 'review', '', DEFAULT, tmp_path)
+    context = json.loads(messages[1]['content'][0]['text'])
+    assert req['id'] not in context['review_scope']['basic_requirement_ids']
+    # A real inconsistency stays a hard blocker even without detailed scope.
+    req['detail_required'] = False
+    req['statement'] = '最多500个Unicode码点，每个emoji按1个码点计数。'
+    assert any(f['hard_block'] and f['severity'] == 'blocker' for f in structural_findings(p))
+
+
+def test_technical_counting_objection_requires_reviewer_agreement_without_selecting_algorithm(tmp_path):
+    p = project_fixture(tmp_path)
+    req = p['items'][0]
+    req.pop('detail_contract', None)
+    req['detail_required'] = False
+    req['statement'] = '告警处理内容必填，最多500字；交接备注必填，最多200字，两者不能混用。'
+    response = review(p, blocker=True)
+    question = '500字与200字的长度校验应选择Unicode码点还是扩展字素簇？'
+    response['findings'][0].update(type='gap', message='业务上限已明确，但尚未选择Unicode码点或扩展字素簇计数。',
+        suggested_resolution=question, decision_question=question)
+    response['result']['required_decisions'] = [question]
+    first = apply_result(p, response, 'RUN-technical-question')
+    frozen_items = copy.deepcopy(p['items'])
+    # Disappearance alone does not fabricate an answer or close the old question.
+    no_dispute = copy.deepcopy(p)
+    assert apply_result(no_dispute, review(no_dispute), 'RUN-no-objection')['blocking_count'] == 1
+    p['prewrite_responses'] = [dict(finding_id=first['findings'][0]['id'], review_id=first['id'], mode='dispute',
+        reason='保留500字和200字业务上限，不选择实现算法；请复核是否存在当前业务结果冲突。', created='synthetic')]
+    rejected_objection = copy.deepcopy(p)
+    assert apply_result(rejected_objection, response, 'RUN-still-blocked')['blocking_count'] == 1
+    accepted = apply_result(p, review(p), 'RUN-reviewed-objection')
+    assert accepted['blocking_count'] == 0 and accepted['status'] == 'passed'
+    assert p['items'] == frozen_items
+    assert p['questions'][0]['answer'] is None
+    assert p['questions'][0]['prewrite_resolution']['basis'] == 'reviewed_dispute'
+
+
 def document_plan(project):
     return dict(plan_version='4', sections=[dict(section_key='function', context_refs=[],
         normative_refs=[item['id'] for item in project['items']
@@ -57,6 +112,26 @@ def isolated_store(tmp_path):
         p['workflow_mode'] = 'shared-draft'
         p['grants'][origin(DEFAULT)] = dict(source_ids=['SRC-0001'])
     return store, store.get(project['id'])
+
+
+@pytest.mark.parametrize('assessment',['ready_for_human_review','needs_changes'])
+def test_advisory_review_keeps_suggestions_without_overriding_negative_assessment(tmp_path,assessment):
+    import json
+    from app.provider import assemble
+    from app.prewrite import review_project
+    project=project_fixture(tmp_path)
+    messages,_,_=assemble(review_project(project),'review','',DEFAULT,tmp_path)
+    context=json.loads(messages[1]['content'][0]['text'])
+    assert 'assessment须与实际严重程度一致' in context['review_scope']['instruction']
+    assert 'required_decisions为空本身不代表通过' in context['review_scope']['instruction']
+    response=review(project,assessment=assessment)
+    response['findings']=[dict(type='consistency',severity='warning',message='建议补充一个已有规则的展示验收。',
+        suggested_resolution='补充展示验收建议供人工核对。',related_refs=['REQ-0001'],source_refs=[])]
+    before=copy.deepcopy(project['questions'])
+    result=apply_result(project,response,'RUN-advisory')
+    assert any(f['severity']=='warning' and f['message']==response['findings'][0]['message'] for f in result['findings'])
+    assert any(f['id']=='PW-assessment' for f in result['findings']) is (assessment=='needs_changes')
+    assert project['questions']==before  # A warning creates no new business decision.
 
 
 def test_finding_creates_one_unanswered_decision_without_changing_business_or_artifacts(tmp_path):

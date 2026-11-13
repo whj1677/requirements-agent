@@ -12,6 +12,9 @@ RELATED_KINDS = ('rule', 'acceptance', 'constraint')
 
 
 def scope(project, target, stage='clarify'):
+    if target and target.get('detail_required') is not None:
+        require(stage=='clarify' and target.get('kind')=='item' and type(target['detail_required']) is bool,
+                'TARGET_INVALID','详细定义生成意图仅用于完善原需求行')
     if stage != 'clarify' or not target or target.get('kind') != 'item':
         return None
     requirement = next((item for item in project['items'] if item['id'] == target['id']), None)
@@ -36,7 +39,7 @@ def scope(project, target, stage='clarify'):
                 related_item_ids=sorted(visible), shared_readonly_item_ids=sorted(shared),
                 question_ids=[q['id'] for q in questions],
                 answered_question_ids=[q['id'] for q in questions if answer_bindable(project, q)],
-                candidate_only=True)
+                candidate_only=True,**({'detail_required':True} if target.get('detail_required') is True else {}))
 
 
 def contract(local):
@@ -50,6 +53,9 @@ def contract(local):
                 '但不能把它冒充该问题已保存的回答，不能宣称已回答、已绑定或已落实；原问题保持未决。'
                 '未答问题的关联说明可放 findings.related_refs，原需求 related_refs 原样保留。')),
         drafting=(
+            '优先简洁成文：statement 一小段说明能力和目的，详细规则放对应 behavior，不重复整段复述。'
+            '多项规则用显式 Markdown ## 小标题及空行，参数或状态用标准管道表格；验收逐场景列前提、动作、预期，不把长篇内容塞进单格。'
+            '精简不得省略条件、数值单位、时序、异常或未决事项。'
             '先读原需求、直接关联条款、所有当前已保存回答与真实来源。已有明确答案直接整理，'
             '不能再让用户重复回答。正文、适用业务说明和可观察验收一起提出候选。'
             '原需求用同 kind revise/target_item_id 保留身份。用户无需先填满业务字段或提供新资料：'

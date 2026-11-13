@@ -86,6 +86,32 @@ def test_current_project_check_does_not_rewrite_historical_document(project):
     assert artifact == frozen
 
 
+def test_long_risk_uses_prose_and_only_exact_duplicate_pending_finding_is_omitted(project):
+    artifact=project['documents']['prd']
+    finding=artifact['prewrite_snapshot']['findings'][0]
+    finding['message']=('正常、保护、数据异常及恢复等待期间均须周期发布电流和状态。'
+        '现有验收仅在正常运行且数据有效时检查发布节奏，没有单独覆盖保护与恢复等待期间。'
+        '实现若在这些周期停发，会触发接收侧超时，测试应核对每个周期的实际电流与状态。'
+        '不能把发送成功作为接收侧已经执行的依据，也不能把通信恢复计时替换为数据有效性计时。'
+        '本条是待核对的验收补充建议，未改变已保存的业务规则、数值、状态优先级或恢复条件。'
+        '用户仍需阅读建议并判断是否补充相应验收场景；本次呈现调整不代表已经采纳或解决该问题。')
+    artifact['content']['sections'].append(dict(section_id='RISKS',title='风险点与待确认',level=1,
+        parent_section_id=None,blocks=[dict(kind='table',table_role='risk_register',ref_ids=['REQ-0001'],
+            text='风险点与待确认',title='风险点与待确认',columns=['风险来源','风险点','影响及状态','建议处理'],
+            rows=[['成文检查 · AI建议，待核对',finding['message'],'关联对象：REQ-0001',finding['suggested_resolution']]])]))
+    before=copy.deepcopy(artifact)
+    view=reader_document(artifact)
+    pending=next(s for s in view['sections'] if s['title']==TITLE)
+    assert len(pending['blocks'])==1 and '终态' in pending['blocks'][0]['text']
+    nodes=[n for s in view['sections'] for n in s['reading_nodes']]
+    assert not any(n.get('table_role')=='risk_register' for n in nodes)
+    assert sum(finding['message'] in n.get('text','') for n in nodes)==1
+    assert any(finding['suggested_resolution'] in n.get('text','') for n in nodes)
+    assert artifact==before
+    artifact['content']['sections'][-1]['blocks'][0]['rows'][0][3]='不同的建议，不能当作完整重复。'
+    assert len(pending_section(artifact)['blocks'])==2
+
+
 @pytest.mark.parametrize('snapshot', [None, {}, {'findings': []}, {'findings': [
     dict(severity='blocker', status='resolved', message='历史已解决'),
     dict(severity='warning', status='resolved', message='历史提醒已解决'),
@@ -125,7 +151,8 @@ def test_review_markdown_and_word_include_frozen_pending_details(project):
     markdown = files['PRD.md'].decode('utf-8')
     word = '\n'.join(p.text for p in Document(io.BytesIO(files['PRD.docx'])).paragraphs)
     for text in (markdown, word):
-        assert TITLE in text and '需求评审稿／非正式交付／含待确认项' in text
+        assert TITLE in text and '需求评审稿／非正式交付' in text
+        assert '待核对问题（阻塞项）' in text and '建议（待确认）' in text
         for finding in project['documents']['prd']['prewrite_snapshot']['findings'][:2]:
             assert finding['message'] in text and finding['suggested_resolution'] in text
         assert 'REQ-0001（电价时段维护）' in text
@@ -148,3 +175,35 @@ def test_semantic_review_includes_generated_prewrite_section_without_assuming_ca
     # their frozen text or mutate the signed canonical document.
     assert any('.prewrite_snapshot.findings[' in location for location in readable_document_blocks(artifact))
     assert artifact == before
+
+
+def test_prewrite_future_document_risk_is_not_current_document_assertion(project):
+    from app.prewrite import review_project, validate_result
+    from app.semantic_quality import validate_document_findings
+    from app.core import Problem
+    from app.requirements import delivery_items
+    working = review_project(project)
+    item = working['items'][0]
+    finding = dict(message='当前条款导出到 PRD 后若被单独引用为结果断言，可能造成误解。',
+        severity='warning', related_refs=[item['id']], source_refs=[],
+        evidence_quotes=[dict(object_id=item['id'], path='statement', quote=item['statement'])])
+    response = dict(findings=[finding], result=dict(assessment='ready_for_human_review',
+        reviewed_refs=[i['id'] for i in delivery_items(working)],
+        perspectives=[dict(role='测试', considerations=['核对当前条款'])], required_decisions=[]))
+    before = copy.deepcopy(response)
+    validate_document_findings(response['findings'], working, [])
+    validate_result(working, response)
+    assert response == before and project['documents'] and not working['documents']
+    # Scope selection never relaxes real item quotes or explicit document IDs.
+    finding['evidence_quotes'][0]['quote'] = '不存在的当前条款原文'
+    with pytest.raises(Problem, match='成文检查引文不在'):
+        validate_result(working, response)
+    finding['message'] = 'DOC-prd.SEC-001.blocks[0] 存在错误。'
+    with pytest.raises(Problem, match='复核文档段落定位不存在'):
+        validate_document_findings(response['findings'], working, [])
+    finding['message'] = 'DOC:DOC-prd.SEC-001.blocks[0]:condition 存在错误。'
+    with pytest.raises(Problem, match='不存在的语义检查'):
+        validate_document_findings(response['findings'], working, [])
+    finding['message'] = before['findings'][0]['message']
+    with pytest.raises(Problem, match='复核声称错误的文档不存在'):
+        validate_document_findings(response['findings'], dict(working, _prewrite_review=False), [])

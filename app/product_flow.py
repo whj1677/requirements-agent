@@ -30,8 +30,31 @@ def question_stage(q):
 
 
 def question_open(q):
-    from .understanding import coverage_complete
-    return (q['status']!='answered' or not coverage_complete(q)) and not q.get('out_of_scope_reason') and not q.get('superseded_by') and not q.get('prewrite_resolution')
+    from .understanding import active_question, coverage_complete
+    return (q['status']!='answered' or not coverage_complete(q)) and active_question(q)
+
+
+def question_view(p):
+    """Read-only navigation; every original identity remains addressable."""
+    from .understanding import active_question, normal
+    result={key:[] for key in ('open_ids','answered_ids','history_ids','answer_pending_ids','answer_applied_ids')}
+    groups={};duplicates={}
+    for q in p['questions']:
+        key='history_ids' if not active_question(q) else 'open_ids' if question_open(q) else 'answered_ids'
+        result[key].append(q['id'])
+        if key=='answered_ids':
+            result['answer_applied_ids' if q.get('understanding_status')=='applied' else 'answer_pending_ids'].append(q['id'])
+        elif key=='open_ids':
+            refs=tuple(sorted(set(q.get('related_refs',[]))))
+            group_key=refs or (q['id'],)
+            groups.setdefault(group_key,dict(representative_id=q['id'],question_ids=[],related_refs=list(refs)))['question_ids'].append(q['id'])
+            duplicate_key=(group_key,normal(q['question']),tuple(sorted({digest(ref) for ref in q.get('source_refs',[])})),
+                           digest(q.get('options',[])),q.get('blocking'),q.get('blocking_stage',3),
+                           q.get('answer'),q.get('decision_group_id'),digest(q.get('unresolved_locations')))
+            duplicates.setdefault(duplicate_key,dict(representative_id=q['id'],question_ids=[]))['question_ids'].append(q['id'])
+    result['open_groups']=list(groups.values())
+    result['duplicate_groups']=[group for group in duplicates.values() if len(group['question_ids'])>1]
+    return result
 
 
 def clarification_focus(p):
@@ -285,7 +308,22 @@ def status(p):
         own_missing=[row['message'] for row in own_blockers]
         recorded=p.get('stage_checks',{}).get(str(step))
         token=fingerprint(p,step)
-        valid=bool(step<6 and prior_valid and not own_missing and recorded and recorded['content_hash']==token)
+        confirmed_token=bool(recorded and recorded['content_hash']==token)
+        if step==3 and recorded and not confirmed_token and not own_missing:
+            from .prewrite import input_hash, _resolution_current, VERSION
+            report=p.get('prewrite_review') or {}
+            if report.get('status')=='passed' and report.get('input_hash')==input_hash(p):
+                resolved={f.get('question_id'):f for f in report.get('findings',[]) if f.get('status')=='resolved'}
+                questions=[q for q in p['questions'] if not (
+                    q.get('prewrite_origin')==VERSION and not q.get('answer')
+                    and q.get('id') in resolved and q.get('prewrite_key')==resolved[q['id']]['id']
+                    and q.get('prewrite_resolution',{}).get('basis')=='reviewed_dispute'
+                    and _resolution_current(p,resolved[q['id']],q))]
+                # Preserve both already-recorded identities: a checkpoint may
+                # predate this derived question, or already include it. Never
+                # rewrite the saved confirmation or the reviewed question.
+                confirmed_token=recorded['content_hash']==fingerprint(dict(p,questions=questions),step)
+        valid=bool(step<6 and prior_valid and not own_missing and confirmed_token)
         if step==6:valid=bool(prior_valid and p.get('active_baseline_id') and p.get('confirmed_hashes')==hashes(p))
         result.append(dict(step=step,title=title,content_hash=token,complete=valid,
             available=prior_valid,missing=own_missing,blockers=own_blockers,needs_recheck=bool(recorded and not valid),
@@ -342,7 +380,7 @@ def review_document(p, kind, document_id):
         brief_hash=brief_hash(p),reviewed_at=now(),actor='authenticated_local_user',meaning='文档评审核对，非正式业务批准')
 
 
-def execution_issues(p, stage, kind='prd', discussion_target=None):
+def execution_issues(p, stage, kind='prd', discussion_target=None, *, prewrite=False):
     if stage=='ui':return ['业务草图功能已取消，请通过需求条目、业务规则及文档表达改动。']
     # Shared drafts are editable work, not a stage-check or formal approval.
     # Content/source validation still applies in generation and final gates.
@@ -360,6 +398,22 @@ def execution_issues(p, stage, kind='prd', discussion_target=None):
         if valid:
             required = 1
     if not required:return []
+    if prewrite and stage=='review':
+        from .prewrite import input_hash, VERSION
+        report=p.get('prewrite_review') or {}
+        responses=p.get('prewrite_responses',[])
+        prior=dict(p,prewrite_responses=[r for r in responses if r.get('review_id')!=report.get('id')])
+        if report.get('id') and report.get('input_hash')==input_hash(prior):
+            latest={r['finding_id']:r for r in responses if r.get('review_id')==report['id']}
+            disputed={f.get('question_id'):f['id'] for f in report.get('findings',[])
+                if f.get('evidence_identity') and not f.get('hard_block') and f.get('status')!='resolved'
+                and latest.get(f['id'],{}).get('mode')=='dispute'}
+            # A check's own disputed output may be reviewed again. Only this
+            # read-only gate view excludes it; the persisted open question and
+            # all ordinary confirmation/source/checkpoint gates remain intact.
+            p=dict(p,questions=[q for q in p['questions'] if not (
+                q.get('prewrite_origin')==VERSION and not q.get('answer')
+                and q.get('id') in disputed and q.get('prewrite_key')==disputed[q['id']])])
     steps=status(p)
     failures=[s for s in steps[:required] if not s['retired'] and not s['complete']]
     if not failures:return []

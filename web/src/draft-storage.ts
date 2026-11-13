@@ -5,6 +5,10 @@ export const session = {
     if (fallback.has(key)) return fallback.get(key)!;
     try { return window.sessionStorage.getItem(key); } catch { return null; }
   },
+  isPersistent(key: string): boolean {
+    if (fallback.has(key)) return false;
+    try { return window.sessionStorage.getItem(key) !== null; } catch { return false; }
+  },
   setItem(key: string, value: string): boolean {
     try { window.sessionStorage.setItem(key, value); fallback.delete(key); return true; }
     catch { fallback.set(key, value); return false; }

@@ -103,6 +103,27 @@ def test_unknown_no_assertion_or_confirmed_query_is_allowed(text):
 
 
 @pytest.mark.parametrize('text',[
+    '结果未知记录点击查询，仅按保存的原请求编号查询，不发送新派单；核实成功后更新该站点对应请求为成功并禁止重试。',
+    '结果未知时按保存的原请求编号查询；核实失败后更新原请求为失败，允许用户主动重试。',
+])
+def test_saved_request_lookup_and_verified_branch_are_not_unknown_assertions(text):
+    assert not issues(facts(text,location='acceptance',fallback_subject='记录'))
+
+
+@pytest.mark.parametrize('text',[
+    '结果未知时按保存的原请求编号查询，直接更新原请求为成功。',
+    '结果未知时不发送新派单；更新原请求为失败。',
+    '结果未知时保存原请求编号，直接认定原请求失败。',
+    '记录结果未知；核实资源成功后更新记录为成功。',
+    '记录结果未知；核实成功后更新记录为成功；更新记录为失败。',
+    '记录结果未知；未核实成功后更新记录为成功。',
+])
+def test_lookup_or_local_verification_never_proves_other_unknown_outcomes(text):
+    found=issues(facts(text,location='acceptance',fallback_subject='记录'))
+    assert any(issue['reason']=='unknown_result_asserted' for issue in found)
+
+
+@pytest.mark.parametrize('text',[
     '超时结果未知，不声称服务端未创建资源，先查询原申请ID。',
     '超时结果未知，不得声称已经创建或未创建资源；先查询原申请ID。',
     '超时结果未知，不能声称服务端已创建资源。',
@@ -346,3 +367,32 @@ def test_actual_condition_review_is_accepted_without_inventing_additional_dimens
     check=checks[0]
     value['findings'][0]['message']=f'{check["check_id"]}：PRD {check["location"]} 原句“{check["quote"]}”有无条件结果断言错误。'
     assert validate_response(value,'review',p,p['sources'][0]['excerpts'])==value and p==before
+
+
+@pytest.mark.parametrize('text',[
+    '有效更新恰在500 ms到达也先触发超时，再作为新的恢复起点。',
+    '若该帧是有效更新且已超时，则它作为新的 5 s 恢复起点。',
+    '「记为有效更新并累计计时」置于超时判定之前。',
+    '| PCS 更新超时 | 500 ms | ≥500 ms 停止充电请求 |',
+    '| PCS 有效更新超时 | ≥500 ms |',
+    'PCS 超时下界（499 ms）：距上次有效更新 499 ms 且期间没有新的有效报文时，未达到 ≥500 ms 的停止条件，PCS 不触发停止充电请求。',
+    'PCS 超时触发（500 ms）：距上次有效更新达到 500 ms 时，PCS 停止充电请求。',
+    '超时判定期间收到无效报文时，距上次有效更新的计时保持不变。',
+    'PCS 连续 500 ms 未收到有效更新时视为通信超时，停止充放电请求；直到连续收到有效报文满 5 秒才恢复受控运行。',
+    '有效更新报文、连续未收到有效更新的时长（超时判定阈值 500 ms）、连续收到有效报文的时长（恢复阈值 5 秒）。',
+    '无效更新不计为有效更新；超时状态下 BMS 发送报文成功本身不构成 PCS 恢复受控运行或已执行功率的依据。',
+    '「记为有效更新并累计计时」置于超时判定之前；以一个「结构校验计数标志均有效」合并计数参照更新与有效更新；无状态变化记录节点。',
+    'AC08 PCS超时：最后有效更新在t=0，t=499 ms尚不超时，t=500 ms停止请求。'])
+def test_received_update_at_timeout_boundary_is_not_an_asserted_business_write(text):
+    projected=facts(text,location='requirement.statement')
+    assert not issues(projected,[])
+    # Do not exempt the entire sentence or all uses of 更新 near 超时.
+    for text in ('有效更新恰在500 ms到达也先触发超时，然后更新记录。',
+                 '若该帧是有效更新且已超时，则更新记录。',
+                 '若该帧是有效更新记录且已超时，则仍视为成功。',
+                 '「记为有效更新并累计计时」置于超时判定之前，然后更新记录。',
+                 '请求超时后更新超时记录。',
+                 '距上次有效更新达到500 ms且请求超时后更新记录。',
+                 '请求超时后就更新记录。'):
+        found=issues(facts(text,location='requirement.statement'),[])
+        assert any(row['reason']=='unknown_result_asserted' for row in found)

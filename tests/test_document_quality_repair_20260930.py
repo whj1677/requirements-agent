@@ -99,8 +99,9 @@ def test_prd_context_explanation_moves_to_its_evidence_chapter(tmp_path):
     proposed = dict(plan_version='4', sections=[section('rules', explanations=[
         explanation('已有使用者需要核对。', context=['users'])])])
     readable = reader_document(artifact(compile_plan(proposed, project, 'prd'), project))
-    user_section = next(s for s in readable['sections'] if s['title']=='使用者与权限')
-    assert '已有使用者需要核对。' in dumps(user_section)
+    overview = next(s for s in readable['sections'] if s['title']=='需求概述')
+    user_index = next(n for n,b in enumerate(overview['blocks']) if b['text'].startswith('使用者与权限：'))
+    assert overview['blocks'][user_index+1]['text']=='已有使用者需要核对。'
     assert all('已有使用者需要核对。' not in dumps(s)
                for s in readable['sections'] if s['title']=='业务规则')
 

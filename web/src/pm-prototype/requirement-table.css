@@ -4,6 +4,16 @@
 .business-draft-rejected{padding:1rem 0;border-top:1px solid var(--line,#d5e5e1)}
 .business-draft-rejected pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:18rem;overflow:auto}
 .business-draft-row-review{margin:.75rem 0}
+.business-draft-row-callout{margin:.5rem 0}
+.business-draft-row-callout>strong{display:block}
+.business-draft-row-callout>p{margin:.35rem 0}
+.business-draft-row-callout>button{display:block;margin:.5rem 0}
+.business-draft-row-callout>details{margin-top:.5rem}
+.business-draft-row-callout summary{cursor:pointer;font-weight:600}
+.business-draft-row-callout details details{margin-top:.5rem;font-weight:400}
+.business-draft-row-review-full-reason{white-space:pre-line}
+.business-draft-row-review pre{white-space:pre-wrap;overflow-wrap:anywhere}
+.business-draft-diagnostic+.business-draft-diagnostic{margin-top:.75rem;padding-top:.75rem;border-top:1px solid var(--line,#d5e5e1)}
 .business-draft-evidence{padding:.75rem 0;border-bottom:1px solid var(--line,#d5e5e1)}
 .business-draft-evidence>span{display:block;color:#526663;font-size:.875rem;margin:.25rem 0}
 

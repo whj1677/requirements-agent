@@ -130,3 +130,33 @@ def saved_implementations(project, question):
     return [dict(item_id=item['id'], **row) for item in answer_targets(project, question)
             if record_current(project, question, item, records.get(item['id'], {}))
             for row in records[item['id']]['witnesses']]
+
+
+def location_suggestions(project, question, limit=8):
+    """Rank existing words for human review; this never records implementation.
+
+    Lexical overlap is a navigation aid, not a semantic entailment judgement.
+    Only directly related original clauses and valid current paths are offered.
+    """
+    from .understanding import answer_targets
+    from .requirement_details import detail_property_paths
+    answer = question.get('answer') or ''
+    if not answer.strip():return []
+    def terms(text):
+        chunks=re.findall(r'[\u4e00-\u9fff]+|[a-zA-Z0-9_]+', text.lower())
+        return {chunk[n:n+2] for chunk in chunks for n in range(max(1,len(chunk)-1))}
+    vocabulary=terms(answer)
+    result=[]
+    for item in answer_targets(project,question):
+        fields=(*FIELDS,*detail_property_paths(item)) if item.get('kind')!='acceptance' else ('statement',)
+        for field in fields:
+            text=field_text(item,field)
+            if not text.strip():continue
+            exact=answer.strip() in text
+            overlap=len(vocabulary & terms(text))
+            if not exact and overlap<2:continue
+            score=1.0 if exact else overlap/max(len(vocabulary),1)
+            result.append(dict(item_id=item['id'],field=field,quote=text,score=round(score,4),
+                reason='包含已保存回答原文，请核对业务含义' if exact else '与回答用词相关，请核对是否真正落实'))
+    result.sort(key=lambda row:(-row['score'],len(row['quote']),row['item_id'],row['field']))
+    return result[:limit]

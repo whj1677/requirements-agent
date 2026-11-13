@@ -51,8 +51,7 @@ def test_benchmark_end_to_end_keeps_human_context_and_saves_reviewable_report(ca
     assert preview['label']=='对标并填充需求草稿'
     assert preview['benchmark']['target']=='示例联系人产品'
     assert not preview['missing'] and not model['requests']
-    assert start(c,root,body,preview,authorize=False).status_code==403
-    assert start(c,root,body,preview).status_code==200
+    assert start(c,root,body,preview,authorize=False).status_code==200
     task=finished(c,root)
     assert task['status']=='succeeded'
     p=c.get(root).json()
@@ -84,21 +83,21 @@ def test_invalid_reference_claim_is_not_activated_or_repaired(case,invalid):
     assert p['messages'][0]['text']==body['message']
 
 
-def test_empty_chat_saves_explicit_task_intent_and_requires_fresh_source_authorization(case):
+def test_empty_chat_saves_explicit_task_intent_without_separate_authorization(case):
     c,app,model,root=case;source=material(c,root);comparison(model)
     request=dict(target='示例产品',focus='只读列表',source_ids=[source['id']])
     body,preview=plan(c,root,'organize','',benchmark=request)
-    assert all(r['needs_authorization'] for r in preview['recipients'])
-    assert start(c,root,body,preview,authorize=False).status_code==403 and not model['requests']
-    assert start(c,root,body,preview).status_code==200 and finished(c,root)['status']=='succeeded'
+    assert not any(r['needs_authorization'] for r in preview['recipients'])
+    assert start(c,root,body,preview,authorize=False).status_code==200 and finished(c,root)['status']=='succeeded'
     p=c.get(root).json()
     assert p['messages'][0]['text']=='对标对象：示例产品\n参考范围：只读列表'
     assert p['sources'][-1]['origin']=='benchmark_intake'
     body,preview=plan(c,root,'organize','',benchmark=request)
-    assert all(r['needs_authorization'] for r in preview['recipients'])
+    assert not any(r['needs_authorization'] for r in preview['recipients'])
     count=len(model['requests'])
-    assert start(c,root,body,preview,authorize=False).status_code==403
-    assert len(model['requests'])==count
+    assert start(c,root,body,preview,authorize=False).status_code==200
+    assert finished(c,root)['status']=='succeeded'
+    assert len(model['requests'])==count+1
 
 
 def test_screenshot_benchmark_uses_actual_vision_observation_and_keeps_candidates(case):

@@ -3,7 +3,7 @@ import { api } from './api';
 import { useDirty, useNavigation } from './editing';
 
 type Obj = Record<string, any>;
-const CONFIG_FIELDS = ['name', 'base_url', 'model', 'key_env', 'vision', 'json_mode', 'timeout', 'max_tokens', 'review_max_tokens', 'review_retry_max_tokens', 'context_chars', 'action_seconds', 'thinking_disabled', 'review_thinking', 'documented_at', 'local_allowed', 'input_price', 'output_price'] as const;
+const CONFIG_FIELDS = ['name', 'base_url', 'model', 'key_env', 'vision', 'json_mode', 'timeout', 'max_tokens', 'review_max_tokens', 'review_retry_max_tokens', 'context_chars', 'action_seconds', 'thinking_disabled', 'review_thinking', 'documented_at', 'local_allowed', 'input_price', 'output_price', 'intake_engine'] as const;
 const editable = (value: Obj) => {
   const current: Obj = {};
   for (const field of CONFIG_FIELDS) if (value && Object.hasOwn(value, field)) current[field] = value[field];
@@ -115,7 +115,7 @@ export function ModelSettings({ models, busy, act, refresh }: { models: Obj; bus
         <button disabled={busy || !key.trim() || dirty || keyTargetChanged} onClick={() => act(() => saveKey(false))}>仅临时使用此 Key</button>
         <button disabled={busy || dirty || !status?.key_configured} onClick={() => act(async () => { setResult(''); const r = await api<Obj>('/models/' + slot + '/test', 'POST'); await refresh(); setResult('接口连接成功；请求模型 ' + r.meta.request_model + '，返回模型 ' + r.meta.response_model + '。视觉探针：' + r.vision + '；未验证需求分析语义。'); })}>{slot === 'vision' ? '测试视觉能力（合成图片）' : '测试连接（调用模型）'}</button>
       </div>
-      {dirty && <p className="muted">接收端或模型已修改。先保存配置，再测试连接或临时使用密钥。</p>}
+      {dirty && <p className="muted">配置已修改。先保存配置，再测试连接或临时使用密钥。</p>}
       {result && <p role="status" className="notice">{result}</p>}
     </div>
     <details className="settings-advanced"><summary>高级参数与密钥来源</summary>
@@ -123,11 +123,20 @@ export function ModelSettings({ models, busy, act, refresh }: { models: Obj; bus
         <label>服务方名称<input value={form.name || ''} onChange={e => update('name', e.target.value)} /></label>
         <label>项目环境变量名<input value={form.key_env || ''} onChange={e => update('key_env', e.target.value)} /></label>
       </div>
+      {slot === 'model' && <>
+        <label>资料整理方式<select value={form.intake_engine || 'direct'} onChange={e => update('intake_engine', e.target.value)}>
+          <option value="direct">现有方式</option>
+          <option value="deepseek-harness">DSH 技能整理（试用）</option>
+        </select></label>
+        <small className="muted">仅用于符合条件的“读取资料 → 整理需求草稿”；详细定义、成文和审查等保持现有流程。选择后需保存，不会自动安装、发送资料或开始任务。</small>
+        <p className="settings-status">DSH 运行状态：{!status?.intake_runtime ? '尚未取得运行状态' : status.intake_runtime.ready ? '本机隔离组件可用。运行环境可用不代表生成结果已核对。' : status.intake_runtime.message || '本机隔离组件尚未就绪。'}</p>
+      </>}
       <label>视觉能力<select value={form.vision || 'unknown'} onChange={e => update('vision', e.target.value)}><option value="unknown">未知</option><option value="documented">官方文档支持，未实测</option><option value="unsupported">不支持</option></select></label>
       <p className="notice">不设累计调用或费用预算；保留单次容量、超时和有限错误重试。</p>
       <div className="settings-grid">{[['max_tokens', '单次输出上限（按模型能力）'], ['timeout', '单请求超时（秒）']].map(([field, label]) => <label key={field}>{label}<input type="number" min="1" max={field === 'max_tokens' ? 393216 : undefined} value={form[field] || ''} onChange={e => update(field, Number(e.target.value))} /></label>)}</div>
       <label className="check"><input type="checkbox" checked={form.json_mode || false} onChange={e => update('json_mode', e.target.checked)} />使用 JSON Output 模式</label>
-      <label className="check"><input type="checkbox" checked={form.thinking_disabled || false} onChange={e => update('thinking_disabled', e.target.checked)} />DeepSeek 其它结构化阶段关闭思考模式（整理、成文等）</label>
+      <label className="check"><input type="checkbox" checked={!form.thinking_disabled} onChange={e => update('thinking_disabled', !e.target.checked)} />DeepSeek 结构化分析使用思考模式（整理、成文等）</label>
+      <small className="muted">开启后，复杂分析可能耗时更长；此项仅影响 DeepSeek 结构化分析。</small>
       {slot === 'model' && <><label className="check"><input type="checkbox" checked={form.review_thinking ?? true} onChange={e => update('review_thinking', e.target.checked)} />DeepSeek 语义审查使用思考模式（建议）</label><small className="muted">思考过程与最终回答都会占用输出额度；此项仅影响 DeepSeek 语义审查。</small></>}
       <label className="check"><input type="checkbox" checked={form.local_allowed || false} onChange={e => update('local_allowed', e.target.checked)} />明确允许此本地 HTTP 模型地址</label>
       <div className="toolbar"><button disabled={busy || !dirty} onClick={() => act(async () => { setResult(''); await saveConfig(); setResult('高级参数已保存。'); })}>保存高级参数</button></div>
