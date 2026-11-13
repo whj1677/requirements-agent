@@ -67,8 +67,11 @@ def generate(store, pid, body):
                 _sources_valid(p, item)
         from .prd import saved_prd_plan
         plan=saved_prd_plan(p)
-        from .requirement_confirmation import row_fingerprint
-        current_items={item['id']:item for item in p['items']}
+        from .requirement_confirmation import confirmation_current, row_fingerprint
+        from .requirements import delivery_items
+        current_items={item['id']:item for item in delivery_items(p)
+                       if item['kind']=='requirement' and not item.get('detail_contract')
+                       and confirmation_current(p,item)}
         charts=[]
         for section in p.get('documents',{}).get('prd',{}).get('content',{}).get('sections',[]):
             for block in section['blocks']:
@@ -77,14 +80,13 @@ def generate(store, pid, body):
                     if ref in current_items and block['source_hash']==row_fingerprint(p,current_items[ref]):
                         charts.append(dict(requirement_id=ref,flow=copy.deepcopy(block['flow'])))
         if charts:plan['flowcharts']=charts
-        response = compile_plan(plan, p, 'prd', include_sketch=False)
+        response = compile_plan(plan, p, 'prd', include_sketch=False, saved_content=True)
         from .contracts import validate_response
         validate_response(response, 'prd', p, [e for s in p['sources'] for e in s['excerpts']])
         response['summary'] = '已按已保存原文生成 PRD 评审稿，未调用 AI；未决事项保留，请核对后再正式交付。'
         apply_response(p, response)
         artifact = p['documents']['prd']
         from .detail_business_scope import current_reviews
-        from .requirements import delivery_items
         scoped_details=[review for item in delivery_items(p) if item.get('kind')=='requirement' and not item.get('target_item_id') for review in current_reviews(p,item)]
         if scoped_details:artifact['detail_unknown_scope_reviews']=scoped_details
         artifact.update(prewrite_required=True, sketch_policy='excluded',

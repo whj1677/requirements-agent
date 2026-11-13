@@ -45,7 +45,7 @@ export function prewriteLabel(review: JsonObject | undefined): string {
   return prewriteStatusLabels[review?.status || 'not_run'] || '检查状态暂未确认';
 }
 export function prewriteCanDraft(review: JsonObject | undefined): boolean {
-  return review?.current === true && review.status === 'needs_confirmation' &&
+  return review?.current === true && ['passed', 'needs_confirmation'].includes(review.status) &&
     !(review.findings || []).some((finding: JsonObject) => finding.hard_block === true && finding.status !== 'resolved');
 }
 export function prewriteFindingLabel(finding: JsonObject): string {

@@ -71,6 +71,7 @@ export function Workspace({ id, active, assistantEntryNonce, assistantEntryTask 
   const [docType, setDocType] = useState('prd'), [selectedDocId, setSelectedDocId] = useState(''), [rename, setRename] = useState(''), [renameOpen, setRenameOpen] = useState(false);
   const [documentQuestion, setDocumentQuestion] = useState<{id:string;nonce:number}>();
   const [localPrdPreview,setLocalPrdPreview]=useState<DocumentPreview|null>(null);
+  const localPrdKey=useRef<string|null>(null);
   const [prdGenerationPreview,setPrdGenerationPreview]=useState<PreparedAction|null>(null);
   const [chapter, setChapter] = useState<ChapterTarget | null>(null);
   const [chapterSubmission, setChapterSubmission] = useState<ChapterSubmission>();
@@ -285,6 +286,18 @@ export function Workspace({ id, active, assistantEntryNonce, assistantEntryTask 
     }
     const current=actionRecoveryRef.current;
     if(current?.projectId===prepared.projectId&&current.key===prepared.key){actionRecoveryRef.current=null;setActionRecovery(null);}
+  }
+  async function openLocalPrdPreview() {
+    const current=projectRef.current;
+    if(!current || !prewriteCanDraft(current.prewrite_review)) throw Error('当前内容尚未通过成文检查，请先检查并处理阻塞项。');
+    if(session.getItem(documentPreparationKey) && current.prewrite_review?.status==='passed'){
+      setDocumentPreparationNotice('AI 补全草稿尚待确认。请先核对并点击“确认并进入交付”，再生成文档。');
+      setDocumentReviewRequested(true);return;
+    }
+    const preview=await api<DocumentPreview>(root+'/documents/prd/local-preview','POST',{expected_revision:current.revision});
+    if(projectRef.current?.id!==current.id || projectRef.current.revision!==current.revision) throw Error('项目内容已更新，请重新核对后生成文档。');
+    localPrdKey.current=crypto.randomUUID();
+    setLocalPrdPreview(preview);
   }
   async function planAction(action: BusinessAction, optionId?: string, target?: Obj, text = '', retryInput?: Partial<ActionInput>) {
     if(actionRecoveryRef.current)throw Error('上一次 AI 提交结果尚未确认。请刷新任务状态，或点击“继续同一次提交”；不要另建任务。');
@@ -636,7 +649,7 @@ export function Workspace({ id, active, assistantEntryNonce, assistantEntryTask 
       onCreateRequirement={()=>setCandidateOpen(true)} onCreateAcceptance={requirementId=>{setAcceptanceRequirement(requirementId||'');setAcceptanceOpen(true);}}
       onDelivery={()=>openDetails(5)} onDocuments={()=>openDetails(4,docType,()=>revealDocument(docType))} onRefresh={retry}
       onPrewrite={()=>act(()=>planAction('prewrite',undefined,undefined,'',{document_type:'prd'}))}
-      onGeneratePrd={allowReviewDraft=>{if(allowReviewDraft){void act(async()=>{const preview=await api<DocumentPreview>(root+'/documents/prd/local-preview','POST',{expected_revision:p.revision});setLocalPrdPreview(preview);});return;}openDetails(4,'prd');void act(()=>planAction('document',undefined,undefined,'',{document_type:'prd',allow_review_draft:false}));}}
+      onGeneratePrd={allowReviewDraft=>{if(allowReviewDraft){void act(openLocalPrdPreview);return;}openDetails(4,'prd');void act(()=>planAction('document',undefined,undefined,'',{document_type:'prd',allow_review_draft:false}));}}
       onResolveBlocker={(action,row)=>resolveBlocker(action,row,5)}
       taskPanel={task=><TaskStatus task={task} busy={busy} uncertain={Boolean(fatal)||stale.includes('任务列表')} onRefresh={retry}
         onCancel={()=>act(async()=>{await api(root+'/actions/'+task.id+'/cancel','POST');await refresh();})} onRetry={()=>retryUserTask(task)}
@@ -653,7 +666,7 @@ export function Workspace({ id, active, assistantEntryNonce, assistantEntryTask 
         {phaseAccess.allowed&&blockerTask&&<p className="blocker-return" role="status">正在处理：{blockerTask.title}。<button type="button" disabled={busy||running} onClick={returnToBlockers}>返回阻塞清单</button></p>}
         {phaseAccess.allowed&&returnAnswerId&&(phase===1||phase===2)&&<p className="notice">正在核对回答关联条款。保存并采纳后，可返回原回答重新核对。<button type="button" disabled={busy||running} onClick={returnToAnswer}>返回原回答核对</button></p>}
         <div className="document-stage" hidden={phase!==4||(documentReadOnly&&!hasReadableDocument)} id={'document-result-'+id}>
-          <DocumentStudio readOnly={documentReadOnly} focusReviewNonce={reviewFocusNonce} taskStatus={documentTaskStatus} p={p} docType={docType} setDocType={next=>guard(()=>{actionIntent.current++;setDocType(next);setSelectedDocId('');setDocumentQuestion(undefined);})} setSelectedDocId={next=>{if(next!==selectedDocId)guard(()=>setSelectedDocId(next));}} selectedDocId={selectedDocId} artifacts={artifacts} setTab={navigate} root={root} act={act} mutate={mutate} busy={busy||running} onHelp={openHelp} onGenerate={()=>act(()=>planAction('document'))} onPrewrite={()=>openMain({step:'refine',prewrite:true})} onSource={shared.onSource} onClarify={openQuestion}
+          <DocumentStudio readOnly={documentReadOnly} focusReviewNonce={reviewFocusNonce} taskStatus={documentTaskStatus} p={p} docType={docType} setDocType={next=>guard(()=>{actionIntent.current++;setDocType(next);setSelectedDocId('');setDocumentQuestion(undefined);})} setSelectedDocId={next=>{if(next!==selectedDocId)guard(()=>setSelectedDocId(next));}} selectedDocId={selectedDocId} artifacts={artifacts} setTab={navigate} root={root} act={act} mutate={mutate} busy={busy||running} onHelp={openHelp} onGenerate={()=>act(()=>docType==='prd'&&prewriteCanDraft(projectRef.current?.prewrite_review)?openLocalPrdPreview():planAction('document'))} onPrewrite={()=>openMain({step:'refine',prewrite:true})} onSource={shared.onSource} onClarify={openQuestion}
             discussionPanel={p.documents[docType]&&<DocumentDiscussionPanel summaryOnly onOpenQuestion={openQuestion} project={p} tasks={tasks} runs={runs} document={p.documents[docType]} busy={busy} running={running} mutate={mutate} focusQuestion={documentQuestion} onRefresh={retry} onSources={refs=>shared.onSource(refs||[])} onScope={()=>openMain({step:'refine',scope:true})} onClarify={questionId=>act(()=>planAction('clarify',undefined,{kind:'question',id:questionId,label:p.questions.find(q=>q.id===questionId)?.question||'章节补充问题'}))}/>}/>
           {phaseAccess.allowed&&<ProductCheckpoint onBlocked={blockedCheckpoint} p={p} phase={4} busy={busy||running} mutate={mutate} go={go} getProject={()=>projectRef.current||p}/>}
         </div>
@@ -668,7 +681,7 @@ export function Workspace({ id, active, assistantEntryNonce, assistantEntryTask 
       onSubmit={text=>act(()=>planAction('change',undefined,{kind:'document',id:chapter.id,section_id:chapter.section_id,label:chapter.label},text))}
       onClarify={questionId=>act(()=>planAction('clarify',undefined,{kind:'question',id:questionId,label:p.questions.find(q=>q.id===questionId)?.question||'章节补充问题'}))}
       onSources={refs=>shared.onSource(refs||[])} onScope={()=>{setChapter(null);openMain({step:'refine',scope:true});}}
-      onClose={()=>{actionIntent.current++;setChapter(null);}} onUpdate={()=>{setChapter(null);void act(()=>planAction('document'));}}
+      onClose={()=>{actionIntent.current++;setChapter(null);}} onUpdate={()=>{setChapter(null);void act(()=>docType==='prd'&&prewriteCanDraft(projectRef.current?.prewrite_review)?openLocalPrdPreview():planAction('document'));}}
       onCancel={task=>act(async()=>{await api(root+'/actions/'+task.id+'/cancel','POST');await refresh();})} onRetry={retryUserTask} />}
     {phaseAccess.allowed&&help&&<div className="drawer-backdrop"><section className="source-drawer context-help" role="dialog" aria-modal="true" aria-label="当前对象的 AI 帮助"><button onClick={()=>guard(()=>setHelp(null))}>关闭帮助</button><p className="eyebrow">只围绕当前对象</p><h2>{help.label}</h2><small>{help.id}</small><p>可在本步核对前求助；结果形成待核对候选，不会自动回答问题、采纳条目或确认范围。</p><label>希望怎样调整或澄清<textarea rows={5} value={helpText} onChange={e=>setHelpText(e.target.value)}/></label><button className="primary" disabled={busy||running||!helpText.trim()} onClick={()=>act(()=>planAction(help.kind==='ui'?'change':'clarify',undefined,help,helpText))}>分析本次讨论</button><details><summary>已保存的讨论历史 · {p.messages.length}</summary>{p.messages.map((m,n)=><article key={n}><b>{m.role==='user'?'用户输入':'助手建议'} · {m.stage}</b><p>{m.text}</p></article>)}</details></section></div>}
     {candidateOpen&&<div className="modal-backdrop"><form className="modal" role="dialog" aria-modal="true" aria-label="补充候选需求" onSubmit={e=>{e.preventDefault();act(saveCandidate);}}><h2>补充一条候选需求</h2><p>保留你的原文和来源；保存不会自动采纳。</p><label>需求名称<input disabled={busy} required maxLength={200} value={candidateTitle} onChange={e=>setCandidateTitle(e.target.value)}/></label><label>需求原文<textarea disabled={busy} required maxLength={6000} value={candidateText} onChange={e=>setCandidateText(e.target.value)}/></label>{error&&<p role="alert">{error}</p>}<div className="toolbar"><button type="button" disabled={busy} onClick={()=>guard(()=>setCandidateOpen(false))}>取消</button><button disabled={busy} className="primary">保存候选</button></div></form></div>}
@@ -676,7 +689,7 @@ export function Workspace({ id, active, assistantEntryNonce, assistantEntryTask 
     {sourcesOpen && <div className="drawer-backdrop"><section className="source-drawer" role="dialog" aria-modal="true" aria-label="项目资料"><button disabled={busy} onClick={() => setSourcesOpen(false)}>关闭项目资料</button><SourcePanel focusRefs={focusRefs} p={p} models={models} purpose={purpose} setPurpose={setPurpose} sourceText={sourceText} setSourceText={setSourceText} manualPageActive={manualPageActive} manualPageUrl={manualPageUrl} setManualPageUrl={setManualPageUrl} manualPageTitle={manualPageTitle} setManualPageTitle={setManualPageTitle} manualPageNotice={manualPageNotice} onSaveText={saveManualSourceText} url={url} setUrl={setUrl} dynamic={dynamic} setDynamic={setDynamic} busy={busy} act={act} error={error} mutate={mutate} refresh={refresh} root={root} pendingGrant={null} setPendingGrant={() => {}} guided /></section></div>}
     {historyOpen && <div className="drawer-backdrop"><section className="source-drawer" role="dialog" aria-modal="true" aria-label="历史版本"><button onClick={() => setHistoryOpen(false)}>返回当前任务</button><VersionHistory history={history} /><details><summary>完整讨论记录 · {p.messages.length}</summary>{p.messages.map((m,n)=><article className="card" key={n}><b>{m.role==='user'?'用户输入':'助手建议'} · {m.stage}</b><p>{m.text}</p></article>)}</details></section></div>}
     {renameOpen && <div className="modal-backdrop"><form className="modal" role="dialog" aria-label="重命名项目" onSubmit={e => { e.preventDefault(); if (!rename.trim()) return; act(async () => { await mutate('', { name: rename.trim() }, 'PATCH'); setRenameOpen(false); await onProjectsChanged(); }); }}><h2>重命名项目</h2><label>项目名称<input value={rename} onChange={e => setRename(e.target.value)} /></label><button type="button" onClick={() => setRenameOpen(false)}>取消</button><button disabled={!rename.trim() || busy}>保存</button></form></div>}
-    {localPrdPreview&&<LocalPrdPreviewDialog preview={localPrdPreview} error={error} busy={busy} onClose={()=>setLocalPrdPreview(null)} onSubmit={()=>{const preview=localPrdPreview;void act(async()=>{await mutate('/documents/prd/local-review',{expected_revision:preview.input_revision,idempotency_key:crypto.randomUUID(),review_draft_confirmed:true,preview_hash:preview.preview_hash});setLocalPrdPreview(null);openDetails(4,'prd',()=>revealDocument('prd'));});}}/>}
+    {localPrdPreview&&<LocalPrdPreviewDialog preview={localPrdPreview} error={error} busy={busy} onClose={()=>setLocalPrdPreview(null)} onSubmit={()=>{const preview=localPrdPreview;void act(async()=>{await mutate('/documents/prd/local-review',{expected_revision:preview.input_revision,idempotency_key:localPrdKey.current!,review_draft_confirmed:true,preview_hash:preview.preview_hash});setLocalPrdPreview(null);openDetails(4,'prd',()=>revealDocument('prd'));});}}/>}
     {prdGenerationPreview?.plan.document_preview&&<PrdGenerationPreviewDialog preview={prdGenerationPreview.plan.document_preview} error={actionError||error} busy={busy} onClose={()=>setPrdGenerationPreview(null)} onSubmit={()=>void act(confirmPrdGeneration)}/>}
 
     {phaseAccess.allowed && optionDecision && <OptionDecision option={optionDecision.option} action={optionDecision.action} p={p} submit={mutate} onClose={() => setOptionDecision(null)} />}

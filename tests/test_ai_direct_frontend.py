@@ -62,9 +62,11 @@ const compiled=ts.transpileModule(`
     const setActionPostingReceipt=value=>{actionPostingReceipt=typeof value==='function'?value(actionPostingReceipt):value;};
     const setDocumentPreparationNotice=value=>{state.preparationNotice=value;},setDocumentReviewRequested=value=>{state.reviewRequested=value;};
     const setPrdGenerationPreview=value=>{prdGenerationPreview=state.prdGenerationPreview=value;};
-    const prewriteCanDraft=()=>false,documentPreparation=()=>({issues:scenario.preparationIssues||[],instruction:'补齐已保存草稿'});
+    const prewriteCanDraft=${ts.createSourceFile('prewrite-review.ts',fs.readFileSync('src/prewrite-review.ts','utf8'),ts.ScriptTarget.Latest,true).statements.find(n=>ts.isFunctionDeclaration(n)&&n.name?.text==='prewriteCanDraft').getText().replace('export function prewriteCanDraft','function prewriteCanDraft')};
+    const documentPreparation=()=>({issues:scenario.preparationIssues||[],instruction:'补齐已保存草稿'});
     const api=async(path,method,body,signal)=>{
       state.events.push({path,method,body:body&&structuredClone(body)});
+      if(path.endsWith('/documents/prd/local-preview'))return state.preview;
       if(path.endsWith('/requirement-confirmation/state'))return {revision:projectRef.current.revision,rows:[]};
       if(path.endsWith('/actions/plan')){
         state.plans.push(structuredClone(body));
@@ -86,6 +88,7 @@ const compiled=ts.transpileModule(`
     ${actual('settleActionReceipt')}
     ${actual('recordSubmittedTask')}
     ${actual('restoreSubmittedAction')}
+    ${actual('openLocalPrdPreview')}
     ${actual('planAction')}
     ${actual('confirmPrdGeneration')}
     ${actual('submitAction')}
@@ -95,8 +98,8 @@ const compiled=ts.transpileModule(`
     const restore=${effect('readActionRecovery(id)')};
     const reconcile=${effect('value.idempotency_key===prepared.key')};
     restore();reconcile();
-    const localPrdPreview=state.preview;
-    const mutate=async(path,body)=>{state.localWrite={path,body};};
+    const localPrdPreview=state.preview,localPrdKey={current:'local-key'};
+    const mutate=async(path,body)=>{state.localWrite={path,body};(state.localWrites ||= []).push(structuredClone(state.localWrite));if(scenario.failFirstLocal && state.localWrites.length===1)throw Error('响应丢失');};
     const setLocalPrdPreview=value=>{state.preview=value;};
     const revealDocument=kind=>{state.revealed=kind;},openDetails=(step,kind,after)=>{state.opened={step,kind};after?.();};
     const onGenerate=${callback('DocumentStudio','onGenerate')};
@@ -224,7 +227,34 @@ def test_document_preparation_and_local_prd_still_need_their_manual_content_conf
       assert.equal(prep.state.localWrite,undefined,'AI generation cannot confirm saved content');
       const local=fixture();assert.equal(local.state.localWrite,undefined);
       local.onLocalConfirm();await flush();
-      assert.deepEqual(local.state.localWrite,{path:'/documents/prd/local-review',body:{expected_revision:7,idempotency_key:'key-1',review_draft_confirmed:true,preview_hash:'LOCAL-PREVIEW'}});
+      assert.deepEqual(local.state.localWrite,{path:'/documents/prd/local-review',body:{expected_revision:7,idempotency_key:'local-key',review_draft_confirmed:true,preview_hash:'LOCAL-PREVIEW'}});
       assert.equal(local.state.plans.length,0);assert.equal(local.state.posts.length,0);
       assert.equal(local.state.preview,null);assert.equal(local.state.revealed,'prd');
+    ''')
+
+
+def test_current_prewrite_generates_locally_and_stale_or_blocked_do_not():
+    run_ts(LOAD + r'''
+      for(const status of ['passed','needs_confirmation']){
+        const f=fixture();f.projectRef.current.prewrite_review={current:true,status,findings:[]};
+        await f.onGenerate();assert.equal(f.state.events.length,1);
+        assert.equal(f.state.events[0].path,'/projects/P/documents/prd/local-preview');
+        assert.equal(f.state.posts.length,0);assert.equal(f.state.plans.length,0);
+      }
+      for(const review of [{current:false,status:'passed'}, {current:true,status:'needs_confirmation',findings:[{hard_block:true,status:'open'}]}]){
+        const f=fixture();f.projectRef.current.prewrite_review=review;await f.onGenerate();
+        assert(!f.state.events.some(e=>e.path.endsWith('/local-preview')));
+      }
+    ''')
+
+
+def test_local_prd_retry_reuses_submission_identity_after_lost_response():
+    run_ts(LOAD + r'''
+      const f=fixture({failFirstLocal:true});
+      f.onLocalConfirm();await flush();assert.equal(f.state.localWrites.length,1);
+      assert.equal(f.state.preview.input_revision,7);
+      f.onLocalConfirm();await flush();assert.equal(f.state.localWrites.length,2);
+      assert.deepEqual(f.state.localWrites[1],f.state.localWrites[0]);
+      assert.deepEqual(f.state.localWrites[1].body,{expected_revision:7,idempotency_key:'local-key',review_draft_confirmed:true,preview_hash:'LOCAL-PREVIEW'});
+      assert.equal(f.state.plans.length,0);assert.equal(f.state.posts.length,0);
     ''')

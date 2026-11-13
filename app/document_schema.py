@@ -24,6 +24,9 @@ SCHEMA['$defs']['Finding']['properties'].update(
 # These blocks are compiled locally from item snapshots, never requested from
 # the model's plan schema. Historical document blocks remain byte-compatible.
 _document_blocks = SCHEMA['$defs']['prdResult']['properties']['sections']['items']['properties']['blocks']['items']['oneOf']
+# Saved behavior fields allow 6000 characters each; cloud PRD joins two
+# with one newline. Model-authored plan text remains capped independently.
+next(block for block in _document_blocks if block.get('properties', {}).get('kind', {}).get('const') == 'explanation')['properties']['text']['maxLength'] = 12001
 _document_blocks.append(dict(type='object',additionalProperties=False,
     required=['kind','ref_ids','text','flow','source_hash'],properties=dict(
         kind={'const':'flowchart'},ref_ids=dict(type='array',minItems=1,maxItems=1,items=dict(type='string')),
