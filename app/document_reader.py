@@ -311,6 +311,9 @@ def reader_document(artifact, *, include_locations=False):
     compact_prd = (content['document_type']=='prd' and
         artifact.get('assembly_version') in ('prd-plan-4','prd-plan-4-local'))
     questions = {q['id']:q for q in artifact.get('question_snapshot', [])}
+    # A saved answer's audit can span several compiler chapters. Project each
+    # pending decision once, retaining the first visible source location.
+    seen_questions = set()
     delivered = set(artifact.get('delivery_item_ids', []))
     sections = []
     source_snapshots=artifact.get('source_snapshot',[])
@@ -380,7 +383,6 @@ def reader_document(artifact, *, include_locations=False):
         if section['title'] in ('已有回答与未决问题','当前决定与未决事项','当前决定',
                                  '已有回答与待核对修订'):
             blocks=[]
-            seen_questions=set()
             for block in section['blocks']:
                 q=questions.get(block['ref_ids'][0]) if len(block.get('ref_ids',[]))==1 else None
                 if not q or q['id'] in seen_questions or q.get('superseded_by') or q.get('prewrite_resolution'):

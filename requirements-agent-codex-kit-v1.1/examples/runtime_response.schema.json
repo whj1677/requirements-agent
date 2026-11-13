@@ -1061,7 +1061,7 @@
             "maxLength": 120
           },
           "minItems": 0,
-          "maxItems": 100
+          "uniqueItems": true
         },
         "perspectives": {
           "type": "array",
@@ -1446,8 +1446,7 @@
               }
             ]
           },
-          "minItems": 0,
-          "maxItems": 1000
+          "minItems": 0
         }
       },
       "required": [

@@ -18,11 +18,9 @@ def test_reader_cover_provenance_is_complete_and_separated(tmp_path):
     cover = document.paragraphs[1]
 
     assert cover.style.name == 'Document Cover Metadata'
-    assert cover.text.split('\n') == [
-        '草稿／待产品经理内容确认',
-        '文档 v3',
-        f'底稿 v{project["documents"]["prd"]["draft_revision"]}',
-    ]
-    assert document.styles['Document Cover Metadata'].font.size.pt == 10
-    assert document.styles['Document Cover Metadata'].paragraph_format.line_spacing == 1.4
-    assert ' · '.join(cover.text.split('\n')) in files['PRD.md'].decode()
+    provenance = ('草稿／待产品经理内容确认 · 文档 v3 · '
+                  f'底稿 v{project["documents"]["prd"]["draft_revision"]}')
+    assert cover.text.split('\n') == ['产品需求文档 PRD', provenance]
+    assert document.styles['Document Cover Metadata'].font.size.pt == 11
+    assert document.styles['Document Cover Metadata'].paragraph_format.line_spacing.pt == 18
+    assert provenance in files['PRD.md'].decode()

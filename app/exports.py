@@ -24,6 +24,25 @@ def block_text(block, p):
     return ('【建议／待确认】' if block['kind'] == 'ui_suggestion' else '') + (block['text'] or '')
 
 
+def markdown_reading_node(node, section_title='', *, image_uri=None):
+    """Share the reader projection across standalone and baseline Markdown."""
+    if node['kind']=='heading':
+        return ['#'*(node['level']+1)+' '+node['number']+' '+node['text']]
+    if node['kind']=='subheading':
+        return ['#### '+node['text']]
+    if node['kind']=='table':
+        from .detail_rendering import table_markdown
+        caption=['**'+node['title']+'**'] if node['title'] and node['title']!=section_title else []
+        return caption+[table_markdown(node)]
+    if node['kind']=='diagram':
+        # Word downloads pass their PNG; baseline Markdown keeps the reader's
+        # self-contained SVG, so it never references an absent ZIP asset.
+        return ['!['+node['title'].replace('[','').replace(']','')+']('+(image_uri or node['image_uri'])+')']
+    if node['kind']=='detail_error':
+        require(False,'DETAIL_RENDER_FAILED',node['text'],409)
+    return [node['text']]
+
+
 def readable_picture_parts(data):
     """Paginate tall screenshots at quiet scanlines, preserving full image coverage."""
     from PIL import Image
@@ -285,20 +304,17 @@ async def document_files(p, kind, status='草稿／待产品经理内容确认',
         if reader:
             for raw_node in s['reading_nodes']:
                 node=reading_node(raw_node)
+                if node['kind']!='diagram':
+                    md.extend(markdown_reading_node(node,s.get('title','')))
                 if node['kind']=='heading':
                     title=node['number']+' '+node['text']
-                    md.append('#'*(node['level']+1)+' '+title)
                     heading=doc.add_heading(title, node['level'])
                     if node['level']==1 and node['number'] in anchors:bookmark(heading,anchors[node['number']])
                 elif node['kind']=='subheading':
-                    md.append('#### '+node['text'])
                     doc.add_paragraph(node['text'],'Document Subheading')
                 elif node['kind']=='table':
-                    from .detail_rendering import table_markdown
                     if node['title'] and node['title']!=s.get('title'):
                         doc.add_paragraph(node['title'],'Document Table Caption')
-                        md.append('**'+node['title']+'**')
-                    md.append(table_markdown(node))
                     if doc.paragraphs and doc.paragraphs[-1].text.strip():
                         doc.paragraphs[-1].paragraph_format.keep_with_next=True
                     table=doc.add_table(rows=1,cols=len(node['columns']))
@@ -364,7 +380,7 @@ async def document_files(p, kind, status='草稿／待产品经理内容确认',
                     files[asset]=picture;files[svg_asset]=flow_svg(node['flow'],node['title'],palette=WORD_FLOW_PALETTE,fit_labels=True,**display)[0].encode('utf-8')
                     # Self-contained Markdown also works when downloaded alone.
                     import base64
-                    md.append('!['+node['title'].replace('[','').replace(']','')+'](data:image/png;base64,'+base64.b64encode(picture).decode('ascii')+')')
+                    md.extend(markdown_reading_node(node,image_uri='data:image/png;base64,'+base64.b64encode(picture).decode('ascii')))
                     add_full_flow_page(doc,picture,node['title']+('（总览，详见操作分图）' if node.get('views') else ''))
                     bindings.append(dict(section_id=s['section_id'],item_id=node['item_id'],
                                          detail_hash=node['detail_hash'],kind='diagram',
@@ -385,10 +401,7 @@ async def document_files(p, kind, status='草稿／待产品经理内容确认',
                             renderer_version=VERSION,kind='diagram_view',view_id=view['id'],asset=view_asset,
                             asset_hash=hashlib.sha256(image).hexdigest(),node_ids=view['node_ids'],edge_ids=view['edge_ids'],continuations=view['continuations'],
                             reference_nodes=view.get('reference_nodes',{}),edge_conditions=view.get('edge_conditions',[])))
-                elif node['kind']=='detail_error':
-                    require(False,'DETAIL_RENDER_FAILED',node['text'],409)
                 else:
-                    md.append(node['text'])
                     paragraph = doc.add_paragraph(node['text'],'Document Metadata') if node['kind']=='metadata' else add_body_prose(doc,node)
                     if node['kind']=='metadata' and node.get('item_id'):
                         # Keep the heading and full identifier with the actual clause.
@@ -537,19 +550,31 @@ def handoff_files(baseline, changes):
     baseline_id = baseline['id']
     p = baseline['project']
     items = delivery_items(p)
-    canonical = '\n\n'.join(f'## {i["id"]}｜{i["title"]} · v{i.get("content_version",1)}\n\n{i["statement"]}' for i in items)
+    from .detail_rendering import detail_nodes, GROUP_TITLES
+    from .product_flow import question_open
+    scope_reviews=p.get('documents',{}).get('prd',{}).get('detail_unknown_scope_reviews',[])
+    canonical_parts=[]
+    for item in items:
+        canonical_parts.append(f'## {item["id"]}｜{item["title"]} · v{item.get("content_version",1)}\n\n{item["statement"]}')
+        if item['kind']=='requirement' and item.get('detail_contract'):
+            for group,title in GROUP_TITLES.items():
+                canonical_parts.append('### '+title)
+                for node in detail_nodes(item,group,scope_reviews=scope_reviews):
+                    canonical_parts.extend(markdown_reading_node(reading_node(node),title))
+    canonical = '\n\n'.join(canonical_parts)
+    open_questions=[q for q in p['questions'] if question_open(q)]
     refs = {i['id']: i for i in items}
     traces = []
     for req in [i for i in items if i['kind']=='requirement']:
         related = [i for i in items if i['id'] in req['related_refs'] or req['id'] in i['related_refs']]
-        traces.append(dict(requirement_id=req['id'], rule_ids=[i['id'] for i in related if i['kind']=='rule'], ac_ids=[i['id'] for i in related if i['kind']=='acceptance'], ui_page_ids=[page['page_id'] for page in p['ui']['spec']['pages'] if req['id'] in page['requirement_refs']] if p['ui'] else [], frontend_sections=[req['id']], backend_sections=[req['id']], open_question_ids=[q['id'] for q in p['questions'] if req['id'] in q['related_refs'] and q['status']!='answered']))
+        traces.append(dict(requirement_id=req['id'], rule_ids=[i['id'] for i in related if i['kind']=='rule'], ac_ids=[i['id'] for i in related if i['kind']=='acceptance'], ui_page_ids=[page['page_id'] for page in p['ui']['spec']['pages'] if req['id'] in page['requirement_refs']] if p['ui'] else [], frontend_sections=[req['id']], backend_sections=[req['id']], open_question_ids=[q['id'] for q in open_questions if req['id'] in q['related_refs']]))
     files = {
         'README.md': f'# 研发交接\n\n基线 {baseline_id}\n\n产品经理内容确认记录 {baseline["confirmation_id"]}。内容确认不代表技术设计或测试验收通过。\n\n本包为中性交接；ai-engineer-context 私有格式适配未验证。',
         'requirements.md': '# 共同需求\n\n'+canonical,
-        'frontend_spec.md': '# 前端交接\n\n以下为同一基线原文；页面结构与模拟交互见 ui_spec.json / prototype.html。接口及技术实现由开发确认。\n\n'+canonical,
-        'backend_spec.md': '# 后端交接\n\n以下为同一基线原文；不得以界面隐藏代替权限规则。接口路径、表结构和事务方案未由本包代定。\n\n'+canonical,
+        'frontend_spec.md': '# 前端交接\n\n以下为同一基线原文及详细定义，与 [共同需求](requirements.md) 一致；页面结构与模拟交互见 ui_spec.json / prototype.html。完整版本与机器范围见 [delivery_scope.json](delivery_scope.json)。接口及技术实现由开发确认。\n\n'+canonical,
+        'backend_spec.md': '# 后端交接\n\n以下为同一基线原文及详细定义，与 [共同需求](requirements.md) 一致；不得以界面隐藏代替权限规则。完整版本与机器范围见 [delivery_scope.json](delivery_scope.json)。接口路径、表结构和事务方案未由本包代定。\n\n'+canonical,
         'acceptance_criteria.md': '# 验收条件\n\n'+'\n\n'.join(f'{i["id"]} — {i["statement"]}' for i in items if i['kind']=='acceptance'),
-        'open_questions.md': '# 未决事项\n\n'+'\n\n'.join(q['question']+'\n影响：'+q['why'] for q in p['questions'] if q['status']!='answered'),
+        'open_questions.md': '# 未决事项\n\n'+'\n\n'.join(q['question']+'\n影响：'+q['why'] for q in open_questions),
         'ui_spec.json': dumps(p['ui']['spec'] if p['ui'] else None),
         'prototype.html': prototype(p['ui']['spec']) if p['ui'] else '<!doctype html><meta charset="utf-8"><p>本基线未包含 UI 方案</p>',
         'traceability.json': dumps(traces)}
@@ -565,12 +590,15 @@ def handoff_files(baseline, changes):
     for kind,artifact in p['documents'].items():
         content=reader_document(artifact)
         files[kind.upper()+'.content.json']=dumps(content)
-        files[kind.upper()+'.md']='# '+content['title']+'\n\n'+'\n\n'.join(
-            '## '+s['title']+'\n\n'+'\n\n'.join(b['text'] for b in s['blocks']) for s in content['sections'])
+        markdown=['# '+content['title']]
+        for section in content['sections']:
+            for node in section['reading_nodes']:
+                markdown.extend(markdown_reading_node(reading_node(node),section['title']))
+        files[kind.upper()+'.md']='\n\n'.join(markdown)+'\n'
     for role,keys in (('frontend',('actor','entry','flow','result','exceptions')),('backend',('data','permissions','result','exceptions'))):
         from .product_flow import BEHAVIOR
         details=[]
-        for req in (i for i in items if i['kind']=='requirement'):
+        for req in (i for i in items if i['kind']=='requirement' and not i.get('detail_contract')):
             details.append('\n\n### '+req['id']+' · v'+str(req.get('content_version',1))+' 的相关行为\n'+
                 '\n'.join(BEHAVIOR[k]+'：'+req.get('behavior',{}).get(k,'未指定，需技术设计时核对') for k in keys))
         files[role+'_spec.md']+=''.join(details)

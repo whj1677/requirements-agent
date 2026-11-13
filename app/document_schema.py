@@ -42,7 +42,10 @@ _document_blocks.append(dict(type='object', additionalProperties=False,
 _document_blocks.append(dict(type='object', additionalProperties=False,
     required=['kind','ref_ids','text','title','table_role','columns','rows','column_weights'], properties={
         'kind':{'const':'table'},
-        'ref_ids':{'type':'array','items':{'type':'string'},'maxItems':100,'uniqueItems':True},
+        # Saved questions can accumulate links across multiple legal updates.
+        # References are bounded by the current project's existing IDs in
+        # validate_response; retain every link without duplicating risk rows.
+        'ref_ids':{'type':'array','items':{'type':'string'},'uniqueItems':True},
         'text':{'type':'string','maxLength':200},
         'title':{'type':'string','minLength':1,'maxLength':200},
         'table_role':{'enum':['function_inventory','risk_register']},

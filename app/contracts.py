@@ -48,7 +48,19 @@ def describe_schema_error(errors):
     while stack:
         e = stack.pop()
         flat.append(e)
-        stack.extend(getattr(e, 'context', None) or [])
+        children = getattr(e, 'context', None) or []
+        if e.validator == 'oneOf' and isinstance(e.instance, dict) and 'kind' in e.instance:
+            # Report the failing constraint for the actual block type. Errors
+            # from unrelated oneOf branches can otherwise claim that narrative
+            # text is limited to the table title's 200 characters.
+            matching = set()
+            for index, branch in enumerate(e.schema.get('oneOf', [])):
+                kind = branch.get('properties', {}).get('kind', {})
+                if kind.get('const') == e.instance['kind'] or e.instance['kind'] in kind.get('enum', []):
+                    matching.add(index)
+            if matching:
+                children = [child for child in children if child.schema_path and child.schema_path[0] in matching]
+        stack.extend(children)
     best = max(flat, key=lambda e: (len(list(e.absolute_path)), len(list(e.absolute_schema_path))))
     message = (f'{best.validator}={best.validator_value}，实际长度={len(best.instance)}'
                if best.validator in ('maxItems','minItems','maxLength','minLength') else best.message)
@@ -231,13 +243,20 @@ def validate_document(doc, p, kind):
     sections = {s['section_id']: s for s in doc['sections']}
     require(len(sections) == len(doc['sections']), 'REFERENCE_INVALID', '章节 ID 重复')
     seen = set()
+    inventory_refs = []
+    has_inventory = False
+    selected_requirements = {i['id']:i for i in delivery_items(p) if i['kind']=='requirement'}
     for s in doc['sections']:
         sid, parent = s['section_id'], s['parent_section_id']
         require(sid.startswith(kind.upper() + '-'), 'REFERENCE_INVALID', '章节前缀错误')
         require((parent is None and s['level'] == 1) or (parent in seen and s['level'] == sections[parent]['level'] + 1), 'REFERENCE_INVALID', '章节父子关系、顺序或层级错误')
         seen.add(sid)
     dimensions = {x['id']: x for x in prof['sections']}
+    mapped_scopes = set()
     for m in doc['reference_mapping']:
+        identity = (m['profile_section_id'], m['scope_ref'])
+        require(identity not in mapped_scopes, 'REFERENCE_INVALID', '同一参考维度和作用域的映射不能重复。')
+        mapped_scopes.add(identity)
         require(m['profile_section_id'] in dimensions and set(m['output_section_ids']) <= seen, 'REFERENCE_INVALID', '章节参考悬空')
     items = {i['id']: i for i in p['items']}
     for c in doc['coverage']:
@@ -258,8 +277,13 @@ def validate_document(doc, p, kind):
                         and len(b['column_weights'])==len(b['columns']),
                         'SCHEMA_INVALID','汇总表格的列、行或宽度不一致。')
                 if b['table_role']=='function_inventory':
-                    selected={i['id'] for i in delivery_items(p) if i['kind']=='requirement'}
-                    require(set(b['ref_ids'])==selected,'REFERENCE_INVALID','主要功能清单必须绑定全部本期需求。')
+                    has_inventory = True
+                    require(set(b['ref_ids'])<=selected_requirements.keys(),
+                            'REFERENCE_INVALID','主要功能清单只能绑定本期需求。')
+                    require(b['rows']==[[ref, selected_requirements[ref].get('title') or ref,
+                                        selected_requirements[ref]['statement']] for ref in b['ref_ids']],
+                            'REFERENCE_INVALID','主要功能清单必须保留对应需求的名称和原文。')
+                    inventory_refs.extend(b['ref_ids'])
             if b['kind']=='detail':
                 from .detail_rendering import detail_hash
                 ref=b['ref_ids'][0]; item=items.get(ref)
@@ -296,6 +320,9 @@ def validate_document(doc, p, kind):
                 require(not unselected, 'SEMANTIC_BLOCKED', '规范内容只能引用本期已选目标条目（' + '、'.join(unselected[:5]) + (' 等' if len(unselected) > 5 else '') + ' 未已选）')
                 mismatched = sorted(r for r in b['ref_ids'] if r in items and items[r]['kind'] != b['kind'])
                 require(not mismatched, 'REFERENCE_INVALID', '规范段落与条目类型不一致（' + '、'.join(mismatched[:5]) + (' 等' if len(mismatched) > 5 else '') + '）')
+    if has_inventory:
+        require(len(inventory_refs)==len(set(inventory_refs)) and set(inventory_refs)==selected_requirements.keys(),
+                'REFERENCE_INVALID','主要功能清单必须完整绑定全部本期需求，分表不得重复或遗漏。')
 
 
 def document_gaps(doc, p):

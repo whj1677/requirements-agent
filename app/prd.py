@@ -797,6 +797,30 @@ def compile_plan(plan, p, kind, omitted=(), *, include_sketch=True, saved_conten
         return sid
     def text(value,refs=None,block_kind='narrative'):
         return dict(kind=block_kind,ref_ids=refs or [],text=value)
+    narrative_schema=next(block for block in SCHEMA['$defs']['prdResult']['properties']['sections']['items']
+        ['properties']['blocks']['items']['oneOf'] if 'narrative' in block['properties']['kind'].get('enum',[]))
+    text_limit=narrative_schema['properties']['text']['maxLength']
+    block_limit=SCHEMA['$defs']['prdResult']['properties']['sections']['items']['properties']['blocks']['maxItems']
+    def text_blocks(value,refs=None,block_kind='narrative'):
+        # Saved answers include their related clause snapshots and provenance.
+        # Keep every character; splitting audit blocks must not truncate either.
+        return [text(value[offset:offset+text_limit],refs,block_kind)
+                for offset in range(0,len(value),text_limit)] or [text('',refs,block_kind)]
+    def grouped_sections(title,groups,introduction=None):
+        leading=[text(introduction)] if introduction else []
+        blocks=list(leading)
+        capacity=block_limit-len(leading)
+        for group in groups:
+            # Keep one question/history record together when it fits. Audit
+            # titles stay exact so every continuation remains an internal view.
+            for offset in range(0,len(group),capacity):
+                part=group[offset:offset+capacity]
+                if len(blocks)+len(part)>block_limit:
+                    section(title,blocks)
+                    blocks=list(leading)
+                blocks.extend(part)
+        if len(blocks)>len(leading):
+            section(title,blocks)
     def provenance(i):
         return '；来源：'+ ('、'.join(r['source_id']+'/'+r['excerpt_id'] for r in i.get('source_refs',[])) or '未提供')
     def discussion(i):
@@ -1029,10 +1053,10 @@ def compile_plan(plan, p, kind, omitted=(), *, include_sketch=True, saved_conten
             section(PRD_ASSOCIATION_TITLES[association_kind],blocks)
     if kind=='prd':
         from .detail_rendering import detail_block, GROUP_TITLES
-        from .prd_sections import function_inventory_block, risk_register_blocks
-        inventory=function_inventory_block(p)
-        if inventory['ref_ids']:
-            section('主要功能清单',[inventory])
+        from .prd_sections import function_inventory_blocks, risk_register_blocks
+        inventory=function_inventory_blocks(p)
+        if inventory:
+            section('主要功能清单',inventory)
             inventory_section=sections.pop()
             function_index=next((index for index,value in enumerate(sections)
                                  if value['title']==SECTION_TITLES['function']),0)
@@ -1063,7 +1087,7 @@ def compile_plan(plan, p, kind, omitted=(), *, include_sketch=True, saved_conten
                 textual_flow['blocks'].append(text('当前仅有文字流程说明；尚未生成结构化功能流程图。请在需求详情中核对流程节点、分支与流转条件。'))
             else:
                 section('功能流程图',[text('当前没有已核对的结构化流程；未生成流程图。请在需求详情中核对流程节点、分支与流转条件。')])
-        section('风险点与待确认',risk_register_blocks(p))
+        grouped_sections('风险点与待确认',[[block] for block in risk_register_blocks(p)])
     # The MRD keeps every selected clause after the product body. Split the
     # annex at clause boundaries to respect the compiled document contract.
     # PRD and historical plan versions retain their original clause placement.
@@ -1101,11 +1125,11 @@ def compile_plan(plan, p, kind, omitted=(), *, include_sketch=True, saved_conten
             applied=any(r in items and items[r].get('selection_status')=='selected'
                         for r in q.get('applied_item_ids',q.get('applied_requirement_ids',[]))) and q.get('understanding_status')=='applied'
             state='已应用于当前草稿条款' if applied else '已有回答，关联条款修订待核对采纳'
-            questions.append(text(f'【{state}；不代表业务负责人批准】{q["question"]}\n回答：{q["answer"]}\n回答来源：'+('、'.join(answer_sources) or '未找到独立回答来源，见问题记录')+f'\n关联条目当前快照：{related or "无关联条目"}'+provenance(q),[q['id']]))
+            questions.append(text_blocks(f'【{state}；不代表业务负责人批准】{q["question"]}\n回答：{q["answer"]}\n回答来源：'+('、'.join(answer_sources) or '未找到独立回答来源，见问题记录')+f'\n关联条目当前快照：{related or "无关联条目"}'+provenance(q),[q['id']]))
         else:
             state='已拆分，具体子问题见工作台' if q.get('superseded_by') else '本期范围外，仍未知' if q.get('out_of_scope_reason') else '尚未决定'
-            questions.append(text(q['question']+'（'+state+'）'+provenance(q),[q['id']], 'open_question'))
-    if questions:section('已有回答与未决问题',questions)
+            questions.append(text_blocks(q['question']+'（'+state+'）'+provenance(q),[q['id']], 'open_question'))
+    if questions:grouped_sections('已有回答与未决问题',questions)
     prof=profile(kind,p.get('reference_mode')=='builtin')
     ui_notice=context(p)['D_unknowns_limits']['ui']
     material_limits=['材料「'+s['title']+'」尚有读取限制：'+(s.get('failure_reason') or '需核对未读取或不清晰的内容') for s in p['sources'] if not s['excluded'] and s['parse_status']!='read']
@@ -1119,9 +1143,9 @@ def compile_plan(plan, p, kind, omitted=(), *, include_sketch=True, saved_conten
         text(x,block_kind='open_question') for x in dict.fromkeys(material_limits+planning_limits)])
     historical=historical_notes(p)
     if historical:
-        section('历史分析提示（非当前事实）',[
-            text('以下保留历史来源，可能已被后续材料更新；不作为本版材料数量、模板或业务确认状态。')]+[
-            text(f'第{h["round"]}轮 · {h["stage"]} · {h["created"] or "时间未记录"}\n'+'\n'.join(h['limitations'])) for h in historical])
+        grouped_sections('历史分析提示（非当前事实）',[
+            text_blocks(f'第{h["round"]}轮 · {h["stage"]} · {h["created"] or "时间未记录"}\n'+'\n'.join(h['limitations'])) for h in historical],
+            introduction='以下保留历史来源，可能已被后续材料更新；不作为本版材料数量、模板或业务确认状态。')
     maps=build_reference_mapping(p,kind,sections,coverage,verified_context=current_context,
                                  pending_section_id=pending,discussion_locations=discussion_locations)
     document=dict(document_type=kind,content_profile_id=prof['id'],content_profile_version=prof['version'],title=p['name'],
